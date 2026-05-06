@@ -6,8 +6,7 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# Test executable
-add_executable(tensogram_tests
+set(TENSOGRAM_TEST_SOURCES
     test_encode_decode.cpp
     test_metadata.cpp
     test_descriptor.cpp
@@ -23,6 +22,13 @@ add_executable(tensogram_tests
     test_allow_nan_inf.cpp
     test_decode_verify_hash.cpp
 )
+
+if(TENSOGRAM_ASYNC)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_callback.cpp)
+endif()
+
+# Test executable
+add_executable(tensogram_tests ${TENSOGRAM_TEST_SOURCES})
 
 target_include_directories(tensogram_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")

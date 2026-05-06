@@ -6,6 +6,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ---------------------------------------------------------------------------
+# Async surface (PR 4 of the cpp-async plan)
+# ---------------------------------------------------------------------------
+option(TENSOGRAM_ASYNC "Build the async FFI surface and C++ frontends" ON)
+if(TENSOGRAM_ASYNC)
+    set(CARGO_FEATURES "--features=async")
+else()
+    set(CARGO_FEATURES "")
+endif()
+
+# ---------------------------------------------------------------------------
 # Build the Rust static library via cargo
 # ---------------------------------------------------------------------------
 set(CARGO_TARGET_DIR "${CMAKE_SOURCE_DIR}/../target")
@@ -28,7 +38,7 @@ set(RUST_LIB "${CARGO_TARGET_DIR}/release/libtensogram_ffi.a")
 add_custom_target(rust_lib ALL
     BYPRODUCTS "${RUST_LIB}"
     COMMAND ${CMAKE_COMMAND} -E env "CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
-            cargo build --release -p tensogram-ffi
+            cargo build --release -p tensogram-ffi ${CARGO_FEATURES}
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/.."
     COMMENT "Invoking cargo build -p tensogram-ffi (cargo decides freshness)"
 )
@@ -50,6 +60,11 @@ target_include_directories(tensogram INTERFACE
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/../rust/tensogram-ffi")
 target_link_libraries(tensogram INTERFACE tensogram_ffi)
+if(TENSOGRAM_ASYNC)
+    target_compile_definitions(tensogram INTERFACE TENSOGRAM_ASYNC=1)
+    find_package(Threads REQUIRED)
+    target_link_libraries(tensogram INTERFACE Threads::Threads)
+endif()
 
 # Platform-specific system libraries required by the Rust static library
 if(APPLE)

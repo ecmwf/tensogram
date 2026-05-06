@@ -79,7 +79,7 @@ typedef enum {
  * Async file handle backed by `Arc<TensogramFile>` so the same handle
  * is safely shareable across multiple in-flight tasks.
  */
-typedef struct TgmAsyncFile TgmAsyncFile;
+typedef struct tgm_async_file_t tgm_async_file_t;
 
 /**
  * Opaque async streaming-encoder handle.  Internally wraps an
@@ -88,12 +88,12 @@ typedef struct TgmAsyncFile TgmAsyncFile;
  * AsyncWrite is naturally serial — concurrent calls would interleave
  * frame bytes).
  */
-typedef struct TgmAsyncStreamingEncoder TgmAsyncStreamingEncoder;
+typedef struct tgm_async_streaming_encoder_t tgm_async_streaming_encoder_t;
 
 /**
  * Opaque task handle exposed to C as `tgm_async_task_t*`.
  */
-typedef struct TgmAsyncTask TgmAsyncTask;
+typedef struct tgm_async_task_t tgm_async_task_t;
 
 /**
  * Opaque handle for iterating over messages in a byte buffer.
@@ -106,7 +106,7 @@ typedef struct tgm_buffer_iter_t tgm_buffer_iter_t;
  * Opaque cancellation-token handle exposed to C as
  * `tgm_cancellation_token_t*`.
  */
-typedef struct TgmCancellationToken TgmCancellationToken;
+typedef struct tgm_cancellation_token_t tgm_cancellation_token_t;
 
 /**
  * File handle.
@@ -924,13 +924,13 @@ tgm_error tgm_validate_file(const char *path,
                             int32_t check_canonical,
                             tgm_bytes_t *out);
 
-TgmCancellationToken *tgm_cancellation_token_create(void);
+tgm_cancellation_token_t *tgm_cancellation_token_create(void);
 
-void tgm_cancellation_token_cancel(TgmCancellationToken *tok);
+void tgm_cancellation_token_cancel(tgm_cancellation_token_t *tok);
 
-bool tgm_cancellation_token_is_cancelled(const TgmCancellationToken *tok);
+bool tgm_cancellation_token_is_cancelled(const tgm_cancellation_token_t *tok);
 
-void tgm_cancellation_token_free(TgmCancellationToken *tok);
+void tgm_cancellation_token_free(tgm_cancellation_token_t *tok);
 
 /**
  * Register a completion callback on `task`.  Must be called exactly
@@ -940,31 +940,31 @@ void tgm_cancellation_token_free(TgmCancellationToken *tok);
  * If the task has already resolved, the callback is invoked inline
  * on the calling thread before the function returns.
  */
-tgm_error tgm_async_task_set_completion(TgmAsyncTask *task, void (*cb)(void*), void *userdata);
+tgm_error tgm_async_task_set_completion(tgm_async_task_t *task, void (*cb)(void*), void *userdata);
 
-bool tgm_async_task_is_ready(const TgmAsyncTask *task);
+bool tgm_async_task_is_ready(const tgm_async_task_t *task);
 
 /**
  * Cancel an in-flight task by signalling its internal token.  The
  * task transitions to [`TgmError::Cancelled`] at the next yield point.
  */
-void tgm_async_task_cancel(TgmAsyncTask *task);
+void tgm_async_task_cancel(tgm_async_task_t *task);
 
-void tgm_async_task_free(TgmAsyncTask *task);
+void tgm_async_task_free(tgm_async_task_t *task);
 
-tgm_error tgm_async_task_join_void(TgmAsyncTask *task);
+tgm_error tgm_async_task_join_void(tgm_async_task_t *task);
 
-tgm_error tgm_async_task_join_size(TgmAsyncTask *task, uint64_t *out);
+tgm_error tgm_async_task_join_size(tgm_async_task_t *task, uint64_t *out);
 
-tgm_error tgm_async_task_join_bytes(TgmAsyncTask *task, tgm_bytes_t *out);
+tgm_error tgm_async_task_join_bytes(tgm_async_task_t *task, tgm_bytes_t *out);
 
-tgm_error tgm_async_task_join_message(TgmAsyncTask *task, tgm_message_t **out);
+tgm_error tgm_async_task_join_message(tgm_async_task_t *task, tgm_message_t **out);
 
-tgm_error tgm_async_task_join_metadata(TgmAsyncTask *task, tgm_metadata_t **out);
+tgm_error tgm_async_task_join_metadata(tgm_async_task_t *task, tgm_metadata_t **out);
 
-tgm_error tgm_async_task_join_async_file(TgmAsyncTask *task, TgmAsyncFile **out);
+tgm_error tgm_async_task_join_async_file(tgm_async_task_t *task, tgm_async_file_t **out);
 
-tgm_error tgm_async_task_join_multi_bytes(TgmAsyncTask *task,
+tgm_error tgm_async_task_join_multi_bytes(tgm_async_task_t *task,
                                           tgm_bytes_t **out_array,
                                           size_t *out_count);
 
@@ -973,67 +973,67 @@ tgm_error tgm_async_task_join_multi_bytes(TgmAsyncTask *task,
  */
 void tgm_multi_bytes_free(tgm_bytes_t *array, size_t count);
 
-const char *tgm_async_file_path(const TgmAsyncFile *file);
+const char *tgm_async_file_path(const tgm_async_file_t *file);
 
-void tgm_async_file_close(TgmAsyncFile *file);
+void tgm_async_file_close(tgm_async_file_t *file);
 
 /**
  * Open a Tensogram file asynchronously.  Returns immediately with a
  * task handle; join via `tgm_async_task_join_async_file`.
  */
 tgm_error tgm_async_file_open(const char *path,
-                              TgmCancellationToken *cancel,
+                              tgm_cancellation_token_t *cancel,
                               uint64_t timeout_ms,
-                              TgmAsyncTask **out_task);
+                              tgm_async_task_t **out_task);
 
 tgm_error tgm_async_file_open_remote(const char *url,
                                      const char *const *storage_keys,
                                      const char *const *storage_values,
                                      size_t nopts,
                                      bool bidirectional,
-                                     TgmCancellationToken *cancel,
+                                     tgm_cancellation_token_t *cancel,
                                      uint64_t timeout_ms,
-                                     TgmAsyncTask **out_task);
+                                     tgm_async_task_t **out_task);
 
-tgm_error tgm_async_file_message_count(TgmAsyncFile *file,
-                                       TgmCancellationToken *cancel,
+tgm_error tgm_async_file_message_count(tgm_async_file_t *file,
+                                       tgm_cancellation_token_t *cancel,
                                        uint64_t timeout_ms,
-                                       TgmAsyncTask **out_task);
+                                       tgm_async_task_t **out_task);
 
-tgm_error tgm_async_file_read_message(TgmAsyncFile *file,
+tgm_error tgm_async_file_read_message(tgm_async_file_t *file,
                                       size_t index,
-                                      TgmCancellationToken *cancel,
+                                      tgm_cancellation_token_t *cancel,
                                       uint64_t timeout_ms,
-                                      TgmAsyncTask **out_task);
+                                      tgm_async_task_t **out_task);
 
-tgm_error tgm_async_file_decode_message(TgmAsyncFile *file,
+tgm_error tgm_async_file_decode_message(tgm_async_file_t *file,
                                         size_t index,
                                         bool native_byte_order,
                                         uint32_t threads,
                                         bool restore_non_finite,
                                         bool verify_hash,
-                                        TgmCancellationToken *cancel,
+                                        tgm_cancellation_token_t *cancel,
                                         uint64_t timeout_ms,
-                                        TgmAsyncTask **out_task);
+                                        tgm_async_task_t **out_task);
 
-tgm_error tgm_async_file_decode_metadata(TgmAsyncFile *file,
+tgm_error tgm_async_file_decode_metadata(tgm_async_file_t *file,
                                          size_t index,
-                                         TgmCancellationToken *cancel,
+                                         tgm_cancellation_token_t *cancel,
                                          uint64_t timeout_ms,
-                                         TgmAsyncTask **out_task);
+                                         tgm_async_task_t **out_task);
 
-tgm_error tgm_async_file_decode_object(TgmAsyncFile *file,
+tgm_error tgm_async_file_decode_object(tgm_async_file_t *file,
                                        size_t msg_index,
                                        size_t obj_index,
                                        bool native_byte_order,
                                        uint32_t threads,
                                        bool restore_non_finite,
                                        bool verify_hash,
-                                       TgmCancellationToken *cancel,
+                                       tgm_cancellation_token_t *cancel,
                                        uint64_t timeout_ms,
-                                       TgmAsyncTask **out_task);
+                                       tgm_async_task_t **out_task);
 
-tgm_error tgm_async_file_decode_range(TgmAsyncFile *file,
+tgm_error tgm_async_file_decode_range(tgm_async_file_t *file,
                                       size_t msg_index,
                                       size_t obj_index,
                                       const uint64_t *offsets,
@@ -1041,9 +1041,9 @@ tgm_error tgm_async_file_decode_range(TgmAsyncFile *file,
                                       size_t n_ranges,
                                       bool native_byte_order,
                                       uint32_t threads,
-                                      TgmCancellationToken *cancel,
+                                      tgm_cancellation_token_t *cancel,
                                       uint64_t timeout_ms,
-                                      TgmAsyncTask **out_task);
+                                      tgm_async_task_t **out_task);
 
 /**
  * Configure the FFI tokio runtime.  Must be called before any other
@@ -1067,9 +1067,9 @@ tgm_error tgm_runtime_configure(uint32_t workers,
  */
 uint64_t tgm_runtime_shutdown_blocking(uint64_t timeout_ms);
 
-const char *tgm_async_streaming_encoder_path(const TgmAsyncStreamingEncoder *enc);
+const char *tgm_async_streaming_encoder_path(const tgm_async_streaming_encoder_t *enc);
 
-void tgm_async_streaming_encoder_free(TgmAsyncStreamingEncoder *enc);
+void tgm_async_streaming_encoder_free(tgm_async_streaming_encoder_t *enc);
 
 /**
  * Create an async streaming encoder writing to a local file.
@@ -1086,47 +1086,47 @@ tgm_error tgm_async_streaming_encoder_create(const char *path,
                                              const char *metadata_json,
                                              const char *hash_algo,
                                              uint32_t threads,
-                                             TgmCancellationToken *cancel,
+                                             tgm_cancellation_token_t *cancel,
                                              uint64_t timeout_ms,
-                                             TgmAsyncTask **out_task);
+                                             tgm_async_task_t **out_task);
 
-tgm_error tgm_async_streaming_encoder_write_object(TgmAsyncStreamingEncoder *enc,
+tgm_error tgm_async_streaming_encoder_write_object(tgm_async_streaming_encoder_t *enc,
                                                    const char *descriptor_json,
                                                    const uint8_t *data,
                                                    size_t len,
-                                                   TgmCancellationToken *cancel,
+                                                   tgm_cancellation_token_t *cancel,
                                                    uint64_t timeout_ms,
-                                                   TgmAsyncTask **out_task);
+                                                   tgm_async_task_t **out_task);
 
-tgm_error tgm_async_streaming_encoder_write_pre_encoded(TgmAsyncStreamingEncoder *enc,
+tgm_error tgm_async_streaming_encoder_write_pre_encoded(tgm_async_streaming_encoder_t *enc,
                                                         const char *descriptor_json,
                                                         const uint8_t *data,
                                                         size_t len,
-                                                        TgmCancellationToken *cancel,
+                                                        tgm_cancellation_token_t *cancel,
                                                         uint64_t timeout_ms,
-                                                        TgmAsyncTask **out_task);
+                                                        tgm_async_task_t **out_task);
 
-tgm_error tgm_async_streaming_encoder_write_preceder(TgmAsyncStreamingEncoder *enc,
+tgm_error tgm_async_streaming_encoder_write_preceder(tgm_async_streaming_encoder_t *enc,
                                                      const char *metadata_json,
-                                                     TgmCancellationToken *cancel,
+                                                     tgm_cancellation_token_t *cancel,
                                                      uint64_t timeout_ms,
-                                                     TgmAsyncTask **out_task);
+                                                     tgm_async_task_t **out_task);
 
-tgm_error tgm_async_streaming_encoder_finish(TgmAsyncStreamingEncoder *enc,
+tgm_error tgm_async_streaming_encoder_finish(tgm_async_streaming_encoder_t *enc,
                                              bool backfill,
-                                             TgmCancellationToken *cancel,
+                                             tgm_cancellation_token_t *cancel,
                                              uint64_t timeout_ms,
-                                             TgmAsyncTask **out_task);
+                                             tgm_async_task_t **out_task);
 
 /**
  * Object count snapshot.  Returns `usize::MAX` on null.
  */
-size_t tgm_async_streaming_encoder_object_count(const TgmAsyncStreamingEncoder *enc);
+size_t tgm_async_streaming_encoder_object_count(const tgm_async_streaming_encoder_t *enc);
 
 /**
  * Typed join for tasks returning a streaming-encoder handle.
  */
-tgm_error tgm_async_task_join_async_streaming_encoder(TgmAsyncTask *task,
-                                                      TgmAsyncStreamingEncoder **out);
+tgm_error tgm_async_task_join_async_streaming_encoder(tgm_async_task_t *task,
+                                                      tgm_async_streaming_encoder_t **out);
 
 #endif  /* TENSOGRAM_H */
