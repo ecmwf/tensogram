@@ -8,7 +8,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## C++ Async API
 
-- [ ] **cpp-async — PR 1: Rust `AsyncStreamingEncoder`**
+- [x] **cpp-async — PR 1: Rust `AsyncStreamingEncoder`**
     - New `rust/tensogram/src/streaming_async.rs` with
       `AsyncStreamingEncoder<W: AsyncWrite + Unpin>`.
     - Refactor `StreamingEncoder` to share frame-emission logic via a
@@ -18,7 +18,7 @@ For speculative ideas, see `IDEAS.md`.
     - No FFI or C++ changes in this PR.
     - See `plans/PLAN_CPP_ASYNC.md` §5 and §13 PR 1.
 
-- [ ] **cpp-async — PR 2: FFI async core (read path)**
+- [x] **cpp-async — PR 2: FFI async core (read path)**
     - New `tgm_async_task_t`, `tgm_cancellation_token_t`, completion
       callbacks, typed join functions for all read-side async fns.
     - Wire to existing `TensogramFile` async methods.
@@ -28,7 +28,7 @@ For speculative ideas, see `IDEAS.md`.
       returning count of unfinished tasks.
     - See `plans/PLAN_CPP_ASYNC.md` §3 and §13 PR 2.
 
-- [ ] **cpp-async — PR 3: FFI async core (write path)**
+- [x] **cpp-async — PR 3: FFI async core (write path)**
     - `tgm_async_streaming_encoder_*` family.
     - Local file (`tokio::fs::File`) and object-store
       (`object_store::MultipartUpload`) backends.
@@ -36,7 +36,7 @@ For speculative ideas, see `IDEAS.md`.
     - Tests including in-process HTTP fixture for object-store path.
     - See `plans/PLAN_CPP_ASYNC.md` §3.4, §5, §13 PR 3.
 
-- [ ] **cpp-async — PR 4: C++ `async/callback.hpp` (callback frontend)**
+- [x] **cpp-async — PR 4: C++ `async/callback.hpp` (callback frontend)**
     - Header-only, C++17, always available.
     - `result<T>` discriminated union (no exceptions required).
     - `async_file`, `async_streaming_encoder`, `cancellation_token`.
@@ -46,7 +46,7 @@ For speculative ideas, see `IDEAS.md`.
       `24_async_cancellation.cpp`).
     - See `plans/PLAN_CPP_ASYNC.md` §4.1 and §13 PR 4.
 
-- [ ] **cpp-async — PR 5: C++ `async/coro.hpp` + `async/std_future.hpp`**
+- [x] **cpp-async — PR 5: C++ `async/coro.hpp` + `async/std_future.hpp`**
     - `coro.hpp`: C++20 `task<T>`, `when_all`, `block_on`,
       `async_for_each` helper.
     - `std_future.hpp`: C++17 `std::future<T>` adapter via
@@ -59,7 +59,7 @@ For speculative ideas, see `IDEAS.md`.
       `23_async_stdfuture.cpp`).
     - See `plans/PLAN_CPP_ASYNC.md` §4.2–4.3 and §13 PR 5.
 
-- [ ] **cpp-async — PR 6: Integration tests, docs, polish**
+- [x] **cpp-async — PR 6: Integration tests, docs, polish**
     - Two-process producer/consumer integration test on local tmpfs
       (HPC-filesystem testing handled separately by ops).
     - Cross-language parity test: C++ async producer + Python async

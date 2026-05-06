@@ -26,6 +26,7 @@ set(TENSOGRAM_TEST_SOURCES
 if(TENSOGRAM_ASYNC)
     list(APPEND TENSOGRAM_TEST_SOURCES test_async_callback.cpp)
     list(APPEND TENSOGRAM_TEST_SOURCES test_async_stdfuture.cpp)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_producer_consumer.cpp)
 endif()
 
 # Test executable
