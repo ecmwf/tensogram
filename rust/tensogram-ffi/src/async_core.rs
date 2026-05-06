@@ -193,8 +193,13 @@ fn runtime() -> Result<&'static tokio::runtime::Runtime, &'static str> {
 /// Result variants surfaced by an async task.  The variant must match
 /// the join function the caller invokes; mismatches surface as
 /// [`TgmError::InvalidArg`].
-#[allow(dead_code)] // some variants reserved for PRs 4-5
-pub enum TaskResult {
+///
+/// Internal to `tensogram-ffi`: the C ABI never touches this type
+/// directly — every `tgm_async_task_join_*` function consumes one
+/// specific variant and returns the typed payload.  Sibling modules
+/// (`async_streaming`) construct variants directly.
+#[allow(dead_code)] // some variants reserved for follow-up PRs
+pub(crate) enum TaskResult {
     File(Box<crate::TgmFile>),
     AsyncFile(Box<TgmAsyncFile>),
     AsyncStreamingEncoder(Box<crate::async_streaming::TgmAsyncStreamingEncoder>),
@@ -240,9 +245,18 @@ struct TaskShared {
     state: Mutex<TaskInner>,
     ready: Condvar,
     cancel: tokio_util::sync::CancellationToken,
-    /// External cancellation token (refcounted via Arc on the C side).
-    /// Held to keep the token alive for the task's lifetime.
-    _external_token: Option<Arc<TgmCancellationTokenInner>>,
+    /// Spawn-loop-side clone of the external token, if any.  Held so
+    /// the spawn loop can `select!` against it without a separate
+    /// forwarder task (the previous forwarder leaked one tokio task
+    /// per cancellable spawn whenever the external token was never
+    /// cancelled, which is the common case).
+    ///
+    /// `tokio_util::sync::CancellationToken` is internally `Arc`-backed,
+    /// so this clone keeps the cancellation machinery alive
+    /// independently of the C-side `tgm_cancellation_token_t` handle's
+    /// `Arc<TgmCancellationTokenInner>` — we don't need a separate
+    /// `Arc` field for that.
+    external: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl TaskShared {
@@ -257,14 +271,7 @@ impl TaskShared {
             }),
             ready: Condvar::new(),
             cancel: tokio_util::sync::CancellationToken::new(),
-            // Hold an Arc clone so the external token stays alive for
-            // the task's lifetime (the spawn loop references it
-            // directly via select! rather than via a separate
-            // forwarder task — the previous forwarder leaked a tokio
-            // task per spawn whenever the external token was never
-            // cancelled, which is the common case for tasks that
-            // complete normally).
-            _external_token: external.map(|t| t.inner.clone()),
+            external: external.map(|t| t.inner.token.clone()),
         })
     }
 
@@ -318,13 +325,11 @@ where
     let shared_clone = shared.clone();
     let internal_token = shared.cancel.clone();
     // Take a direct clone of the external token (if any) into the
-    // spawn loop.  The previous design used a separate forwarder task
-    // that ran `ext.cancelled().await; internal.cancel()` — that
-    // forwarder leaked one tokio task per spawn whenever the external
-    // token was never cancelled (the common case).  Joining both
-    // tokens directly in this `select!` eliminates the forwarder
-    // entirely.
-    let external_token = shared._external_token.as_ref().map(|i| i.token.clone());
+    // spawn loop.  Joining both tokens directly in this `select!`
+    // eliminates the need for a separate forwarder task that would
+    // otherwise leak one tokio task per spawn whenever the external
+    // token was never cancelled (the common case).
+    let external_token = shared.external.clone();
 
     rt.spawn(async move {
         let outcome: AsyncOutcome = if timeout_ms > 0 {
