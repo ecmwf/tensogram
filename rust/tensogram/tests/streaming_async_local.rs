@@ -52,8 +52,9 @@ async fn async_streaming_single_object_round_trip() {
     let data = vec![0u8; 4 * 4];
 
     let buf = Vec::new();
-    let mut enc =
-        AsyncStreamingEncoder::new(buf, &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(buf, &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     enc.write_object(&desc, &data).await.unwrap();
     let result = enc.finish().await.unwrap();
 
@@ -70,8 +71,9 @@ async fn async_streaming_multi_object_round_trip() {
     let data1 = vec![1u8; 4 * 4];
     let data2 = vec![2u8; 8 * 4];
 
-    let mut enc =
-        AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     enc.write_object(&desc1, &data1).await.unwrap();
     enc.write_object(&desc2, &data2).await.unwrap();
     assert_eq!(enc.object_count(), 2);
@@ -184,8 +186,9 @@ async fn async_streaming_with_preceder() {
         ciborium::Value::Integer(ciborium::value::Integer::from(7)),
     );
 
-    let mut enc =
-        AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     enc.write_preceder(prec.clone()).await.unwrap();
     enc.write_object(&desc, &data).await.unwrap();
     let result = enc.finish().await.unwrap();
@@ -199,8 +202,9 @@ async fn async_streaming_with_preceder() {
 #[tokio::test]
 async fn async_streaming_double_preceder_errors() {
     let meta = GlobalMetadata::default();
-    let mut enc =
-        AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     let prec = BTreeMap::from([(
         "k".to_string(),
         ciborium::Value::Integer(ciborium::value::Integer::from(1)),
@@ -213,8 +217,9 @@ async fn async_streaming_double_preceder_errors() {
 #[tokio::test]
 async fn async_streaming_dangling_preceder_errors() {
     let meta = GlobalMetadata::default();
-    let mut enc =
-        AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     let prec = BTreeMap::from([(
         "k".to_string(),
         ciborium::Value::Integer(ciborium::value::Integer::from(1)),
@@ -231,8 +236,9 @@ async fn async_streaming_object_count_tracking() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let data = vec![0u8; 16];
 
-    let mut enc =
-        AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     assert_eq!(enc.object_count(), 0);
     enc.write_object(&desc, &data).await.unwrap();
     assert_eq!(enc.object_count(), 1);
@@ -247,8 +253,9 @@ async fn async_streaming_pre_encoded_round_trip() {
     let desc = make_descriptor(vec![8], Dtype::Float32);
     let data: Vec<u8> = (0..32).collect();
 
-    let mut enc =
-        AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     enc.write_object_pre_encoded(&desc, &data).await.unwrap();
     let result = enc.finish().await.unwrap();
 
@@ -302,7 +309,10 @@ async fn async_streaming_finish_with_backfill_patches_total_length() {
     }
 
     let mut bytes = Vec::new();
-    std::fs::File::open(&path).unwrap().read_to_end(&mut bytes).unwrap();
+    std::fs::File::open(&path)
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
 
     // Preamble's total_length lives at bytes 16..24 (big-endian u64).
     let mut pre = [0u8; 8];
@@ -335,8 +345,9 @@ async fn async_streaming_with_compression_round_trip() {
         .flat_map(|i| (i as f32 * 0.5).to_ne_bytes())
         .collect();
 
-    let mut enc =
-        AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     enc.write_object(&desc, &data).await.unwrap();
     let result = enc.finish().await.unwrap();
 
@@ -354,8 +365,9 @@ async fn async_streaming_via_cursor() {
     let data: Vec<u8> = (0..64).collect();
 
     let buf: Cursor<Vec<u8>> = Cursor::new(Vec::new());
-    let mut enc =
-        AsyncStreamingEncoder::new(buf, &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(buf, &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     enc.write_object(&desc, &data).await.unwrap();
     let cursor = enc.finish().await.unwrap();
     let bytes = cursor.into_inner();
@@ -368,8 +380,9 @@ async fn async_streaming_via_cursor() {
 #[tokio::test]
 async fn async_streaming_rejects_reserved_in_preceder() {
     let meta = GlobalMetadata::default();
-    let mut enc =
-        AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).await.unwrap();
+    let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+        .await
+        .unwrap();
     let mut prec = BTreeMap::new();
     prec.insert(
         tensogram::RESERVED_KEY.to_string(),

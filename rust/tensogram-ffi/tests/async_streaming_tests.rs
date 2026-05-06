@@ -77,13 +77,7 @@ fn async_streaming_encoder_local_round_trip() {
 
     // Finish
     let mut finish_task: *mut TgmAsyncTask = ptr::null_mut();
-    let err = tgm_async_streaming_encoder_finish(
-        enc,
-        false,
-        ptr::null_mut(),
-        0,
-        &mut finish_task,
-    );
+    let err = tgm_async_streaming_encoder_finish(enc, false, ptr::null_mut(), 0, &mut finish_task);
     assert!(matches!(err, TgmError::Ok));
 
     let err = tgm_async_task_join_void(finish_task);
@@ -94,11 +88,7 @@ fn async_streaming_encoder_local_round_trip() {
 
     // Verify file decodes correctly via the sync Rust API.
     let bytes = std::fs::read(path.as_os_str()).unwrap();
-    let (_, objects) = tensogram::decode(
-        &bytes,
-        &tensogram::DecodeOptions::default(),
-    )
-    .unwrap();
+    let (_, objects) = tensogram::decode(&bytes, &tensogram::DecodeOptions::default()).unwrap();
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].1, data);
 }
@@ -239,7 +229,7 @@ fn async_streaming_encoder_write_after_finish_errors() {
             "dtype":"float32","byte_order":"little","encoding":"none",
             "filter":"none","compression":"none","params":{}}"#,
     );
-    let data = vec![0u8; 16];
+    let data = [0u8; 16];
     let mut wt: *mut TgmAsyncTask = ptr::null_mut();
     let _ = tgm_async_streaming_encoder_write_object(
         enc,
@@ -298,7 +288,7 @@ fn async_streaming_encoder_with_preceder() {
             "dtype":"float32","byte_order":"little","encoding":"none",
             "filter":"none","compression":"none","params":{}}"#,
     );
-    let data = vec![0u8; 16];
+    let data = [0u8; 16];
     let mut wt: *mut TgmAsyncTask = ptr::null_mut();
     let _ = tgm_async_streaming_encoder_write_object(
         enc,

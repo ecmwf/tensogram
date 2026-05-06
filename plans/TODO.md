@@ -60,6 +60,16 @@ For speculative ideas, see `IDEAS.md`.
     - See `plans/PLAN_CPP_ASYNC.md` §4.2–4.3 and §13 PR 5.
 
 - [x] **cpp-async — PR 6: Integration tests, docs, polish**
+
+- [ ] **cpp-async follow-up: real `tgm_runtime_shutdown_blocking`**
+    The function is currently a no-op stub that returns 0.  The shared
+    runtime lives behind a `OnceLock` so it cannot be torn down without
+    leaking the slot.  A real implementation needs to switch the
+    singleton to an owning container (e.g. `Arc<RwLock<Option<Runtime>>>`
+    or a `parking_lot` mutex), drain tasks via
+    `Runtime::shutdown_timeout`, and return the count that did not
+    finish.  The C ABI is already shaped for this; only the
+    implementation behind it changes.
     - Two-process producer/consumer integration test on local tmpfs
       (HPC-filesystem testing handled separately by ops).
     - Cross-language parity test: C++ async producer + Python async

@@ -1056,14 +1056,19 @@ tgm_error tgm_runtime_configure(uint32_t workers,
                                 uint64_t multipart_part_size_bytes);
 
 /**
- * Drain in-flight tasks and shut down the runtime.  Returns the count
- * of tasks that did not finish within `timeout_ms`.  On a clean shutdown
- * the count is `0`.
+ * Reserved ABI for graceful shutdown.  Currently a no-op that
+ * always returns `0`.
  *
- * Implementation note: tokio's `Runtime::shutdown_timeout` does not
- * expose unfinished-task count directly.  We approximate by recording
- * the difference between active task count before and after shutdown.
- * For PR 2 the count is best-effort; precision can be improved later.
+ * **Status (v1):** the shared runtime lives behind a `OnceLock` and
+ * cannot be torn down without leaking the slot.  Process exit is
+ * abrupt by design (see `plans/PLAN_CPP_ASYNC.md` §6); in-flight
+ * tasks are dropped by tokio at process teardown.
+ *
+ * The signature is reserved here so a future implementation can
+ * switch the singleton to an owning container, drain tasks
+ * cooperatively, and return the count that did not finish within
+ * `timeout_ms` — without breaking the C ABI.  The argument is
+ * accepted but ignored today.
  */
 uint64_t tgm_runtime_shutdown_blocking(uint64_t timeout_ms);
 

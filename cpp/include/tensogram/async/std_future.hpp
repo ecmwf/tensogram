@@ -38,23 +38,9 @@ namespace tac = tensogram::async_callback;
 
 namespace detail {
 
-inline void throw_for_error(tgm_error code, const std::string& message) {
-    switch (code) {
-        case TGM_ERROR_FRAMING:       throw tensogram::framing_error(code, message);
-        case TGM_ERROR_METADATA:      throw tensogram::metadata_error(code, message);
-        case TGM_ERROR_ENCODING:      throw tensogram::encoding_error(code, message);
-        case TGM_ERROR_COMPRESSION:   throw tensogram::compression_error(code, message);
-        case TGM_ERROR_OBJECT:        throw tensogram::object_error(code, message);
-        case TGM_ERROR_IO:            throw tensogram::io_error(code, message);
-        case TGM_ERROR_HASH_MISMATCH: throw tensogram::hash_mismatch_error(code, message);
-        case TGM_ERROR_MISSING_HASH:  throw tensogram::missing_hash_error(code, message);
-        case TGM_ERROR_INVALID_ARG:   throw tensogram::invalid_arg_error(code, message);
-        case TGM_ERROR_REMOTE:        throw tensogram::remote_error(code, message);
-        case TGM_ERROR_TIMEOUT:       throw tensogram::timeout_error(code, message);
-        case TGM_ERROR_CANCELLED:     throw tensogram::cancelled_error(code, message);
-        default:                      throw tensogram::error(code, message);
-    }
-}
+// Typed-exception dispatch lives in `tensogram::detail::throw_for_code`
+// (see `tensogram.hpp`); we delegate to it here so all async frontends
+// share a single source of truth for the C-error-to-C++-exception map.
 
 template <typename T, typename Launcher>
 inline std::future<T> launch_future(Launcher&& launch) {
@@ -65,7 +51,7 @@ inline std::future<T> launch_future(Launcher&& launch) {
             promise->set_value(r.take());
         } else {
             try {
-                throw_for_error(r.code(), r.message());
+                tensogram::detail::throw_for_code(r.code(), r.message());
             } catch (...) {
                 promise->set_exception(std::current_exception());
             }
@@ -83,7 +69,7 @@ inline std::future<void> launch_void_future(Launcher&& launch) {
             promise->set_value();
         } else {
             try {
-                throw_for_error(r.code(), r.message());
+                tensogram::detail::throw_for_code(r.code(), r.message());
             } catch (...) {
                 promise->set_exception(std::current_exception());
             }

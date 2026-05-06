@@ -188,11 +188,7 @@ impl<W: AsyncWrite + Unpin> AsyncStreamingEncoder<W> {
     /// Buffering one frame in memory is acceptable for the v1 producer
     /// scenario where individual frames are bounded; true chunked
     /// AsyncWrite streaming is a follow-up optimisation.
-    pub async fn write_object(
-        &mut self,
-        desc: &DataObjectDescriptor,
-        data: &[u8],
-    ) -> Result<()> {
+    pub async fn write_object(&mut self, desc: &DataObjectDescriptor, data: &[u8]) -> Result<()> {
         validate_object(desc, data.len())?;
         let num_elements = desc.num_elements()?;
 
@@ -210,7 +206,11 @@ impl<W: AsyncWrite + Unpin> AsyncStreamingEncoder<W> {
             self.allow_inf,
             parallel,
         )?;
-        let intra = if parallel { self.intra_codec_threads } else { 0 };
+        let intra = if parallel {
+            self.intra_codec_threads
+        } else {
+            0
+        };
 
         let mut final_desc = desc.clone();
         crate::encode::resolve_simple_packing_params(&mut final_desc, data)?;

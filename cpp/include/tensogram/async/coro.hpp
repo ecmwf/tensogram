@@ -51,27 +51,9 @@ namespace tensogram::coro {
 
 namespace tac = tensogram::async_callback;
 
-namespace detail {
-
-inline void throw_for_error(tgm_error code, const std::string& message) {
-    switch (code) {
-        case TGM_ERROR_FRAMING:       throw tensogram::framing_error(code, message);
-        case TGM_ERROR_METADATA:      throw tensogram::metadata_error(code, message);
-        case TGM_ERROR_ENCODING:      throw tensogram::encoding_error(code, message);
-        case TGM_ERROR_COMPRESSION:   throw tensogram::compression_error(code, message);
-        case TGM_ERROR_OBJECT:        throw tensogram::object_error(code, message);
-        case TGM_ERROR_IO:            throw tensogram::io_error(code, message);
-        case TGM_ERROR_HASH_MISMATCH: throw tensogram::hash_mismatch_error(code, message);
-        case TGM_ERROR_MISSING_HASH:  throw tensogram::missing_hash_error(code, message);
-        case TGM_ERROR_INVALID_ARG:   throw tensogram::invalid_arg_error(code, message);
-        case TGM_ERROR_REMOTE:        throw tensogram::remote_error(code, message);
-        case TGM_ERROR_TIMEOUT:       throw tensogram::timeout_error(code, message);
-        case TGM_ERROR_CANCELLED:     throw tensogram::cancelled_error(code, message);
-        default:                      throw tensogram::error(code, message);
-    }
-}
-
-}  // namespace detail
+// `throw_for_error` lives in `tensogram::detail` so all async frontends
+// share a single typed-exception dispatch (single source of truth).
+// See `tensogram.hpp` → `detail::throw_for_code`.
 
 // ============================================================
 // awaiter<T> — wraps a callback-style async operation
@@ -106,7 +88,7 @@ public:
     T await_resume() {
         std::lock_guard lock(state_->mtx);
         if (state_->code != TGM_ERROR_OK) {
-            detail::throw_for_error(state_->code, state_->error_message);
+            tensogram::detail::throw_for_code(state_->code, state_->error_message);
         }
         return std::move(*state_->value);
     }
@@ -127,7 +109,7 @@ public:
             lock.lock();
         }
         if (state_->code != TGM_ERROR_OK) {
-            detail::throw_for_error(state_->code, state_->error_message);
+            tensogram::detail::throw_for_code(state_->code, state_->error_message);
         }
         return std::move(*state_->value);
     }
@@ -164,7 +146,7 @@ public:
     void await_resume() {
         std::lock_guard lock(state_->mtx);
         if (state_->code != TGM_ERROR_OK) {
-            detail::throw_for_error(state_->code, state_->error_message);
+            tensogram::detail::throw_for_code(state_->code, state_->error_message);
         }
     }
     void sync_get() {
@@ -175,7 +157,7 @@ public:
             lock.lock();
         }
         if (state_->code != TGM_ERROR_OK) {
-            detail::throw_for_error(state_->code, state_->error_message);
+            tensogram::detail::throw_for_code(state_->code, state_->error_message);
         }
     }
 

@@ -37,7 +37,12 @@ fn make_test_file() -> tempfile::NamedTempFile {
         masks: None,
     };
     let data: Vec<u8> = (0..16).collect();
-    let bytes = encode(&GlobalMetadata::default(), &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let bytes = encode(
+        &GlobalMetadata::default(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
     let f = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(f.path(), &bytes).unwrap();
     f
@@ -89,7 +94,15 @@ fn async_decode_message_round_trip() {
 
     let mut decode_task: *mut TgmAsyncTask = ptr::null_mut();
     let err = tgm_async_file_decode_message(
-        file, 0, true, 0, true, false, ptr::null_mut(), 0, &mut decode_task,
+        file,
+        0,
+        true,
+        0,
+        true,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut decode_task,
     );
     assert!(matches!(err, TgmError::Ok));
 
@@ -274,7 +287,10 @@ fn async_timeout_error_code() {
     let err = tgm_async_task_join_async_file(task, &mut file);
     // We expect Io (file not found) — confirms the error-classification
     // path works for non-timeout errors too.
-    assert!(matches!(err, TgmError::Io | TgmError::Encoding | TgmError::Framing));
+    assert!(matches!(
+        err,
+        TgmError::Io | TgmError::Encoding | TgmError::Framing
+    ));
     tgm_async_task_free(task);
 }
 

@@ -182,10 +182,12 @@ impl TaskShared {
             // Snapshot the callback so we can release the lock before
             // firing it.  The callback may call into FFI again and we
             // must not hold the task mutex across that boundary.
-            inner
-                .completion_cb
-                .take()
-                .map(|cb| (cb, std::mem::replace(&mut inner.completion_userdata, std::ptr::null_mut())))
+            inner.completion_cb.take().map(|cb| {
+                (
+                    cb,
+                    std::mem::replace(&mut inner.completion_userdata, std::ptr::null_mut()),
+                )
+            })
         };
         self.ready.notify_all();
         if let Some((cb, userdata)) = cb_to_fire {
@@ -377,9 +379,11 @@ pub extern "C" fn tgm_async_task_free(task: *mut TgmAsyncTask) {
     }
 }
 
-// Internal helper: block waiting for the task to be ready, then
-// extract the result.  Caller is responsible for type-matching.
-fn join_internal(task: *mut TgmAsyncTask) -> Result<TaskResult, TgmError> {
+// Block waiting for the task to be ready, then extract the result.
+// Caller is responsible for type-matching the variant.  Sibling
+// modules in this crate (e.g. `async_streaming`) implement their own
+// typed join functions on top of this.
+pub(crate) fn join_internal(task: *mut TgmAsyncTask) -> Result<TaskResult, TgmError> {
     if task.is_null() {
         set_last_error("null task");
         return Err(TgmError::InvalidArg);
@@ -416,10 +420,7 @@ pub extern "C" fn tgm_async_task_join_void(task: *mut TgmAsyncTask) -> TgmError 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn tgm_async_task_join_size(
-    task: *mut TgmAsyncTask,
-    out: *mut u64,
-) -> TgmError {
+pub extern "C" fn tgm_async_task_join_size(task: *mut TgmAsyncTask, out: *mut u64) -> TgmError {
     if out.is_null() {
         set_last_error("null out pointer");
         return TgmError::InvalidArg;
@@ -718,12 +719,7 @@ pub extern "C" fn tgm_async_file_open_remote(
     let scan_opts = tensogram::RemoteScanOptions { bidirectional };
     let url_for_task = url_str.clone();
     let fut = async move {
-        let f = TensogramFile::open_remote_async(
-            &url_for_task,
-            &storage,
-            Some(scan_opts),
-        )
-        .await?;
+        let f = TensogramFile::open_remote_async(&url_for_task, &storage, Some(scan_opts)).await?;
         let path_string = CString::new(url_for_task.as_str()).unwrap_or_default();
         Ok(TaskResult::AsyncFile(Box::new(TgmAsyncFile {
             file: Arc::new(f),
@@ -974,23 +970,22 @@ pub extern "C" fn tgm_runtime_configure(
     TgmError::Ok
 }
 
-/// Drain in-flight tasks and shut down the runtime.  Returns the count
-/// of tasks that did not finish within `timeout_ms`.  On a clean shutdown
-/// the count is `0`.
+/// Reserved ABI for graceful shutdown.  Currently a no-op that
+/// always returns `0`.
 ///
-/// Implementation note: tokio's `Runtime::shutdown_timeout` does not
-/// expose unfinished-task count directly.  We approximate by recording
-/// the difference between active task count before and after shutdown.
-/// For PR 2 the count is best-effort; precision can be improved later.
+/// **Status (v1):** the shared runtime lives behind a `OnceLock` and
+/// cannot be torn down without leaking the slot.  Process exit is
+/// abrupt by design (see `plans/PLAN_CPP_ASYNC.md` §6); in-flight
+/// tasks are dropped by tokio at process teardown.
+///
+/// The signature is reserved here so a future implementation can
+/// switch the singleton to an owning container, drain tasks
+/// cooperatively, and return the count that did not finish within
+/// `timeout_ms` — without breaking the C ABI.  The argument is
+/// accepted but ignored today.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_runtime_shutdown_blocking(timeout_ms: u64) -> u64 {
-    // We can't actually drop a static OnceLock, so we just call
-    // shutdown_timeout in-place via an explicit drop pattern.  For v1
-    // we report 0 if the runtime hadn't been built or was built
-    // successfully — best-effort per the plan's allowance.  A full
-    // implementation that owns the runtime via a different singleton
-    // is a follow-up.
-    let _ = timeout_ms; // accepted for ABI but currently ignored
+    let _ = timeout_ms;
     0
 }
 
@@ -998,7 +993,11 @@ pub extern "C" fn tgm_runtime_shutdown_blocking(timeout_ms: u64) -> u64 {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn spawn_or_set_error<F>(
+/// Spawn `fut` on the shared runtime and write the resulting task
+/// handle into `out_task`.  Sibling modules in this crate (e.g.
+/// `async_streaming`) call this to launch their own tasks without
+/// re-implementing the runtime / cancellation / timeout plumbing.
+pub(crate) fn spawn_or_set_error<F>(
     fut: F,
     cancel: Option<&TgmCancellationToken>,
     timeout_ms: u64,
@@ -1017,27 +1016,6 @@ where
             TgmError::Io
         }
     }
-}
-
-/// Public re-export so sibling modules in this crate (e.g.
-/// `async_streaming`) can spawn tasks without re-implementing the
-/// runtime / cancellation / timeout plumbing.
-pub fn spawn_or_set_error_pub<F>(
-    fut: F,
-    cancel: Option<&TgmCancellationToken>,
-    timeout_ms: u64,
-    out_task: *mut *mut TgmAsyncTask,
-) -> TgmError
-where
-    F: std::future::Future<Output = Result<TaskResult, TensogramError>> + Send + 'static,
-{
-    spawn_or_set_error(fut, cancel, timeout_ms, out_task)
-}
-
-/// Public re-export of the join helper so sibling modules can
-/// implement typed join functions.
-pub fn join_internal_pub(task: *mut TgmAsyncTask) -> Result<TaskResult, TgmError> {
-    join_internal(task)
 }
 
 fn build_tgm_message(

@@ -193,11 +193,16 @@ public:
 
 namespace detail {
 
-/// Check a C error code and throw the appropriate typed exception.
-inline void check(tgm_error err) {
-    if (err == TGM_ERROR_OK) return;
-    const char* msg = tgm_last_error();
-    std::string message = msg ? msg : tgm_error_string(err);
+/// Throw the typed C++ exception that matches a non-OK C error code,
+/// using `message` as the exception text.
+///
+/// `TGM_ERROR_OK` is silently a no-op so callers can hand any code
+/// through without prior screening.  Used both by [`check()`] (which
+/// captures the FFI's thread-local last-error string) and by the
+/// async frontends (which capture the message inside completion
+/// handlers, before any other FFI call on the thread can clobber the
+/// last-error slot).
+[[noreturn]] inline void throw_for_code(tgm_error err, const std::string& message) {
     switch (err) {
         case TGM_ERROR_FRAMING:       throw framing_error(err, message);
         case TGM_ERROR_METADATA:      throw metadata_error(err, message);
@@ -214,6 +219,14 @@ inline void check(tgm_error err) {
         case TGM_ERROR_END_OF_ITER:   throw error(err, message);
         default:                      throw error(err, message);
     }
+}
+
+/// Check a C error code and throw the appropriate typed exception.
+inline void check(tgm_error err) {
+    if (err == TGM_ERROR_OK) return;
+    const char* msg = tgm_last_error();
+    std::string message = msg ? msg : tgm_error_string(err);
+    throw_for_code(err, message);
 }
 
 /// Adapter that splits a vector of (pointer, length) pairs into parallel

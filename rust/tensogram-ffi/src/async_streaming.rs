@@ -28,9 +28,7 @@ use tokio::sync::Mutex;
 use tensogram::types::DataObjectDescriptor;
 use tensogram::{AsyncStreamingEncoder, EncodeOptions};
 
-use crate::async_core::{
-    TaskResult, TgmAsyncTask, TgmCancellationToken, spawn_or_set_error_pub,
-};
+use crate::async_core::{TaskResult, TgmAsyncTask, TgmCancellationToken, spawn_or_set_error};
 use crate::{TgmError, set_last_error};
 
 /// Opaque async streaming-encoder handle.  Internally wraps an
@@ -137,7 +135,7 @@ pub extern "C" fn tgm_async_streaming_encoder_create(
         });
         Ok(TaskResult::AsyncStreamingEncoder(handle))
     };
-    spawn_or_set_error_pub(fut, cancel_ref, timeout_ms, out_task)
+    spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
 #[unsafe(no_mangle)]
@@ -188,7 +186,7 @@ pub extern "C" fn tgm_async_streaming_encoder_write_object(
         enc.write_object(&descriptor, &data_vec).await?;
         Ok(TaskResult::Void)
     };
-    spawn_or_set_error_pub(fut, cancel_ref, timeout_ms, out_task)
+    spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
 #[unsafe(no_mangle)]
@@ -236,7 +234,7 @@ pub extern "C" fn tgm_async_streaming_encoder_write_pre_encoded(
         enc.write_object_pre_encoded(&descriptor, &data_vec).await?;
         Ok(TaskResult::Void)
     };
-    spawn_or_set_error_pub(fut, cancel_ref, timeout_ms, out_task)
+    spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
 #[unsafe(no_mangle)]
@@ -288,7 +286,7 @@ pub extern "C" fn tgm_async_streaming_encoder_write_preceder(
         enc.write_preceder(map).await?;
         Ok(TaskResult::Void)
     };
-    spawn_or_set_error_pub(fut, cancel_ref, timeout_ms, out_task)
+    spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
 #[unsafe(no_mangle)]
@@ -322,7 +320,7 @@ pub extern "C" fn tgm_async_streaming_encoder_finish(
         }
         Ok(TaskResult::Void)
     };
-    spawn_or_set_error_pub(fut, cancel_ref, timeout_ms, out_task)
+    spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
 /// Object count snapshot.  Returns `usize::MAX` on null.
@@ -359,7 +357,7 @@ pub extern "C" fn tgm_async_task_join_async_streaming_encoder(
         set_last_error("null out pointer");
         return TgmError::InvalidArg;
     }
-    match crate::async_core::join_internal_pub(task) {
+    match crate::async_core::join_internal(task) {
         Ok(TaskResult::AsyncStreamingEncoder(h)) => {
             unsafe { *out = Box::into_raw(h) };
             TgmError::Ok
