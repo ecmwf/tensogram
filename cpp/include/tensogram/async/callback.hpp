@@ -24,7 +24,6 @@
 #include "../../tensogram.hpp"
 
 #include <chrono>
-#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>

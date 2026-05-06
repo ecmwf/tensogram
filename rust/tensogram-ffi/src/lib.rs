@@ -88,6 +88,7 @@ const _: () = assert!(
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TgmError {
     Ok = 0,
     Framing = 1,

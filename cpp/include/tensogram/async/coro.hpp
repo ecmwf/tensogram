@@ -33,16 +33,13 @@
 
 #include "callback.hpp"
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <coroutine>
 #include <exception>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -105,27 +102,6 @@ public:
         return std::move(*state_->value);
     }
 
-    /// Synchronously block the calling thread until ready.  Used by
-    /// the block_on adapter and when_all when the value is needed
-    /// outside a coroutine.
-    T sync_get() {
-        std::unique_lock lock(state_->mtx);
-        // Wait via spin-yield since shared_state has no condvar; fine
-        // for top-level entry but we add a condvar for efficiency
-        // when polling many awaiters in when_all.
-        // We ship a separate condvar by promoting the awaiter to the
-        // block_on variant where needed.
-        while (!state_->ready) {
-            lock.unlock();
-            std::this_thread::yield();
-            lock.lock();
-        }
-        if (state_->code != TGM_ERROR_OK) {
-            tensogram::detail::throw_for_code(state_->code, state_->error_message);
-        }
-        return std::move(*state_->value);
-    }
-
 private:
     std::shared_ptr<shared_state> state_;
 };
@@ -159,17 +135,6 @@ public:
         return true;
     }
     void await_resume() {
-        if (state_->code != TGM_ERROR_OK) {
-            tensogram::detail::throw_for_code(state_->code, state_->error_message);
-        }
-    }
-    void sync_get() {
-        std::unique_lock lock(state_->mtx);
-        while (!state_->ready) {
-            lock.unlock();
-            std::this_thread::yield();
-            lock.lock();
-        }
         if (state_->code != TGM_ERROR_OK) {
             tensogram::detail::throw_for_code(state_->code, state_->error_message);
         }

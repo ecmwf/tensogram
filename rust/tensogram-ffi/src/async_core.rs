@@ -247,22 +247,6 @@ struct TaskShared {
 
 impl TaskShared {
     fn new(external: Option<&TgmCancellationToken>) -> Arc<Self> {
-        let cancel = tokio_util::sync::CancellationToken::new();
-        // Link external token to internal: cancellation propagates.
-        let external_clone = external.map(|t| t.inner.clone());
-        if let Some(ext) = external {
-            let internal = cancel.clone();
-            let ext_token = ext.inner.token.clone();
-            // Forward external cancellation to the task's internal token.
-            // This task is detached on the runtime; if cancelled before
-            // it ever polls, no harm done.
-            if let Ok(rt) = runtime() {
-                rt.spawn(async move {
-                    ext_token.cancelled().await;
-                    internal.cancel();
-                });
-            }
-        }
         Arc::new(Self {
             state: Mutex::new(TaskInner {
                 state: TaskState::Pending,
@@ -272,8 +256,15 @@ impl TaskShared {
                 completion_userdata: std::ptr::null_mut(),
             }),
             ready: Condvar::new(),
-            cancel,
-            _external_token: external_clone,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            // Hold an Arc clone so the external token stays alive for
+            // the task's lifetime (the spawn loop references it
+            // directly via select! rather than via a separate
+            // forwarder task — the previous forwarder leaked a tokio
+            // task per spawn whenever the external token was never
+            // cancelled, which is the common case for tasks that
+            // complete normally).
+            _external_token: external.map(|t| t.inner.clone()),
         })
     }
 
@@ -325,13 +316,22 @@ where
     let rt = runtime()?;
     let shared = TaskShared::new(cancel);
     let shared_clone = shared.clone();
-    let task_token = shared.cancel.clone();
+    let internal_token = shared.cancel.clone();
+    // Take a direct clone of the external token (if any) into the
+    // spawn loop.  The previous design used a separate forwarder task
+    // that ran `ext.cancelled().await; internal.cancel()` — that
+    // forwarder leaked one tokio task per spawn whenever the external
+    // token was never cancelled (the common case).  Joining both
+    // tokens directly in this `select!` eliminates the forwarder
+    // entirely.
+    let external_token = shared._external_token.as_ref().map(|i| i.token.clone());
 
     rt.spawn(async move {
         let outcome: AsyncOutcome = if timeout_ms > 0 {
             let deadline = Duration::from_millis(timeout_ms);
             tokio::select! {
-                _ = task_token.cancelled() => AsyncOutcome::Cancelled,
+                _ = internal_token.cancelled() => AsyncOutcome::Cancelled,
+                _ = async { match external_token { Some(t) => t.cancelled().await, None => std::future::pending().await } } => AsyncOutcome::Cancelled,
                 res = tokio::time::timeout(deadline, fut) => match res {
                     Ok(Ok(v)) => AsyncOutcome::Ok(v),
                     Ok(Err(e)) => AsyncOutcome::Inner(e),
@@ -340,7 +340,8 @@ where
             }
         } else {
             tokio::select! {
-                _ = task_token.cancelled() => AsyncOutcome::Cancelled,
+                _ = internal_token.cancelled() => AsyncOutcome::Cancelled,
+                _ = async { match external_token { Some(t) => t.cancelled().await, None => std::future::pending().await } } => AsyncOutcome::Cancelled,
                 res = fut => match res {
                     Ok(v) => AsyncOutcome::Ok(v),
                     Err(e) => AsyncOutcome::Inner(e),

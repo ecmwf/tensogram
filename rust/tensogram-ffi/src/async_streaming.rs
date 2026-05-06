@@ -138,9 +138,24 @@ pub extern "C" fn tgm_async_streaming_encoder_create(
     spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
-#[unsafe(no_mangle)]
+/// Selects which `AsyncStreamingEncoder` method to invoke from the
+/// shared FFI scaffolding.  Avoids duplicating ~50 lines of input
+/// parsing + future setup across the two `write_*` entry points.
+#[derive(Clone, Copy)]
+enum WriteKind {
+    /// Encoder runs the full encoding pipeline on `data`.
+    Object,
+    /// `data` is treated as already-encoded bytes; pipeline is bypassed.
+    PreEncoded,
+}
+
+/// Internal: shared scaffolding for the two `write_*` entry points.
+///
+/// Parses descriptor JSON + data slice, copies the data into an owned
+/// buffer, then spawns a task that locks the encoder and dispatches
+/// to the chosen inner method.
 #[allow(clippy::too_many_arguments)]
-pub extern "C" fn tgm_async_streaming_encoder_write_object(
+fn write_object_dispatch(
     enc: *mut TgmAsyncStreamingEncoder,
     descriptor_json: *const c_char,
     data: *const u8,
@@ -148,6 +163,7 @@ pub extern "C" fn tgm_async_streaming_encoder_write_object(
     cancel: *mut TgmCancellationToken,
     timeout_ms: u64,
     out_task: *mut *mut TgmAsyncTask,
+    kind: WriteKind,
 ) -> TgmError {
     if enc.is_null() || descriptor_json.is_null() || data.is_null() || out_task.is_null() {
         set_last_error("null argument");
@@ -169,8 +185,8 @@ pub extern "C" fn tgm_async_streaming_encoder_write_object(
         }
     };
     // Copy data into an owned Vec<u8> so the async task owns it for
-    // the duration of the write.  C caller's buffer must remain valid
-    // only until this function returns.
+    // the duration of the write.  The C caller's buffer must remain
+    // valid only until this function returns.
     let data_vec = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
     let cancel_ref = if cancel.is_null() {
         None
@@ -183,10 +199,36 @@ pub extern "C" fn tgm_async_streaming_encoder_write_object(
         let enc = guard.as_mut().ok_or_else(|| {
             tensogram::TensogramError::Framing("encoder already finished".to_string())
         })?;
-        enc.write_object(&descriptor, &data_vec).await?;
+        match kind {
+            WriteKind::Object => enc.write_object(&descriptor, &data_vec).await?,
+            WriteKind::PreEncoded => enc.write_object_pre_encoded(&descriptor, &data_vec).await?,
+        }
         Ok(TaskResult::Void)
     };
     spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn tgm_async_streaming_encoder_write_object(
+    enc: *mut TgmAsyncStreamingEncoder,
+    descriptor_json: *const c_char,
+    data: *const u8,
+    len: usize,
+    cancel: *mut TgmCancellationToken,
+    timeout_ms: u64,
+    out_task: *mut *mut TgmAsyncTask,
+) -> TgmError {
+    write_object_dispatch(
+        enc,
+        descriptor_json,
+        data,
+        len,
+        cancel,
+        timeout_ms,
+        out_task,
+        WriteKind::Object,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -200,41 +242,16 @@ pub extern "C" fn tgm_async_streaming_encoder_write_pre_encoded(
     timeout_ms: u64,
     out_task: *mut *mut TgmAsyncTask,
 ) -> TgmError {
-    if enc.is_null() || descriptor_json.is_null() || data.is_null() || out_task.is_null() {
-        set_last_error("null argument");
-        return TgmError::InvalidArg;
-    }
-    let inner = unsafe { (*enc).inner.clone() };
-    let json_str = match unsafe { CStr::from_ptr(descriptor_json) }.to_str() {
-        Ok(s) => s.to_string(),
-        Err(e) => {
-            set_last_error(&format!("invalid UTF-8 in descriptor_json: {e}"));
-            return TgmError::InvalidArg;
-        }
-    };
-    let descriptor: DataObjectDescriptor = match serde_json::from_str(&json_str) {
-        Ok(d) => d,
-        Err(e) => {
-            set_last_error(&format!("invalid descriptor JSON: {e}"));
-            return TgmError::Metadata;
-        }
-    };
-    let data_vec = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
-    let cancel_ref = if cancel.is_null() {
-        None
-    } else {
-        Some(unsafe { &*cancel })
-    };
-
-    let fut = async move {
-        let mut guard = inner.lock().await;
-        let enc = guard.as_mut().ok_or_else(|| {
-            tensogram::TensogramError::Framing("encoder already finished".to_string())
-        })?;
-        enc.write_object_pre_encoded(&descriptor, &data_vec).await?;
-        Ok(TaskResult::Void)
-    };
-    spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
+    write_object_dispatch(
+        enc,
+        descriptor_json,
+        data,
+        len,
+        cancel,
+        timeout_ms,
+        out_task,
+        WriteKind::PreEncoded,
+    )
 }
 
 #[unsafe(no_mangle)]

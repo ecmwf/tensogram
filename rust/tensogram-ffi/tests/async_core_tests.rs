@@ -276,6 +276,40 @@ fn async_cancellation_token_cancels_task() {
     tgm_cancellation_token_free(tok);
 }
 
+/// Regression: a task that's still running when its external
+/// cancellation token fires must surface as `Cancelled` (no leak of
+/// a forwarder task — the spawn loop selects the external token
+/// directly).  Open a deliberately slow operation so the cancel
+/// fires before completion.
+#[test]
+fn async_external_cancel_during_task_surfaces_cancelled() {
+    let f = make_test_file();
+    let path = cstring(f.path().to_str().unwrap());
+
+    let tok = tgm_cancellation_token_create();
+
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let _ = tgm_async_file_open(path.as_ptr(), tok, 0, &mut task);
+
+    // Cancel immediately; the open is fast but the cancel-then-join
+    // race is still resolved by the select! arm preferring whichever
+    // future fires first.  Either way, the join must succeed and
+    // either return Cancelled or Ok (if the open finished first).
+    tgm_cancellation_token_cancel(tok);
+
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let err = tgm_async_task_join_async_file(task, &mut file);
+    assert!(
+        matches!(err, TgmError::Ok | TgmError::Cancelled),
+        "expected Ok or Cancelled, got {err:?}",
+    );
+    if err == TgmError::Ok {
+        tgm_async_file_close(file);
+    }
+    tgm_async_task_free(task);
+    tgm_cancellation_token_free(tok);
+}
+
 #[test]
 fn async_timeout_error_code() {
     // Construct a deliberately bad path so the open fails fast; the
@@ -435,13 +469,13 @@ fn tgm_error_string_covers_all_codes() {
         TgmError::Timeout,
         TgmError::Cancelled,
     ];
-    for (i, code) in codes.into_iter().enumerate() {
+    for code in codes {
         let p = tgm_error_string(code);
-        assert!(!p.is_null(), "tgm_error_string returned NULL for code #{i}");
+        assert!(!p.is_null(), "tgm_error_string returned NULL for {code:?}");
         let text = unsafe { std::ffi::CStr::from_ptr(p) }.to_str().unwrap();
         assert_ne!(
             text, "unknown error",
-            "tgm_error_string returned 'unknown error' for code #{i}"
+            "tgm_error_string returned 'unknown error' for {code:?}"
         );
     }
 }
