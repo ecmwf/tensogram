@@ -90,10 +90,11 @@ fn runtime() -> Result<&'static tokio::runtime::Runtime, &'static str> {
 /// Result variants surfaced by an async task.  The variant must match
 /// the join function the caller invokes; mismatches surface as
 /// [`TgmError::InvalidArg`].
-#[allow(dead_code)] // some variants reserved for PRs 3-5
-pub(crate) enum TaskResult {
+#[allow(dead_code)] // some variants reserved for PRs 4-5
+pub enum TaskResult {
     File(Box<crate::TgmFile>),
     AsyncFile(Box<TgmAsyncFile>),
+    AsyncStreamingEncoder(Box<crate::async_streaming::TgmAsyncStreamingEncoder>),
     Message(Box<TgmMessage>),
     Metadata(Box<TgmMetadata>),
     Bytes(Vec<u8>),
@@ -1016,6 +1017,27 @@ where
             TgmError::Io
         }
     }
+}
+
+/// Public re-export so sibling modules in this crate (e.g.
+/// `async_streaming`) can spawn tasks without re-implementing the
+/// runtime / cancellation / timeout plumbing.
+pub fn spawn_or_set_error_pub<F>(
+    fut: F,
+    cancel: Option<&TgmCancellationToken>,
+    timeout_ms: u64,
+    out_task: *mut *mut TgmAsyncTask,
+) -> TgmError
+where
+    F: std::future::Future<Output = Result<TaskResult, TensogramError>> + Send + 'static,
+{
+    spawn_or_set_error(fut, cancel, timeout_ms, out_task)
+}
+
+/// Public re-export of the join helper so sibling modules can
+/// implement typed join functions.
+pub fn join_internal_pub(task: *mut TgmAsyncTask) -> Result<TaskResult, TgmError> {
+    join_internal(task)
 }
 
 fn build_tgm_message(

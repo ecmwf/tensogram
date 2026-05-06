@@ -82,6 +82,15 @@ typedef enum {
 typedef struct TgmAsyncFile TgmAsyncFile;
 
 /**
+ * Opaque async streaming-encoder handle.  Internally wraps an
+ * `AsyncStreamingEncoder<tokio::fs::File>` behind a `tokio::sync::Mutex`
+ * so concurrent `write_object` calls are serialised (the underlying
+ * AsyncWrite is naturally serial — concurrent calls would interleave
+ * frame bytes).
+ */
+typedef struct TgmAsyncStreamingEncoder TgmAsyncStreamingEncoder;
+
+/**
  * Opaque task handle exposed to C as `tgm_async_task_t*`.
  */
 typedef struct TgmAsyncTask TgmAsyncTask;
@@ -1057,5 +1066,67 @@ tgm_error tgm_runtime_configure(uint32_t workers,
  * For PR 2 the count is best-effort; precision can be improved later.
  */
 uint64_t tgm_runtime_shutdown_blocking(uint64_t timeout_ms);
+
+const char *tgm_async_streaming_encoder_path(const TgmAsyncStreamingEncoder *enc);
+
+void tgm_async_streaming_encoder_free(TgmAsyncStreamingEncoder *enc);
+
+/**
+ * Create an async streaming encoder writing to a local file.
+ *
+ * Returns a task that resolves to a `tgm_async_streaming_encoder_t*`
+ * (joinable via `tgm_async_task_join_async_streaming_encoder`).
+ *
+ * `metadata_json` follows the same schema as the sync streaming
+ * encoder (see `tgm_streaming_encoder_create`).  The async encoder
+ * writes the preamble + header metadata frame to the sink before
+ * the task resolves.
+ */
+tgm_error tgm_async_streaming_encoder_create(const char *path,
+                                             const char *metadata_json,
+                                             const char *hash_algo,
+                                             uint32_t threads,
+                                             TgmCancellationToken *cancel,
+                                             uint64_t timeout_ms,
+                                             TgmAsyncTask **out_task);
+
+tgm_error tgm_async_streaming_encoder_write_object(TgmAsyncStreamingEncoder *enc,
+                                                   const char *descriptor_json,
+                                                   const uint8_t *data,
+                                                   size_t len,
+                                                   TgmCancellationToken *cancel,
+                                                   uint64_t timeout_ms,
+                                                   TgmAsyncTask **out_task);
+
+tgm_error tgm_async_streaming_encoder_write_pre_encoded(TgmAsyncStreamingEncoder *enc,
+                                                        const char *descriptor_json,
+                                                        const uint8_t *data,
+                                                        size_t len,
+                                                        TgmCancellationToken *cancel,
+                                                        uint64_t timeout_ms,
+                                                        TgmAsyncTask **out_task);
+
+tgm_error tgm_async_streaming_encoder_write_preceder(TgmAsyncStreamingEncoder *enc,
+                                                     const char *metadata_json,
+                                                     TgmCancellationToken *cancel,
+                                                     uint64_t timeout_ms,
+                                                     TgmAsyncTask **out_task);
+
+tgm_error tgm_async_streaming_encoder_finish(TgmAsyncStreamingEncoder *enc,
+                                             bool backfill,
+                                             TgmCancellationToken *cancel,
+                                             uint64_t timeout_ms,
+                                             TgmAsyncTask **out_task);
+
+/**
+ * Object count snapshot.  Returns `usize::MAX` on null.
+ */
+size_t tgm_async_streaming_encoder_object_count(const TgmAsyncStreamingEncoder *enc);
+
+/**
+ * Typed join for tasks returning a streaming-encoder handle.
+ */
+tgm_error tgm_async_task_join_async_streaming_encoder(TgmAsyncTask *task,
+                                                      TgmAsyncStreamingEncoder **out);
 
 #endif  /* TENSOGRAM_H */

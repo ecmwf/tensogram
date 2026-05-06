@@ -47,6 +47,8 @@ use std::slice;
 
 #[cfg(feature = "async")]
 pub mod async_core;
+#[cfg(feature = "async")]
+pub mod async_streaming;
 
 use tensogram::encode::MaskMethod;
 use tensogram::validate::{
@@ -656,7 +658,7 @@ struct ParsedEncode<'a> {
 /// idiom is "if you want a feature, name it; if you don't, pass
 /// NULL" and the FFI's `tgm_encode_*` functions always require an
 /// explicit `hash_algo` argument anyway.
-fn parse_hash_algo(hash_algo: *const c_char) -> Result<bool, (TgmError, String)> {
+pub(crate) fn parse_hash_algo(hash_algo: *const c_char) -> Result<bool, (TgmError, String)> {
     if hash_algo.is_null() {
         return Ok(false);
     }
@@ -6586,7 +6588,7 @@ struct StreamingEncodeJson {
 }
 
 /// Parse metadata JSON for the streaming encoder (no "descriptors" key).
-fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, String> {
+pub(crate) fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, String> {
     let parsed: StreamingEncodeJson = serde_json::from_str(json_str)
         .map_err(|e| format!("failed to parse metadata JSON: {e}"))?;
 
