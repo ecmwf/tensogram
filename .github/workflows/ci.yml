@@ -694,6 +694,15 @@ jobs:
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
     if: github.event_name == 'pull_request'
     timeout-minutes: 30
+    # Override the workflow-wide TMPDIR (which sits inside the workspace
+    # at $GITHUB_WORKSPACE/.tmp) for this job only.  cargo-mutants copies
+    # the workspace into a tempdir under TMPDIR; if TMPDIR is inside the
+    # workspace, the copy walks its own freshly-created tempdir and
+    # recurses until macOS / Linux PATH_MAX kicks in with
+    # "File name too long".  /tmp is outside the workspace and free of
+    # this trap.
+    env:
+      TMPDIR: /tmp
     steps:
       - uses: actions/checkout@v4
         with:
