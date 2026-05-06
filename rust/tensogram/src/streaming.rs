@@ -770,7 +770,11 @@ fn preamble_to_bytes(preamble: &Preamble) -> Vec<u8> {
 }
 
 /// Number of zero-padding bytes needed to align `bytes_written` to an
-/// 8-byte boundary.
+/// 8-byte boundary.  Used by the async sibling's padding helper; the
+/// sync side here uses [`write_padding`] directly with a static
+/// `ZERO_PAD` slice.  Gated on the async feature so default-feature
+/// clippy doesn't flag it as dead code.
+#[cfg(feature = "async")]
 pub(crate) const fn padding_for(bytes_written: u64) -> usize {
     (8 - (bytes_written as usize % 8)) % 8
 }
