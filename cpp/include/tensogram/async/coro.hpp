@@ -77,16 +77,28 @@ public:
         std::lock_guard lock(state_->mtx);
         return state_->ready;
     }
-    void await_suspend(std::coroutine_handle<> h) noexcept {
+    /// Returns `false` to skip suspension when the producer has
+    /// already resolved the awaiter — that path used to call
+    /// `h.resume()` *while still holding* `state_->mtx`, which
+    /// deadlocked because the resumed coroutine immediately enters
+    /// `await_resume()` and tries to lock the same mutex.
+    /// The bool form lets us avoid suspending entirely; the resume
+    /// path then runs without any lock involvement.
+    bool await_suspend(std::coroutine_handle<> h) noexcept {
         std::lock_guard lock(state_->mtx);
         if (state_->ready) {
-            h.resume();
-        } else {
-            state_->awaiter_handle = h;
+            return false;  // skip suspension; await_resume runs next
         }
+        state_->awaiter_handle = h;
+        return true;
     }
     T await_resume() {
-        std::lock_guard lock(state_->mtx);
+        // Lock-free read: by the time await_resume runs, either we
+        // returned `false` from await_suspend (no other thread
+        // touches `state_` at this point), or `complete()` finished
+        // setting `ready = true` and `awaiter_handle = nullptr`
+        // before resuming us.  In both cases the fields below are
+        // safe to read without the mutex.
         if (state_->code != TGM_ERROR_OK) {
             tensogram::detail::throw_for_code(state_->code, state_->error_message);
         }
@@ -135,16 +147,18 @@ public:
         std::lock_guard lock(state_->mtx);
         return state_->ready;
     }
-    void await_suspend(std::coroutine_handle<> h) noexcept {
+    /// See `awaiter<T>::await_suspend` — the bool return avoids the
+    /// deadlock where resuming under the lock would re-enter
+    /// `await_resume()`'s lock attempt.
+    bool await_suspend(std::coroutine_handle<> h) noexcept {
         std::lock_guard lock(state_->mtx);
         if (state_->ready) {
-            h.resume();
-        } else {
-            state_->awaiter_handle = h;
+            return false;
         }
+        state_->awaiter_handle = h;
+        return true;
     }
     void await_resume() {
-        std::lock_guard lock(state_->mtx);
         if (state_->code != TGM_ERROR_OK) {
             tensogram::detail::throw_for_code(state_->code, state_->error_message);
         }

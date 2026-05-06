@@ -28,7 +28,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -139,13 +138,75 @@ namespace detail {
 
 /// Snapshot the FFI's thread-local last-error string into a `std::string`.
 ///
-/// The completion threads each call this immediately after their join
-/// returns an error; the FFI's thread-local error slot is shared with
-/// any tgm_* call on the same OS thread, so the snapshot must happen
-/// before any other FFI call on that thread.
+/// The dispatcher worker calls this immediately after the join
+/// returns an error; the FFI's thread-local error slot is shared
+/// with any tgm_* call on the same OS thread, so the snapshot must
+/// happen before any other FFI call on that thread.
 inline std::string error_message_from_last() {
     const char* m = tgm_last_error();
     return m ? std::string(m) : std::string();
+}
+
+/// State held alive across the FFI completion callback.  When
+/// `tgm_async_task_set_completion` fires, the dispatcher worker
+/// invokes `trampoline(state)` which joins the task, packages the
+/// typed result, and hands it to the user's `cb`.  The state then
+/// frees the task handle and itself.
+template <typename T>
+struct completion_state {
+    std::function<void(result<T>)> cb;
+    tgm_async_task_t* task;
+};
+
+/// Trampoline: invoked by the FFI dispatcher pool when the task
+/// completes.  Templated on the result type and the typed-join
+/// function so we share the framing across every async entry point.
+template <typename T,
+          tgm_error (*JoinFn)(tgm_async_task_t*, T*)>
+inline void trampoline_join_value(void* userdata) noexcept {
+    auto* state = static_cast<completion_state<T>*>(userdata);
+    T raw{};
+    tgm_error e = JoinFn(state->task, &raw);
+    if (e == TGM_ERROR_OK) {
+        state->cb(result<T>::ok_value(std::move(raw)));
+    } else {
+        state->cb(result<T>::err(e, error_message_from_last()));
+    }
+    tgm_async_task_free(state->task);
+    delete state;
+}
+
+/// Trampoline for the void-result case (writes / finishes).
+inline void trampoline_join_void(void* userdata) noexcept {
+    auto* state = static_cast<completion_state<void>*>(userdata);
+    tgm_error e = tgm_async_task_join_void(state->task);
+    if (e == TGM_ERROR_OK) {
+        state->cb(result<void>::ok_value());
+    } else {
+        state->cb(result<void>::err(e, error_message_from_last()));
+    }
+    tgm_async_task_free(state->task);
+    delete state;
+}
+
+/// Register a completion callback on `task` that joins via `JoinFn`,
+/// converts the raw result via `Convert`, and invokes the user `cb`.
+/// Used for results that need post-join transformation
+/// (`tgm_async_file_t*` → `async_file`, `tgm_bytes_t` → vector).
+template <typename UserT, typename RawT,
+          tgm_error (*JoinFn)(tgm_async_task_t*, RawT*),
+          UserT (*Convert)(RawT&&)>
+inline void trampoline_join_convert(void* userdata) noexcept {
+    auto* state = static_cast<completion_state<UserT>*>(userdata);
+    RawT raw{};
+    tgm_error e = JoinFn(state->task, &raw);
+    if (e == TGM_ERROR_OK) {
+        state->cb(result<UserT>::ok_value(Convert(std::move(raw))));
+    } else {
+        state->cb(result<UserT>::err(e, error_message_from_last()));
+    }
+    tgm_async_task_free(state->task);
+    delete state;
 }
 
 }  // namespace detail
@@ -154,6 +215,31 @@ inline std::string error_message_from_last() {
 // async_file
 // ============================================================
 
+namespace detail {
+
+/// Trivial conversion helpers used by `trampoline_join_convert` so each
+/// async entry point can route raw FFI types into the user-facing C++
+/// types without bespoke trampolines.
+inline tensogram::message message_from_raw_handle(tgm_message_t*&& raw) {
+    return tensogram::detail::message_from_raw(raw);
+}
+
+inline tensogram::metadata metadata_from_raw_handle(tgm_metadata_t*&& raw) {
+    return tensogram::detail::metadata_from_raw(raw);
+}
+
+inline std::vector<std::uint8_t> bytes_to_vector(tgm_bytes_t&& b) {
+    std::vector<std::uint8_t> v(b.data, b.data + b.len);
+    tgm_bytes_free(b);
+    return v;
+}
+
+inline std::size_t size_to_size_t(std::uint64_t&& n) {
+    return static_cast<std::size_t>(n);
+}
+
+}  // namespace detail
+
 class async_file {
 public:
     async_file(async_file&&) noexcept = default;
@@ -161,8 +247,8 @@ public:
     async_file(const async_file&) = delete;
     async_file& operator=(const async_file&) = delete;
 
-    /// Open a local file asynchronously.  `cb` is invoked once when
-    /// the open completes (success or failure).
+    /// Open a local file asynchronously.  `cb` is invoked once on the
+    /// FFI dispatcher pool when the open completes.
     ///
     /// `timeout` is in milliseconds; pass `0` for no timeout.
     static void open(const std::string& path,
@@ -179,16 +265,7 @@ public:
             cb(result<async_file>::err(err, detail::error_message_from_last()));
             return;
         }
-        std::thread([task, cb = std::move(cb)]() mutable {
-            tgm_async_file_t* raw = nullptr;
-            tgm_error e = tgm_async_task_join_async_file(task, &raw);
-            if (e == TGM_ERROR_OK) {
-                cb(result<async_file>::ok_value(async_file(raw)));
-            } else {
-                cb(result<async_file>::err(e, detail::error_message_from_last()));
-            }
-            tgm_async_task_free(task);
-        }).detach();
+        register_async_file_completion(task, std::move(cb));
     }
 
     /// Async message-count.
@@ -205,16 +282,12 @@ public:
             cb(result<std::size_t>::err(err, detail::error_message_from_last()));
             return;
         }
-        std::thread([task, cb = std::move(cb)]() mutable {
-            uint64_t n = 0;
-            tgm_error e = tgm_async_task_join_size(task, &n);
-            if (e == TGM_ERROR_OK) {
-                cb(result<std::size_t>::ok_value(static_cast<std::size_t>(n)));
-            } else {
-                cb(result<std::size_t>::err(e, detail::error_message_from_last()));
-            }
-            tgm_async_task_free(task);
-        }).detach();
+        auto* state = new detail::completion_state<std::size_t>{std::move(cb), task};
+        tgm_async_task_set_completion(
+            task,
+            &detail::trampoline_join_convert<std::size_t, std::uint64_t,
+                &tgm_async_task_join_size, &detail::size_to_size_t>,
+            state);
     }
 
     /// Async decode of message at `index`, returning a `tensogram::message`.
@@ -236,17 +309,12 @@ public:
             cb(result<tensogram::message>::err(err, detail::error_message_from_last()));
             return;
         }
-        std::thread([task, cb = std::move(cb)]() mutable {
-            tgm_message_t* raw = nullptr;
-            tgm_error e = tgm_async_task_join_message(task, &raw);
-            if (e == TGM_ERROR_OK) {
-                cb(result<tensogram::message>::ok_value(
-                    tensogram::detail::message_from_raw(raw)));
-            } else {
-                cb(result<tensogram::message>::err(e, detail::error_message_from_last()));
-            }
-            tgm_async_task_free(task);
-        }).detach();
+        auto* state = new detail::completion_state<tensogram::message>{std::move(cb), task};
+        tgm_async_task_set_completion(
+            task,
+            &detail::trampoline_join_convert<tensogram::message, tgm_message_t*,
+                &tgm_async_task_join_message, &detail::message_from_raw_handle>,
+            state);
     }
 
     /// Async decode of metadata only.
@@ -264,17 +332,12 @@ public:
             cb(result<tensogram::metadata>::err(err, detail::error_message_from_last()));
             return;
         }
-        std::thread([task, cb = std::move(cb)]() mutable {
-            tgm_metadata_t* raw = nullptr;
-            tgm_error e = tgm_async_task_join_metadata(task, &raw);
-            if (e == TGM_ERROR_OK) {
-                cb(result<tensogram::metadata>::ok_value(
-                    tensogram::detail::metadata_from_raw(raw)));
-            } else {
-                cb(result<tensogram::metadata>::err(e, detail::error_message_from_last()));
-            }
-            tgm_async_task_free(task);
-        }).detach();
+        auto* state = new detail::completion_state<tensogram::metadata>{std::move(cb), task};
+        tgm_async_task_set_completion(
+            task,
+            &detail::trampoline_join_convert<tensogram::metadata, tgm_metadata_t*,
+                &tgm_async_task_join_metadata, &detail::metadata_from_raw_handle>,
+            state);
     }
 
     /// Async raw read of message bytes.
@@ -292,18 +355,13 @@ public:
             cb(result<std::vector<std::uint8_t>>::err(err, detail::error_message_from_last()));
             return;
         }
-        std::thread([task, cb = std::move(cb)]() mutable {
-            tgm_bytes_t b{nullptr, 0};
-            tgm_error e = tgm_async_task_join_bytes(task, &b);
-            if (e == TGM_ERROR_OK) {
-                std::vector<std::uint8_t> v(b.data, b.data + b.len);
-                tgm_bytes_free(b);
-                cb(result<std::vector<std::uint8_t>>::ok_value(std::move(v)));
-            } else {
-                cb(result<std::vector<std::uint8_t>>::err(e, detail::error_message_from_last()));
-            }
-            tgm_async_task_free(task);
-        }).detach();
+        auto* state = new detail::completion_state<std::vector<std::uint8_t>>{
+            std::move(cb), task};
+        tgm_async_task_set_completion(
+            task,
+            &detail::trampoline_join_convert<std::vector<std::uint8_t>, tgm_bytes_t,
+                &tgm_async_task_join_bytes, &detail::bytes_to_vector>,
+            state);
     }
 
     /// Internal helper: raw FFI handle.  Reserved for the
@@ -316,6 +374,34 @@ private:
 
     explicit async_file(tgm_async_file_t* raw)
         : handle_(raw, &tgm_async_file_close) {}
+
+    /// Inline-defined here so the trampoline can construct an
+    /// `async_file` from a raw FFI handle without exposing the
+    /// constructor publicly.
+    static void register_async_file_completion(
+        tgm_async_task_t* task,
+        std::function<void(result<async_file>)> cb) {
+        struct State {
+            std::function<void(result<async_file>)> cb;
+            tgm_async_task_t* task;
+        };
+        auto* state = new State{std::move(cb), task};
+        tgm_async_task_set_completion(
+            task,
+            [](void* userdata) noexcept {
+                auto* s = static_cast<State*>(userdata);
+                tgm_async_file_t* raw = nullptr;
+                tgm_error e = tgm_async_task_join_async_file(s->task, &raw);
+                if (e == TGM_ERROR_OK) {
+                    s->cb(result<async_file>::ok_value(async_file(raw)));
+                } else {
+                    s->cb(result<async_file>::err(e, detail::error_message_from_last()));
+                }
+                tgm_async_task_free(s->task);
+                delete s;
+            },
+            state);
+    }
 };
 
 // ============================================================
@@ -330,7 +416,8 @@ public:
     async_streaming_encoder& operator=(const async_streaming_encoder&) = delete;
 
     /// Create an async streaming encoder writing to a local file.
-    /// `cb` fires once with the constructed handle (or an error).
+    /// `cb` fires once on the FFI dispatcher pool with the
+    /// constructed handle (or an error).
     static void create(const std::string& path,
                        const std::string& metadata_json,
                        std::function<void(result<async_streaming_encoder>)> cb,
@@ -351,18 +438,28 @@ public:
             cb(result<async_streaming_encoder>::err(err, detail::error_message_from_last()));
             return;
         }
-        std::thread([task, cb = std::move(cb)]() mutable {
-            tgm_async_streaming_encoder_t* raw = nullptr;
-            tgm_error e = tgm_async_task_join_async_streaming_encoder(task, &raw);
-            if (e == TGM_ERROR_OK) {
-                cb(result<async_streaming_encoder>::ok_value(
-                    async_streaming_encoder(raw)));
-            } else {
-                cb(result<async_streaming_encoder>::err(
-                    e, detail::error_message_from_last()));
-            }
-            tgm_async_task_free(task);
-        }).detach();
+        struct State {
+            std::function<void(result<async_streaming_encoder>)> cb;
+            tgm_async_task_t* task;
+        };
+        auto* state = new State{std::move(cb), task};
+        tgm_async_task_set_completion(
+            task,
+            [](void* userdata) noexcept {
+                auto* s = static_cast<State*>(userdata);
+                tgm_async_streaming_encoder_t* raw = nullptr;
+                tgm_error e = tgm_async_task_join_async_streaming_encoder(s->task, &raw);
+                if (e == TGM_ERROR_OK) {
+                    s->cb(result<async_streaming_encoder>::ok_value(
+                        async_streaming_encoder(raw)));
+                } else {
+                    s->cb(result<async_streaming_encoder>::err(
+                        e, detail::error_message_from_last()));
+                }
+                tgm_async_task_free(s->task);
+                delete s;
+            },
+            state);
     }
 
     /// Async write of an encoded data object.  `cb` fires with void
@@ -453,15 +550,8 @@ private:
             cb(result<void>::err(err, detail::error_message_from_last()));
             return;
         }
-        std::thread([task, cb_inner = std::move(cb)]() mutable {
-            tgm_error e = tgm_async_task_join_void(task);
-            if (e == TGM_ERROR_OK) {
-                cb_inner(result<void>::ok_value());
-            } else {
-                cb_inner(result<void>::err(e, detail::error_message_from_last()));
-            }
-            tgm_async_task_free(task);
-        }).detach();
+        auto* state = new detail::completion_state<void>{std::move(cb), task};
+        tgm_async_task_set_completion(task, &detail::trampoline_join_void, state);
     }
 };
 

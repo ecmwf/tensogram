@@ -323,23 +323,66 @@ pub extern "C" fn tgm_async_streaming_encoder_finish(
     spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
-/// Object count snapshot.  Returns `usize::MAX` on null.
+/// Status returned by `tgm_async_streaming_encoder_try_object_count`.
+///
+/// Distinguishes the three states the previous overloaded sentinel
+/// (`usize::MAX`) collapsed: invalid handle, busy with another in-flight
+/// FFI call, encoder already finished, and a valid count.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmObjectCountStatus {
+    /// `*out_count` is valid.
+    Ok = 0,
+    /// `enc` was NULL.
+    NullHandle = 1,
+    /// The encoder is currently locked by another in-flight async
+    /// operation (write/finish).  Try again after that operation
+    /// completes.
+    Busy = 2,
+    /// `tgm_async_streaming_encoder_finish` has already consumed the
+    /// encoder; subsequent calls to other methods will error too.
+    Finished = 3,
+}
+
+/// Snapshot the encoder's object count without blocking.  Returns a
+/// status describing whether `*out_count` is valid.
+///
+/// Use this in preference to the convenience accessor when you need
+/// to distinguish "0 objects written so far" from "handle invalid"
+/// or "encoder already finished".
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_async_streaming_encoder_try_object_count(
+    enc: *const TgmAsyncStreamingEncoder,
+    out_count: *mut usize,
+) -> TgmObjectCountStatus {
+    if enc.is_null() || out_count.is_null() {
+        return TgmObjectCountStatus::NullHandle;
+    }
+    let inner = unsafe { &*enc }.inner.clone();
+    match inner.try_lock() {
+        Ok(g) => match g.as_ref() {
+            Some(e) => {
+                unsafe { *out_count = e.object_count() };
+                TgmObjectCountStatus::Ok
+            }
+            None => TgmObjectCountStatus::Finished,
+        },
+        Err(_) => TgmObjectCountStatus::Busy,
+    }
+}
+
+/// Convenience: object count as a single number, with the historical
+/// `usize::MAX` sentinel covering all "not OK" outcomes (null handle,
+/// busy, finished).  Callers that need to discriminate should use
+/// [`tgm_async_streaming_encoder_try_object_count`] instead.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_async_streaming_encoder_object_count(
     enc: *const TgmAsyncStreamingEncoder,
 ) -> usize {
-    if enc.is_null() {
-        return usize::MAX;
-    }
-    let inner = unsafe { &*enc }.inner.clone();
-    // try_lock to avoid blocking the calling thread; if locked,
-    // return usize::MAX as a "busy" sentinel.
-    match inner.try_lock() {
-        Ok(g) => match g.as_ref() {
-            Some(e) => e.object_count(),
-            None => usize::MAX,
-        },
-        Err(_) => usize::MAX,
+    let mut count: usize = 0;
+    match tgm_async_streaming_encoder_try_object_count(enc, &mut count) {
+        TgmObjectCountStatus::Ok => count,
+        _ => usize::MAX,
     }
 }
 

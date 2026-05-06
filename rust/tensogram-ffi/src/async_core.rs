@@ -29,6 +29,18 @@ use tensogram::{
     TensogramFile,
 };
 
+/// Async-task outcome.  Distinguishes timeout / cancellation /
+/// inner-error structurally so the FFI bridge can map them to the
+/// matching [`TgmError`] codes without inspecting message strings
+/// (the previous approach was brittle: any unrelated `Encoding` error
+/// whose message happened to match would be misclassified).
+pub(crate) enum AsyncOutcome {
+    Ok(TaskResult),
+    Timeout,
+    Cancelled,
+    Inner(TensogramError),
+}
+
 use crate::{TgmBytes, TgmError, TgmMessage, TgmMetadata, set_last_error, to_error_code};
 
 // ---------------------------------------------------------------------------
@@ -63,9 +75,100 @@ fn num_cpus_or_default() -> u32 {
 
 static RUNTIME_CONFIG: OnceLock<RuntimeConfig> = OnceLock::new();
 static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+static DISPATCHER: OnceLock<DispatcherPool> = OnceLock::new();
 
 fn runtime_config() -> &'static RuntimeConfig {
     RUNTIME_CONFIG.get_or_init(RuntimeConfig::default)
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher pool — runs user completion callbacks off the tokio runtime.
+//
+// Per `plans/PLAN_CPP_ASYNC.md` §4.1 callback contract, completion
+// callbacks must NOT execute on a tokio worker thread directly: a
+// blocking or slow callback would stall the runtime.  This pool sits
+// between `complete()` (the tokio resolver) and the user callback,
+// running each callback on a dedicated dispatcher thread.
+//
+// Sized via [`RuntimeConfig::dispatcher_workers`].  A single
+// `mpsc::SyncSender` feeds N parking workers; jobs are FIFO.  When
+// the channel sender is dropped at process exit the workers exit
+// cleanly.
+// ---------------------------------------------------------------------------
+
+struct DispatcherJob {
+    cb: extern "C" fn(*mut c_void),
+    /// Stored as `usize` because raw pointers aren't `Send`.  The
+    /// integer is round-tripped to the original pointer by the worker.
+    /// SAFETY: the user's callback contract requires `userdata` to be
+    /// either NULL or to point to memory the user keeps alive until
+    /// the callback fires.
+    userdata: usize,
+}
+
+// SAFETY: see field comment above.
+unsafe impl Send for DispatcherJob {}
+
+struct DispatcherPool {
+    sender: std::sync::mpsc::SyncSender<DispatcherJob>,
+    _workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+fn dispatcher_pool() -> &'static DispatcherPool {
+    DISPATCHER.get_or_init(|| {
+        let workers = runtime_config().dispatcher_workers.max(1) as usize;
+        // Bounded channel so a runaway producer can't grow the queue
+        // without bound; the bound is generous (4× workers) to avoid
+        // backpressure stalls in the common case.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<DispatcherJob>(workers * 4);
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        let mut handles = Vec::with_capacity(workers);
+        for i in 0..workers {
+            let rx = std::sync::Arc::clone(&rx);
+            let h = std::thread::Builder::new()
+                .name(format!("tensogram-dispatch-{i}"))
+                .spawn(move || {
+                    loop {
+                        // Lock the receiver, recv, drop the lock before
+                        // running the callback so other workers can
+                        // pull jobs while this one is busy.
+                        let job = {
+                            let guard = rx.lock().expect("dispatcher rx poisoned");
+                            match guard.recv() {
+                                Ok(j) => j,
+                                Err(_) => break, // sender dropped → shutdown
+                            }
+                        };
+                        (job.cb)(job.userdata as *mut c_void);
+                    }
+                })
+                .expect("dispatcher worker spawn");
+            handles.push(h);
+        }
+        DispatcherPool {
+            sender: tx,
+            _workers: handles,
+        }
+    })
+}
+
+/// Enqueue a user callback for execution on the dispatcher pool.
+///
+/// Falls back to inline execution on the calling thread only if the
+/// pool's bounded channel is full (extreme overload — the runtime is
+/// producing completions faster than the workers can drain them).
+/// In practice this should never fire under normal load.
+fn dispatch_to_pool(cb: extern "C" fn(*mut c_void), userdata: *mut c_void) {
+    let job = DispatcherJob {
+        cb,
+        userdata: userdata as usize,
+    };
+    if let Err(std::sync::mpsc::TrySendError::Full(job)) = dispatcher_pool().sender.try_send(job) {
+        // Channel full: dispatch on the calling thread.  This is a
+        // graceful-degradation path; users who hit it should bump
+        // `dispatcher_workers` via `tgm_runtime_configure`.
+        (job.cb)(job.userdata as *mut c_void);
+    }
 }
 
 fn runtime() -> Result<&'static tokio::runtime::Runtime, &'static str> {
@@ -114,8 +217,13 @@ enum TaskState {
 
 struct TaskInner {
     state: TaskState,
-    result: Option<Result<TaskResult, TensogramError>>,
+    result: Option<AsyncOutcome>,
     completion_cb: Option<extern "C" fn(*mut c_void)>,
+    /// Becomes `true` once `set_completion` has been called, even if
+    /// the registered callback has already fired (and `completion_cb`
+    /// is therefore `None`).  Enforces the documented exactly-once
+    /// contract regardless of task state.
+    completion_registered: bool,
     completion_userdata: *mut c_void,
 }
 
@@ -160,6 +268,7 @@ impl TaskShared {
                 state: TaskState::Pending,
                 result: None,
                 completion_cb: None,
+                completion_registered: false,
                 completion_userdata: std::ptr::null_mut(),
             }),
             ready: Condvar::new(),
@@ -170,7 +279,11 @@ impl TaskShared {
 
     /// Mark the task as Ready and dispatch the completion callback if
     /// one was registered.  Called once per task by the runtime.
-    fn complete(&self, result: Result<TaskResult, TensogramError>) {
+    ///
+    /// The callback is enqueued on the dispatcher pool so it runs on
+    /// a non-tokio thread (per the §4.1 callback contract); a slow or
+    /// blocking user callback therefore cannot stall the runtime.
+    fn complete(&self, result: AsyncOutcome) {
         let cb_to_fire = {
             let mut inner = self.state.lock().expect("task mutex poisoned");
             if inner.state != TaskState::Pending {
@@ -180,8 +293,8 @@ impl TaskShared {
             inner.result = Some(result);
             inner.state = TaskState::Ready;
             // Snapshot the callback so we can release the lock before
-            // firing it.  The callback may call into FFI again and we
-            // must not hold the task mutex across that boundary.
+            // dispatching.  The dispatch path itself does not call any
+            // user code while the task lock is held.
             inner.completion_cb.take().map(|cb| {
                 (
                     cb,
@@ -191,7 +304,7 @@ impl TaskShared {
         };
         self.ready.notify_all();
         if let Some((cb, userdata)) = cb_to_fire {
-            cb(userdata);
+            dispatch_to_pool(cb, userdata);
         }
     }
 }
@@ -215,41 +328,29 @@ where
     let task_token = shared.cancel.clone();
 
     rt.spawn(async move {
-        let outcome = if timeout_ms > 0 {
+        let outcome: AsyncOutcome = if timeout_ms > 0 {
             let deadline = Duration::from_millis(timeout_ms);
             tokio::select! {
-                _ = task_token.cancelled() => Err(TensogramError::Encoding(
-                    "async task cancelled".to_string(),
-                )),
+                _ = task_token.cancelled() => AsyncOutcome::Cancelled,
                 res = tokio::time::timeout(deadline, fut) => match res {
-                    Ok(inner) => inner,
-                    Err(_elapsed) => Err(TensogramError::Encoding(
-                        "async task timed out".to_string(),
-                    )),
+                    Ok(Ok(v)) => AsyncOutcome::Ok(v),
+                    Ok(Err(e)) => AsyncOutcome::Inner(e),
+                    Err(_elapsed) => AsyncOutcome::Timeout,
                 },
             }
         } else {
             tokio::select! {
-                _ = task_token.cancelled() => Err(TensogramError::Encoding(
-                    "async task cancelled".to_string(),
-                )),
-                res = fut => res,
+                _ = task_token.cancelled() => AsyncOutcome::Cancelled,
+                res = fut => match res {
+                    Ok(v) => AsyncOutcome::Ok(v),
+                    Err(e) => AsyncOutcome::Inner(e),
+                },
             }
         };
         shared_clone.complete(outcome);
     });
 
     Ok(Box::into_raw(Box::new(TgmAsyncTask { inner: shared })))
-}
-
-/// Internal helper: classify an error into `Cancelled` / `Timeout` /
-/// generic.  Looks at the message we set in [`spawn_task`] above.
-fn classify_async_error(e: &TensogramError) -> TgmError {
-    match e {
-        TensogramError::Encoding(s) if s == "async task cancelled" => TgmError::Cancelled,
-        TensogramError::Encoding(s) if s == "async task timed out" => TgmError::Timeout,
-        other => to_error_code(other),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -305,11 +406,24 @@ pub extern "C" fn tgm_cancellation_token_free(tok: *mut TgmCancellationToken) {
 // ---------------------------------------------------------------------------
 
 /// Register a completion callback on `task`.  Must be called exactly
-/// once.  The callback fires on a dispatcher pool worker (NOT a tokio
-/// worker) and must obey the §4.1 contract documented in the plan.
+/// once per task; subsequent calls return [`TgmError::InvalidArg`]
+/// regardless of whether the task is still pending or already
+/// resolved.
 ///
-/// If the task has already resolved, the callback is invoked inline
-/// on the calling thread before the function returns.
+/// The callback fires on a **dispatcher pool worker** (a non-tokio
+/// thread owned by `tensogram-ffi`), so a slow or blocking callback
+/// does not stall the runtime.  See `plans/PLAN_CPP_ASYNC.md` §4.1
+/// for the full contract: callbacks must complete quickly, must not
+/// throw, and must not block on locks held by the caller of any
+/// other tgm_* function on this thread.
+///
+/// If the task has already resolved when this function is called,
+/// the callback is enqueued on the dispatcher pool immediately so
+/// the worker runs the user code on a dispatcher thread.  Under
+/// extreme overload (the dispatcher's bounded queue is full) the
+/// callback may run inline on the caller's thread as a graceful-
+/// degradation path; bump `dispatcher_workers` via
+/// `tgm_runtime_configure` to avoid this.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_async_task_set_completion(
     task: *mut TgmAsyncTask,
@@ -324,13 +438,18 @@ pub extern "C" fn tgm_async_task_set_completion(
 
     // Snapshot whether we should fire inline (state already Ready) or
     // store the callback for the resolver to fire later.  Lock is held
-    // only across the inspect-and-store step.
+    // only across the inspect-and-store step.  Exactly-once is enforced
+    // by the persistent `completion_registered` flag — `completion_cb`
+    // alone isn't enough because it gets `take()`n out by `complete()`
+    // when the callback fires (so a Ready-state callsite would see
+    // `None` and incorrectly accept a second registration).
     let fire_inline = {
         let mut inner = t.inner.state.lock().expect("task mutex poisoned");
-        if inner.completion_cb.is_some() {
+        if inner.completion_registered {
             set_last_error("completion callback already registered");
             return TgmError::InvalidArg;
         }
+        inner.completion_registered = true;
         match inner.state {
             TaskState::Pending => {
                 inner.completion_cb = Some(cb);
@@ -346,7 +465,7 @@ pub extern "C" fn tgm_async_task_set_completion(
     };
 
     if fire_inline {
-        cb(userdata);
+        dispatch_to_pool(cb, userdata);
     }
     TgmError::Ok
 }
@@ -400,11 +519,21 @@ pub(crate) fn join_internal(task: *mut TgmAsyncTask) -> Result<TaskResult, TgmEr
     let res = inner.result.take().expect("ready task missing result");
     inner.state = TaskState::Consumed;
     drop(inner);
-    res.map_err(|e| {
-        let code = classify_async_error(&e);
-        set_last_error(&e.to_string());
-        code
-    })
+    match res {
+        AsyncOutcome::Ok(v) => Ok(v),
+        AsyncOutcome::Timeout => {
+            set_last_error("async task timed out");
+            Err(TgmError::Timeout)
+        }
+        AsyncOutcome::Cancelled => {
+            set_last_error("async task cancelled");
+            Err(TgmError::Cancelled)
+        }
+        AsyncOutcome::Inner(e) => {
+            set_last_error(&e.to_string());
+            Err(to_error_code(&e))
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -657,8 +786,13 @@ pub extern "C" fn tgm_async_file_open(
     spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
-#[cfg(feature = "async-remote")]
+/// Open a remote `.tgm` (S3 / GCS / Azure / HTTP).  Always exported
+/// at the C ABI level so consumers linking the cdylib never see an
+/// undefined symbol; when the `async-remote` Cargo feature is off
+/// the function returns [`TgmError::Remote`] with a clear
+/// `tgm_last_error()` message instead of dispatching.
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_async_file_open_remote(
     url: *const c_char,
     storage_keys: *const *const c_char,
@@ -669,64 +803,88 @@ pub extern "C" fn tgm_async_file_open_remote(
     timeout_ms: u64,
     out_task: *mut *mut TgmAsyncTask,
 ) -> TgmError {
-    if url.is_null() || out_task.is_null() {
-        set_last_error("null argument");
-        return TgmError::InvalidArg;
+    #[cfg(not(feature = "async-remote"))]
+    {
+        let _ = (
+            url,
+            storage_keys,
+            storage_values,
+            nopts,
+            bidirectional,
+            cancel,
+            timeout_ms,
+            out_task,
+        );
+        set_last_error(
+            "tgm_async_file_open_remote: this build of tensogram-ffi was compiled \
+             without the `async-remote` Cargo feature; rebuild with --features=async-remote \
+             to enable S3/GCS/Azure/HTTP support",
+        );
+        TgmError::Remote
     }
-    let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
-        Ok(s) => s.to_string(),
-        Err(e) => {
-            set_last_error(&format!("invalid UTF-8 in url: {e}"));
+
+    #[cfg(feature = "async-remote")]
+    {
+        if url.is_null() || out_task.is_null() {
+            set_last_error("null argument");
             return TgmError::InvalidArg;
         }
-    };
-    let mut storage = std::collections::BTreeMap::new();
-    if nopts > 0 {
-        if storage_keys.is_null() || storage_values.is_null() {
-            set_last_error("null storage opts pointer");
-            return TgmError::InvalidArg;
-        }
-        for i in 0..nopts {
-            let kp = unsafe { *storage_keys.add(i) };
-            let vp = unsafe { *storage_values.add(i) };
-            if kp.is_null() || vp.is_null() {
-                set_last_error("null storage opt entry");
+        let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
+            Ok(s) => s.to_string(),
+            Err(e) => {
+                set_last_error(&format!("invalid UTF-8 in url: {e}"));
                 return TgmError::InvalidArg;
             }
-            let k = match unsafe { CStr::from_ptr(kp) }.to_str() {
-                Ok(s) => s.to_string(),
-                Err(e) => {
-                    set_last_error(&format!("invalid UTF-8 in storage key: {e}"));
+        };
+        let mut storage = std::collections::BTreeMap::new();
+        if nopts > 0 {
+            if storage_keys.is_null() || storage_values.is_null() {
+                set_last_error("null storage opts pointer");
+                return TgmError::InvalidArg;
+            }
+            for i in 0..nopts {
+                let kp = unsafe { *storage_keys.add(i) };
+                let vp = unsafe { *storage_values.add(i) };
+                if kp.is_null() || vp.is_null() {
+                    set_last_error("null storage opt entry");
                     return TgmError::InvalidArg;
                 }
-            };
-            let v = match unsafe { CStr::from_ptr(vp) }.to_str() {
-                Ok(s) => s.to_string(),
-                Err(e) => {
-                    set_last_error(&format!("invalid UTF-8 in storage value: {e}"));
-                    return TgmError::InvalidArg;
-                }
-            };
-            storage.insert(k, v);
+                let k = match unsafe { CStr::from_ptr(kp) }.to_str() {
+                    Ok(s) => s.to_string(),
+                    Err(e) => {
+                        set_last_error(&format!("invalid UTF-8 in storage key: {e}"));
+                        return TgmError::InvalidArg;
+                    }
+                };
+                let v = match unsafe { CStr::from_ptr(vp) }.to_str() {
+                    Ok(s) => s.to_string(),
+                    Err(e) => {
+                        set_last_error(&format!("invalid UTF-8 in storage value: {e}"));
+                        return TgmError::InvalidArg;
+                    }
+                };
+                storage.insert(k, v);
+            }
         }
-    }
-    let cancel_ref = if cancel.is_null() {
-        None
-    } else {
-        Some(unsafe { &*cancel })
-    };
+        let cancel_ref = if cancel.is_null() {
+            None
+        } else {
+            Some(unsafe { &*cancel })
+        };
 
-    let scan_opts = tensogram::RemoteScanOptions { bidirectional };
-    let url_for_task = url_str.clone();
-    let fut = async move {
-        let f = TensogramFile::open_remote_async(&url_for_task, &storage, Some(scan_opts)).await?;
-        let path_string = CString::new(url_for_task.as_str()).unwrap_or_default();
-        Ok(TaskResult::AsyncFile(Box::new(TgmAsyncFile {
-            file: Arc::new(f),
-            path_string,
-        })))
-    };
-    spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
+        let scan_opts = tensogram::RemoteScanOptions { bidirectional };
+        let url_for_task = url_str.clone();
+        let fut = async move {
+            let f =
+                TensogramFile::open_remote_async(&url_for_task, &storage, Some(scan_opts)).await?;
+            let path_string = CString::new(url_for_task.as_str()).unwrap_or_default();
+            Ok(TaskResult::AsyncFile(Box::new(TgmAsyncFile {
+                file: Arc::new(f),
+                path_string,
+            })))
+        };
+        spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
+    }
 }
 
 // ---------------------------------------------------------------------------

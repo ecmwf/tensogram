@@ -92,14 +92,24 @@ tac::async_file::open("data.tgm", [](tac::result<tac::async_file> r) {
 
 ### Callback contract
 
-The callback runs on a worker thread inside the FFI's runtime.  It must:
-- Complete quickly (< 100 µs of CPU time).
-- Not block on locks held outside the callback.
-- Not throw — `panic = "abort"` is set on the Rust side, so an
-  exception escaping a callback will terminate the process.
-- Signal a condvar / coroutine handle / promise and return.
+The callback runs on the FFI **dispatcher pool** — a small set of
+non-tokio worker threads owned by `tensogram-ffi`.  This insulates
+the tokio runtime: even if a user callback blocks or runs slowly,
+tokio's worker threads stay free to drive other in-flight async I/O.
 
-For heavy work, hand off to the user's own thread pool.
+The callback must:
+- Complete quickly (< 100 µs of CPU time).  The dispatcher pool is
+  small (default `min(num_cpus, 4)`); long callbacks queue up and
+  starve other completions.
+- Not throw — `panic = "abort"` is set on the Rust side and the
+  trampolines that wrap user callbacks are `noexcept`, so an
+  exception escaping a callback will terminate the process.
+- Signal a condvar / coroutine handle / promise and return.  For
+  heavy work, hand off to your own thread pool.
+
+The pool size is overridable at startup via
+`tac::runtime_configure(workers, dispatcher_workers, ...)`.  The
+configuration must be set before any other async call.
 
 ## `std::future` frontend (`std_future.hpp`)
 

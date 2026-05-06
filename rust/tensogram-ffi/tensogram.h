@@ -76,6 +76,35 @@ typedef enum {
 } tgm_error;
 
 /**
+ * Status returned by `tgm_async_streaming_encoder_try_object_count`.
+ *
+ * Distinguishes the three states the previous overloaded sentinel
+ * (`usize::MAX`) collapsed: invalid handle, busy with another in-flight
+ * FFI call, encoder already finished, and a valid count.
+ */
+typedef enum {
+  /**
+   * `*out_count` is valid.
+   */
+  TGM_OBJECT_COUNT_STATUS_OK = 0,
+  /**
+   * `enc` was NULL.
+   */
+  TGM_OBJECT_COUNT_STATUS_NULL_HANDLE = 1,
+  /**
+   * The encoder is currently locked by another in-flight async
+   * operation (write/finish).  Try again after that operation
+   * completes.
+   */
+  TGM_OBJECT_COUNT_STATUS_BUSY = 2,
+  /**
+   * `tgm_async_streaming_encoder_finish` has already consumed the
+   * encoder; subsequent calls to other methods will error too.
+   */
+  TGM_OBJECT_COUNT_STATUS_FINISHED = 3,
+} TgmObjectCountStatus;
+
+/**
  * Async file handle backed by `Arc<TensogramFile>` so the same handle
  * is safely shareable across multiple in-flight tasks.
  */
@@ -934,11 +963,24 @@ void tgm_cancellation_token_free(tgm_cancellation_token_t *tok);
 
 /**
  * Register a completion callback on `task`.  Must be called exactly
- * once.  The callback fires on a dispatcher pool worker (NOT a tokio
- * worker) and must obey the §4.1 contract documented in the plan.
+ * once per task; subsequent calls return [`TgmError::InvalidArg`]
+ * regardless of whether the task is still pending or already
+ * resolved.
  *
- * If the task has already resolved, the callback is invoked inline
- * on the calling thread before the function returns.
+ * The callback fires on a **dispatcher pool worker** (a non-tokio
+ * thread owned by `tensogram-ffi`), so a slow or blocking callback
+ * does not stall the runtime.  See `plans/PLAN_CPP_ASYNC.md` §4.1
+ * for the full contract: callbacks must complete quickly, must not
+ * throw, and must not block on locks held by the caller of any
+ * other tgm_* function on this thread.
+ *
+ * If the task has already resolved when this function is called,
+ * the callback is enqueued on the dispatcher pool immediately so
+ * the worker runs the user code on a dispatcher thread.  Under
+ * extreme overload (the dispatcher's bounded queue is full) the
+ * callback may run inline on the caller's thread as a graceful-
+ * degradation path; bump `dispatcher_workers` via
+ * `tgm_runtime_configure` to avoid this.
  */
 tgm_error tgm_async_task_set_completion(tgm_async_task_t *task, void (*cb)(void*), void *userdata);
 
@@ -986,6 +1028,13 @@ tgm_error tgm_async_file_open(const char *path,
                               uint64_t timeout_ms,
                               tgm_async_task_t **out_task);
 
+/**
+ * Open a remote `.tgm` (S3 / GCS / Azure / HTTP).  Always exported
+ * at the C ABI level so consumers linking the cdylib never see an
+ * undefined symbol; when the `async-remote` Cargo feature is off
+ * the function returns [`TgmError::Remote`] with a clear
+ * `tgm_last_error()` message instead of dispatching.
+ */
 tgm_error tgm_async_file_open_remote(const char *url,
                                      const char *const *storage_keys,
                                      const char *const *storage_values,
@@ -1124,7 +1173,21 @@ tgm_error tgm_async_streaming_encoder_finish(tgm_async_streaming_encoder_t *enc,
                                              tgm_async_task_t **out_task);
 
 /**
- * Object count snapshot.  Returns `usize::MAX` on null.
+ * Snapshot the encoder's object count without blocking.  Returns a
+ * status describing whether `*out_count` is valid.
+ *
+ * Use this in preference to the convenience accessor when you need
+ * to distinguish "0 objects written so far" from "handle invalid"
+ * or "encoder already finished".
+ */
+TgmObjectCountStatus tgm_async_streaming_encoder_try_object_count(const tgm_async_streaming_encoder_t *enc,
+                                                                  size_t *out_count);
+
+/**
+ * Convenience: object count as a single number, with the historical
+ * `usize::MAX` sentinel covering all "not OK" outcomes (null handle,
+ * busy, finished).  Callers that need to discriminate should use
+ * [`tgm_async_streaming_encoder_try_object_count`] instead.
  */
 size_t tgm_async_streaming_encoder_object_count(const tgm_async_streaming_encoder_t *enc);
 
