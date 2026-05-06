@@ -50,16 +50,14 @@ Three-layer design:
 │ User code (C++17 or C++20)                                          │
 └────────────────────────────────────────────────────────────────────┘
                               │
-                              │ #include <tensogram/async/coro.hpp>
-                              │   or std_future.hpp / asio.hpp / core.hpp
+                              │ #include <tensogram/async/callback.hpp>
+                              │   or coro.hpp / std_future.hpp
                               ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │ C++ frontend headers (header-only, opt-in)                          │
-│  • async/core.hpp        callback-based, C++17, always available    │
+│  • async/callback.hpp    callback-based, C++17, always available    │
 │  • async/coro.hpp        C++20 task<T> coroutines (opt-in)          │
 │  • async/std_future.hpp  std::future<T> wrappers (opt-in)           │
-│  • async/asio.hpp        Boost.Asio awaitables (slot reserved)      │
-│  • async/folly.hpp       Folly SemiFuture wrappers (slot reserved)  │
 └────────────────────────────────────────────────────────────────────┘
                               │
                               │ all frontends call the same FFI
@@ -82,8 +80,9 @@ Three-layer design:
 **Key invariant.** Every C++ frontend boils down to the same
 callback-based FFI core.  We never duplicate the "async work
 machinery" — it lives once at the FFI boundary, and every frontend is
-a thin syntactic adapter.  This is what makes adding Asio/Folly
-frontends later a header-only edit, not a re-architecture.
+a thin syntactic adapter.  Three frontends ship in v1; further
+frontends (e.g. external-runtime adapters) can be added later as
+header-only files without re-architecture.
 
 ---
 
@@ -335,17 +334,63 @@ future is dropped at the next yield point.
 Both states are terminal; the task transitions to the C++-visible
 `Ready` state with the appropriate error code on join.
 
+### 3.6 Task lifecycle and the `set_completion` race
+
+`tgm_async_task_t` holds a small atomic state machine:
+
+```text
+Pending  ─── future resolves ───────►  ResolvedNoCallback
+   │                                          │
+   │ set_completion(cb)                       │ set_completion(cb)
+   ▼                                          ▼
+Pending+Cb  ─── future resolves ───►  ResolvedCallbackFired
+```
+
+- `set_completion(cb)` uses a single CAS on the state word to install
+  the callback.  The CAS arms one of two outcomes:
+  - State was `Pending` → store `(Pending+Cb, cb_ptr)`.  When the
+    future resolves, the resolver atomically transitions to
+    `ResolvedCallbackFired` and dispatches `cb` on the dispatcher
+    pool.
+  - State was `ResolvedNoCallback` → atomically transition to
+    `ResolvedCallbackFired` and dispatch `cb` inline (still on the
+    caller's thread).
+- A second `set_completion` call on the same task observes the
+  callback already installed and returns `TGM_ERROR_INVALID_ARG`.
+- A `join_*` after `set_completion` is legal: the join blocks until
+  the state is `ResolvedCallbackFired`, then consumes the result.
+  The result is owned by exactly one of {callback, joiner}; the
+  encoder dictates which by configuration (default: result is
+  delivered to the callback if registered, else available via join).
+- A `join_*` without `set_completion` blocks the calling thread on
+  a condition variable signalled by the runtime.
+
+Each task holds a strong refcount on the cancellation token and a
+strong refcount on the parent file/encoder so the underlying handles
+cannot be freed while a task is in flight.  Pinned in
+`test_async_lifecycle.cpp` and `test_async_double_completion.cpp`.
+
+#### Result ownership across callback/join boundary
+
+If a callback is registered, the result is delivered to the
+callback's `result<T>` argument and **consumed** there.  A
+subsequent `tgm_async_task_join_*` returns `TGM_ERROR_INVALID_ARG`
+("result already consumed by callback").  Callers who want both
+must drain the result from the callback into a `std::promise<T>`
+and call `.get()` on the future — that's what the `std_future`
+frontend does internally.
+
 ---
 
 ## 4. C++ Frontends
 
-### 4.1 `async/core.hpp` — callback core (C++17, always available)
+### 4.1 `async/callback.hpp` — callback frontend (C++17, always available)
 
 The minimum-viable C++ surface.  All other frontends are layered on
 top of this one.
 
 ```cpp
-namespace tensogram::async_core {
+namespace tensogram::async_callback {
 
 // Opaque RAII handles
 class async_file;
@@ -405,17 +450,44 @@ public:
     // Non-copyable, move-only
 };
 
-}  // namespace tensogram::async_core
+}  // namespace tensogram::async_callback
 ```
 
 This frontend is **always available** even if no other frontend is
-included.  Its callback contract:
-- Callbacks fire on the tokio worker thread that resolved the future.
-- Callbacks must be cheap — they should signal a condition variable,
-  promise, coroutine handle, or executor task and return.  Doing
-  significant work on the tokio thread will starve the runtime.
+included.
+
+#### Callback contract (concrete bounds)
+
+The callback executes on the FFI's **dispatcher pool**, NOT on a
+tokio worker thread directly.  This is a deliberate insulation
+layer: even if user callbacks block, the tokio runtime is
+unaffected.  The dispatcher pool is sized at
+`min(num_cpus, 4)` worker threads by default and is configurable
+alongside the runtime via `tgm_runtime_configure`.
+
+The contract is:
+
+- **Must complete in < 100 µs of CPU time.**  The dispatcher pool is
+  small; long callbacks queue up and starve other completions.
+- **Must not allocate** in the hot path — prefer `noexcept`-decorated
+  operations that signal a condition variable, fulfil a
+  `std::promise`, or resume a `std::coroutine_handle<>`.  Lifting
+  heavy work to a downstream thread is the user's responsibility.
+- **Must not lock** any mutex that may be held outside the
+  dispatcher pool.  Two-step pattern recommended: callback signals
+  a `std::atomic<bool>` and notifies a condvar; consumer thread
+  drains.
+- **Must not throw.**  If a user callback throws, `panic = "abort"`
+  on the FFI side terminates the process.  The plan deliberately
+  does not silently swallow exceptions because doing so would mask
+  user bugs.
 - `result<T>::ok()` is the success/failure discriminator; check it
   before reading `value()`.
+
+Stress test pinned in §11.5: a synthetic workload that registers
+1000 callbacks, each running for `>= 1 ms`, must surface as
+backpressure (queue saturation) rather than tokio runtime starvation
+or deadlock.
 
 ### 4.2 `async/coro.hpp` — C++20 coroutines (opt-in)
 
@@ -577,23 +649,6 @@ Composition story is intentionally weak — `std::future<T>` has no
 `core` callback frontend instead (the future surface needs
 exceptions to propagate failures through `.get()`).
 
-### 4.4 `async/asio.hpp` — Boost.Asio awaitables (slot reserved)
-
-Header-only but **not shipped in v1**.  We design the FFI core to make
-this addable later as a single new header.  Sketch:
-
-```cpp
-namespace tensogram::asio {
-template <typename CompletionToken>
-auto async_open(const std::string& path, CompletionToken&& tok);
-// uses boost::asio::async_initiate to bridge into Asio's executor
-}
-```
-
-### 4.5 `async/folly.hpp` — Folly SemiFuture (slot reserved)
-
-Same: header-only, not shipped in v1, designed for additivity.
-
 ---
 
 ## 5. Streaming async writes (the producer path)
@@ -640,11 +695,51 @@ For the FFI entry point, the sink is selected from the URL/path:
 | `s3://…`, `gs://…`, `az://…` | `object_store::MultipartUpload`-backed adapter |
 | `https://…` (PUT-capable) | dedicated reqwest streaming sink |
 
-The remote object_store path is the trickiest: it needs to buffer
-into multipart parts (typically 5 MiB minimum on AWS S3) and flush on
-`finish`.  We adopt `object_store::MultipartUpload` directly — it
-handles the part sequencing, ETag bookkeeping, and final CompleteMultipartUpload
-call.
+#### Object-store buffering policy
+
+`object_store::MultipartUpload` accepts whole parts, not byte-streams,
+and AWS S3 enforces a **5 MiB minimum part size** (the last part is
+exempt).  GCS and Azure have similar but not identical thresholds.
+Tensogram frames are usually larger but can be smaller (header
+metadata frames, small index/hash frames, small first messages).
+
+The async encoder maintains an internal **part-buffer** sized
+`MULTIPART_PART_SIZE_BYTES` (default 8 MiB, overridable via
+`tgm_runtime_configure`).  Frames are appended to the buffer; when
+the buffer reaches the threshold, the buffered prefix is uploaded as
+one multipart part.  `finish()` uploads the buffer's residual
+contents as the final part (which is exempt from the minimum-size
+rule) and calls `CompleteMultipartUpload`.
+
+#### Retry / part-idempotency
+
+If `object_store` retries a part on transient network failure, the
+**same byte range must be uploaded byte-identically**.  The encoder
+guarantees this by:
+
+1. Holding each part-buffer until `MultipartUpload::put_part` returns
+   `Ok` — the part is not freed until the underlying store
+   acknowledges it.
+2. Hashing happens **once per part**, before upload.  The xxh3-64
+   inline-slot digest covers the whole frame body and is computed
+   in the calling thread before any object_store call.  Retry of a
+   part does **not** trigger a re-hash; the digest in the frame
+   footer is the value computed on first upload attempt.
+3. The encoder rejects any `put_part` failure that is not classified
+   as transient (e.g. 4xx errors) and surfaces it as
+   `TGM_ERROR_REMOTE`.  The `.tgm` file is not finalised; cancellation
+   semantics from §5.4 apply.
+
+#### Backend-specific notes
+
+| Backend | Quirks |
+|---|---|
+| AWS S3 | 5 MiB minimum part size; up to 10 000 parts per upload; `MultipartUpload` fully supported |
+| GCS | Resumable upload semantics; `object_store` translates `MultipartUpload` to resumable; no minimum part size |
+| Azure Blob | Block blob with 4 MiB block size default; `object_store` translates accordingly |
+
+Per-backend tests in PR 3 cover the happy path and one transient
+retry scenario.
 
 ### 5.3 Backfill behaviour
 
@@ -675,7 +770,7 @@ systems anyway.  The producer's caller is expected to detect failure
 (via the cancellation/timeout error) and route the partial file to
 quarantine or simply move on.
 
-### 5.4 Producer-side hash-while-writing
+### 5.5 Producer-side hash-while-writing
 
 The sync streaming encoder already does hash-while-encoding (per
 `pipeline::copy_and_hash`).  The async encoder reuses the same code
@@ -686,6 +781,19 @@ boundaries — so the determinism contract is identical:
 - Opaque codecs (blosc2, zstd with workers): may differ but always
   round-trip losslessly.
 
+#### Interaction with multipart retry
+
+The hash is computed **once per frame**, in the calling thread,
+before any object_store call.  If `object_store::MultipartUpload`
+retries a part — even one that contains the frame whose hash was
+just installed — the hash is **not** recomputed.  This guarantees:
+
+- Bit-exact correspondence between the frame's installed hash slot
+  and the bytes finally landed in the object store.
+- No double-hashing CPU overhead under retry.
+- Frame contents cannot drift between attempts because the encoder
+  never mutates a buffer after hashing it.
+
 ---
 
 ## 6. Runtime model
@@ -694,22 +802,34 @@ boundaries — so the determinism contract is identical:
 
 - `tensogram-ffi` owns the tokio runtime via the existing
   `SHARED_RUNTIME: OnceLock<Result<Runtime, String>>` in `remote.rs`.
-- The runtime is multi-thread, currently 2 worker threads (matching
-  the existing default).  A new FFI entry `tgm_runtime_configure(workers: u32)`
+- The runtime is multi-thread.  A new FFI entry
+  `tgm_runtime_configure(workers: u32, dispatcher_workers: u32, multipart_part_size_bytes: u64)`
   may be called **once, before any other tgm_async_*** call;
-  subsequent calls are no-ops.  Default workers = `min(num_cpus, 4)`
-  — chosen for HPC nodes which typically have many cores but where
-  Tensogram's network-bound async work doesn't benefit beyond ~4
-  workers.
+  subsequent calls return `TGM_ERROR_INVALID_ARG`.  Defaults:
+  - `workers = min(num_cpus, 8)` — chosen to give HPC nodes some
+    headroom over the original 2-worker remote backend default,
+    without over-provisioning since Tensogram's async work is mostly
+    network-bound.  PR 6 includes a benchmark that measures
+    saturation on a representative HPC node and may revise this
+    default before merge.
+  - `dispatcher_workers = min(num_cpus, 4)` — sized to handle
+    callback dispatch without blocking tokio workers (see §4.1
+    callback contract).
+  - `multipart_part_size_bytes = 8 * 1024 * 1024` (8 MiB) — see §5.2.
 - Direct exposure of the runtime handle, executor, or any tokio type
   is **explicitly forbidden** in the public C/C++ API.  No header
   ever includes a tokio type.
 - The C++ wrapper compiles without any tokio headers, build flags,
   or transitive dependencies.
-- Default workers = `min(num_cpus, 8)` — chosen to give HPC nodes
-  some headroom over the original 2-worker remote backend default,
-  without over-provisioning since Tensogram's async work is mostly
-  network-bound.  Override via `tgm_runtime_configure(workers)`.
+- Per-file isolation (separate runtime per `async_file`) is **not**
+  in v1.  Q8 resolution: defer to v2 if operational evidence
+  surfaces a need.
+- **Runtime build failure** at startup (e.g. on systems where tokio
+  cannot initialise due to ulimit or sandbox restrictions) is
+  cached in the `OnceLock` and surfaces to every subsequent
+  `tgm_async_*` call as `TGM_ERROR_IO` with a descriptive
+  `tgm_last_error()` string.  No retry; users must restart the
+  process after fixing the environment.
 
 ### Lifecycle
 
@@ -777,7 +897,7 @@ Errors are integer codes (existing `tgm_error` enum, plus new
 the FFI boundary — `panic = "abort"` is set, so any Rust panic
 terminates the process rather than unwinding through C.
 
-### 8.2 In `async/core.hpp`
+### 8.2 In `async/callback.hpp`
 
 `result<T>` is a `tl::expected`-style discriminated union.  No
 exceptions are thrown by callbacks; they always receive a
@@ -796,9 +916,33 @@ coroutine frontend.
 
 ### 8.5 `-fno-exceptions` build mode
 
-`async/core.hpp` is the only frontend usable under `-fno-exceptions`.
-This is documented; the coroutine and `std::future` frontends
-**require exceptions** because their type contracts demand it.
+`async/callback.hpp` is the only frontend usable under
+`-fno-exceptions`.  This is documented; the coroutine and
+`std::future` frontends **require exceptions** because their type
+contracts demand it.
+
+### 8.6 Rust panic propagation
+
+Tokio's worker traps panics in spawned tasks as task aborts; with
+`panic = "abort"` set globally on the workspace, **any panic in
+Rust async code terminates the process immediately** rather than
+unwinding through the C ABI.
+
+This is the same contract as the existing sync surface and is
+relied upon by every binding.  The plan does not add any
+panic-recovery layer:
+
+- A panic in encode/decode is a library bug; users see a clean
+  process abort with the panic message on stderr.
+- A user callback that throws (in `async/callback.hpp`) is treated
+  the same — `panic = "abort"` covers the C++→Rust→`panic_unwind`
+  path.
+- No `TGM_ERROR_PANIC` code is introduced; panics are not
+  recoverable.
+
+Rationale: introducing panic recovery would create silent failure
+modes that mask library bugs.  The strict-input philosophy of the
+codebase (§ existing AGENTS.md) is preserved.
 
 ---
 
@@ -836,8 +980,9 @@ handle is invalid for further joins (returns
 
 - **External tokio interop.**  Users supplying their own tokio
   runtime to host Tensogram's async work.
-- **Asio frontend** (`async/asio.hpp`).  Designed for, not shipped.
-- **Folly frontend** (`async/folly.hpp`).  Designed for, not shipped.
+- **Boost.Asio / Folly frontends.**  Removed from the plan; can be
+  added later as additive header-only files if a concrete user
+  surfaces.
 - **Observability hooks.**  `tracing` events are not exposed to C++.
   Deferred until a clear demand surfaces (likely
   `tgm_runtime_set_log_callback` later).
@@ -850,8 +995,14 @@ handle is invalid for further joins (returns
   per-message async `decode_message` on the file type; an explicit
   "stream open from byte zero, get one message at a time" API can be
   added later if needed (it's syntactic sugar on top).
-- **Async iteration helpers** (`async_for_each` etc.).  Easy to
-  build on the coro frontend; ship the primitive first.
+- **Python parity for streaming-async-write.**  The existing
+  `AsyncTensogramFile` (Python) does not gain streaming-async-write
+  in this scope.  The existing per-message async decode methods are
+  unchanged.  Tracked as a v2 item.
+- **Per-file runtime isolation.**  Single global runtime config in
+  v1 (Q8); per-file isolation deferred.
+- **Credential rotation for long-running producers.**  STS tokens
+  expiring mid-stream are out of scope (Q12).
 
 ---
 
@@ -875,7 +1026,7 @@ handle is invalid for further joins (returns
 
 Mirror the Python `test_async.py` taxonomy:
 
-- `test_async_core_callback.cpp` — `async/core.hpp` happy path for
+- `test_async_callback.cpp` — `async/callback.hpp` happy path for
   every entry point.
 - `test_async_coro.cpp` — `async/coro.hpp` happy path; requires C++20.
 - `test_async_stdfuture.cpp` — `async/std_future.hpp` happy path.
@@ -888,8 +1039,13 @@ Mirror the Python `test_async.py` taxonomy:
   threads; concurrent decode_message calls succeed.
 - `test_async_lifecycle.cpp` — handle/task ownership invariants
   (double-free, use-after-free guards).
-- `test_async_cross_frontend.cpp` — same workload via `core`,
+- `test_async_cross_frontend.cpp` — same workload via `callback`,
   `coro`, and `std_future`; all produce identical decoded bytes.
+- `test_async_callback_contract.cpp` — pins the §4.1 contract
+  bounds: 1000 callbacks each running ≥ 1 ms must surface as
+  dispatcher backpressure rather than tokio runtime starvation;
+  callback throwing aborts cleanly; callback allocating in hot
+  path is detected by ASAN/leak-counter.
 
 ### 11.3 New cross-language parity tests
 
@@ -912,24 +1068,70 @@ Mirror the Python `test_async.py` taxonomy:
 - `examples/cpp/21_async_consumer.cpp` — pipelined decode of a remote
   file.
 - `examples/cpp/22_async_callback.cpp` — same as 19 but using the
-  `core` callback frontend.
+  `callback` frontend.
 - `examples/cpp/23_async_stdfuture.cpp` — `std::future` flavour.
 - `examples/cpp/24_async_cancellation.cpp` — show timeout + cancel.
+
+### 11.5 Concurrent failure-mode tests (new)
+
+Production-bug-shaped scenarios that the happy-path matrix won't
+catch:
+
+- `test_async_concurrent_cancel.cpp` — 4 threads issuing
+  `decode_message` while a 5th thread fires `cancel()` on a shared
+  token; all 4 transition to `TGM_ERROR_CANCELLED` cleanly; no
+  task leaks.
+- `test_async_shutdown_during_flight.cpp` — `tgm_runtime_shutdown_blocking`
+  called while N tasks are mid-flight; returns the count of
+  unfinished tasks; subsequent `tgm_async_*` calls on already-built
+  handles return `TGM_ERROR_IO`.
+- `test_async_double_join.cpp` — `tgm_async_task_join_*` called
+  twice on the same task returns `TGM_ERROR_INVALID_ARG` on the
+  second call; result is consumed exactly once.
+- `test_async_double_completion.cpp` — `tgm_async_task_set_completion`
+  called twice on the same task returns `TGM_ERROR_INVALID_ARG`.
+- `test_async_token_after_task.cpp` — token freed before tasks
+  complete; tasks still resolve correctly (refcount semantics).
+- `test_async_token_outlives_tasks.cpp` — tasks freed before token;
+  cancel on the surviving token is a no-op.
+
+### 11.6 Memory / sanitiser tests
+
+- ASAN + LSAN run as part of `cpp-async-callback` and
+  `cpp-async-coro` CI lanes (not just the existing `cpp` lane).
+- Specific allocation pin: under ASAN, the callback frontend's hot
+  path (`decode_message` + completion) must not allocate beyond the
+  result buffer.  Implemented as a thread-local allocator counter
+  that the test reads before/after the callback fires.
+- TSAN run on the threadsafety + concurrent tests at least once per
+  CI release cycle (not on every PR — cost-prohibitive).
 
 ---
 
 ## 12. Build matrix
 
-### 12.1 Rust side
+### 12.1 Rust side — explicit feature inventory
 
-`tensogram-ffi` gains a `feature = "async"` flag that pulls in:
-- `tokio` (already a transitive dep via `tensogram --features async,remote`).
-- `tokio-util` for `CancellationToken`.
-- `bytes` for AsyncWrite shim glue.
+Three crates change.  Here is the complete feature matrix:
 
-Default off in cdylib release builds.  Enabled by default when the
-`async` Cargo feature on the `tensogram` crate is on (the C++ side
-just enables the upstream feature).
+| Crate | Existing features | New features | Pulls in (new) |
+|---|---|---|---|
+| `tensogram` | `async`, `remote`, `mmap`, codec gates | `async-write` (gates `streaming_async.rs`) | `tokio/io-util`, `tokio/fs` (already implied by `async`) |
+| `tensogram-ffi` | (none — single crate, default-features) | `async` (gates the new FFI surface) | `tensogram/async`, `tensogram/async-write`, `tokio-util` for `CancellationToken`, `tokio/sync`, `tokio/time` |
+| `tensogram-cli` | `grib`, `netcdf` | (no new features needed — CLI is sync) | (none) |
+
+`tensogram-ffi`'s new `async` feature is **off by default** in cdylib
+release builds.  It is enabled **on by default** when the C++ wrapper
+is built with `TENSOGRAM_ASYNC=ON` (the cargo invocation in
+`cpp/CMakeLists.txt` adds `--features async` to the cargo build line).
+
+Cargo features are additive; turning on `tensogram-ffi/async` also
+enables `tensogram/async` and `tensogram/async-write` transitively.
+
+For Rust users who want to depend on `tensogram-ffi` directly (e.g.
+embedding the C ABI into another Rust binary), the `async` feature
+gates all `tgm_async_*` exports cleanly; the symbols are not present
+in the cdylib when the feature is off.
 
 ### 12.2 C++ side
 
@@ -959,13 +1161,13 @@ target_compile_definitions(tensogram INTERFACE
 ```
 
 The `coro.hpp` header self-disables with `#if !TENSOGRAM_HAS_COROUTINES`
-emitting a `#error` instructing the user to switch to `core.hpp` or
-`std_future.hpp`.  Similarly for users who include `async/*.hpp`
+emitting a `#error` instructing the user to switch to `callback.hpp`
+or `std_future.hpp`.  Similarly for users who include `async/*.hpp`
 when `TENSOGRAM_ASYNC` is off.
 
 ### 12.3 Compiler matrix
 
-| Compiler | C++17 sync | C++17 `core` / `std_future` | C++20 `coro` |
+| Compiler | C++17 sync | C++17 `callback` / `std_future` | C++20 `coro` |
 |---|---|---|---|
 | GCC ≥ 9 | ✅ | ✅ | ❌ (coroutine support partial) |
 | GCC ≥ 11 | ✅ | ✅ | ✅ |
@@ -976,11 +1178,20 @@ when `TENSOGRAM_ASYNC` is off.
 
 ### 12.4 CI lanes
 
-- `cpp-async-callback` — Linux + macOS, builds & tests `core.hpp` /
-  `std_future.hpp` on C++17.
+- `cpp-async-callback` — Linux + macOS, builds & tests
+  `callback.hpp` / `std_future.hpp` on C++17.
 - `cpp-async-coro` — Linux GCC 11 + Clang 14 + macOS Xcode 14, builds
   & tests `coro.hpp` on C++20.
 - Existing `cpp` lane stays untouched (sync-only).
+
+#### CI cost estimate
+
+The two new lanes plus the integration test in PR 6 roughly **double
+the C++ CI wall-clock time**.  PR 6 should include a brief
+investigation of whether the `cpp-async-coro` lane needs to run on
+every PR or whether it can be gated to the release branch only.
+Recommendation: every PR for v1, narrow to release-branch only if
+the cost becomes painful.
 
 ---
 
@@ -1011,19 +1222,23 @@ Six PRs, sized for review and bisect-friendliness:
 - Object-store and local file backends.
 - Tests including in-process HTTP fixture for object-store path.
 
-### PR 4 — C++ `async/core.hpp` (callback frontend)
+### PR 4 — C++ `async/callback.hpp` (callback frontend)
 
-- Header-only.
+- Header-only; all definitions `inline` (Q10 resolution).
 - Wraps every FFI entry point.
 - `result<T>`, `cancellation_token`, completion-handler shape.
-- 6+ test files, 3+ examples.
+- Implements the §4.1 callback contract via the FFI dispatcher pool.
+- Includes `test_async_callback_contract.cpp` from §11.2.
+- 7+ test files, 3+ examples.
 
 ### PR 5 — C++ `async/coro.hpp` and `async/std_future.hpp`
 
-- Both frontends in one PR (they share the `core` lifetime
+- Both frontends in one PR (they share the `callback` lifetime
   management, just present different surfaces).
-- C++20 `task<T>` implementation including `when_all`.
+- C++20 `task<T>` implementation including `when_all`,
+  `block_on`, and `async_for_each` (Q9 resolution).
 - C++17 `std::future` adapter.
+- All headers `inline` (Q10 resolution).
 - 4+ test files, 3+ examples.
 - New CMake CI lanes.
 
@@ -1051,6 +1266,11 @@ Six PRs, sized for review and bisect-friendliness:
 | Streaming encoder hash-while-writing with multipart upload races | Hashing is in calling thread, AFTER bytes are computed but BEFORE they're handed to the AsyncWrite — same model as sync; pinned via existing test fixtures |
 | Backfill on object stores silently ignored confuses users | Documented in header + docs + one-shot `tracing::warn!`; `finish()` returns the actual `total_length` written so callers can detect |
 | Producer killed mid-stream leaves an invalid `.tgm` on disk | Acceptable per design (§5.4): operational systems don't trust truncated files anyway; cancellation/timeout error surfaces to caller for quarantine routing |
+| User callback blocks/allocates and starves dispatcher pool | §4.1 callback contract; dispatcher pool insulates tokio runtime; stress test in §11.2 (`test_async_callback_contract.cpp`) pins the bound |
+| Header-only frontends inflate compile time (one copy per TU) | Documented as an explicit trade-off (Q10); ABI safety is the priority over compile-time cost; benchmark in PR 6 may revise if the overhead is large |
+| `tgm_async_task_set_completion` race with task already-Ready | Atomic `state` enum with CAS dispatch; callback fires inline if state was Ready at registration time, otherwise queued for dispatcher pool; pinned in `test_async_double_completion.cpp` |
+| Tokio runtime fails to build at startup (low ulimits, sandbox) | `OnceLock` caches the build error; every `tgm_async_*` returns `TGM_ERROR_IO` with descriptive `tgm_last_error()`; documented in §6 |
+| Default 8 worker threads under-saturate large HPC nodes | PR 6 includes a benchmark on a representative HPC node measuring saturation; default may be revised before merge |
 
 ---
 
