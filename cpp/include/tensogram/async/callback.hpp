@@ -530,8 +530,40 @@ public:
         launch_void_completion(task, err, std::move(cb));
     }
 
-    /// Best-effort object-count snapshot.  Returns `static_cast<std::size_t>(-1)`
-    /// if the encoder is currently busy with another in-flight call.
+    /// Outcome of `try_object_count`.  Distinguishes the four cases
+    /// the convenience accessor (`object_count`) collapses to a
+    /// single `static_cast<std::size_t>(-1)` sentinel.
+    enum class object_count_status {
+        ok = 0,           ///< `value` is the current object count.
+        null_handle = 1,  ///< Handle is null/invalid.
+        busy = 2,         ///< Encoder locked by another in-flight call.
+        finished = 3,     ///< `finish` already consumed the encoder.
+    };
+
+    /// Discriminated `try` accessor: returns both the status and (if
+    /// `status == ok`) the current count.  Use this in preference to
+    /// `object_count()` when you need to distinguish "0 written" from
+    /// "busy" or "finished".
+    struct object_count_result {
+        object_count_status status;
+        std::size_t value;
+    };
+
+    [[nodiscard]] object_count_result try_object_count() const noexcept {
+        std::size_t count = 0;
+        TgmObjectCountStatus s =
+            tgm_async_streaming_encoder_try_object_count(handle_.get(), &count);
+        return object_count_result{
+            static_cast<object_count_status>(static_cast<int>(s)),
+            count,
+        };
+    }
+
+    /// Best-effort object-count snapshot.  Returns
+    /// `static_cast<std::size_t>(-1)` if the handle is null, the
+    /// encoder is currently busy with another in-flight call, or
+    /// `finish` has already been called.  See `try_object_count`
+    /// for a typed version that distinguishes those cases.
     [[nodiscard]] std::size_t object_count() const noexcept {
         return tgm_async_streaming_encoder_object_count(handle_.get());
     }

@@ -142,6 +142,88 @@ TEST(AsyncProducerConsumer, EightStepRoundTrip) {
     std::filesystem::remove(path);
 }
 
+/// Stress test for the dispatcher pool: fire many in-flight callback
+/// completions concurrently, each callback doing at least 1ms of
+/// work.  The runtime has bounded queues (≤ `dispatcher_workers * 4`
+/// slots; default 4 workers ⇒ 16-slot channel), so 1000 concurrent
+/// callbacks force the inline-fallback path documented at
+/// `dispatch_to_pool` to surface gracefully.
+///
+/// Verifies:
+///   1. Every callback fires exactly once (no drops, no duplicates).
+///   2. The runtime does not stall — total wall-clock stays
+///      bounded.
+///   3. No deadlock between the tokio worker pool and the dispatcher
+///      pool when the dispatcher's bounded channel is saturated.
+TEST(AsyncProducerConsumer, DispatcherPoolBackpressureStress) {
+    constexpr int kCount = 1000;
+
+    // Build one tiny file we can hammer with many concurrent reads.
+    auto path = make_temp_path(".tgm");
+    {
+        std::string meta_json = R"json({
+            "base":[],
+            "descriptors":[{
+                "type":"ntensor","ndim":1,"shape":[2],"strides":[1],
+                "dtype":"uint8","byte_order":"little","encoding":"none",
+                "filter":"none","compression":"none"
+            }]
+        })json";
+        std::vector<std::uint8_t> data(2);
+        std::vector<std::pair<const std::uint8_t*, std::size_t>> objs;
+        objs.emplace_back(data.data(), data.size());
+        auto bytes = tensogram::encode(meta_json, objs);
+        std::ofstream out(path.string(), std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+
+    auto file = await_future(as_future<tac::async_file>(
+        [&path](auto cb) { tac::async_file::open(path.string(), std::move(cb)); }));
+
+    std::atomic<int> fired{0};
+    std::mutex done_mtx;
+    std::condition_variable done_cv;
+
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < kCount; ++i) {
+        file.message_count(
+            [&fired, &done_mtx, &done_cv](tac::result<std::size_t> r) {
+                // Force at least 1ms of work in the callback to keep
+                // the dispatcher saturated long enough to exercise
+                // backpressure.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (r.ok()) {
+                    int n = fired.fetch_add(1) + 1;
+                    if (n == kCount) {
+                        std::lock_guard<std::mutex> g(done_mtx);
+                        done_cv.notify_all();
+                    }
+                }
+            });
+    }
+
+    // Wait until every callback has fired or we hit a generous bound
+    // (60s — under default config this should complete in well under
+    // 10s; the bound exists only to prevent a hard hang on a real
+    // deadlock).
+    {
+        std::unique_lock<std::mutex> lk(done_mtx);
+        bool ok = done_cv.wait_for(lk, std::chrono::seconds(60),
+                                   [&] { return fired.load() == kCount; });
+        ASSERT_TRUE(ok) << "dispatcher stalled at " << fired.load()
+                        << "/" << kCount << " callbacks";
+    }
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_EQ(fired.load(), kCount);
+
+    // Sanity: 1000 callbacks × 1ms with 4-worker pool ≈ 250ms ideal;
+    // allow generous slack for inline-fallback dispatch and CI noise.
+    EXPECT_LT(elapsed, std::chrono::seconds(30));
+
+    std::filesystem::remove(path);
+}
+
 /// Concurrent decode: multiple threads decoding from the same shared
 /// async_file handle.  Verifies the Arc-shared backing is safe under
 /// concurrent FFI calls.

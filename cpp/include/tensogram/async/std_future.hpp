@@ -210,6 +210,15 @@ public:
         });
     }
 
+    using object_count_status = tac::async_streaming_encoder::object_count_status;
+    using object_count_result = tac::async_streaming_encoder::object_count_result;
+
+    /// Discriminated try-accessor.  See
+    /// `tac::async_streaming_encoder::try_object_count`.
+    [[nodiscard]] object_count_result try_object_count() const noexcept {
+        return inner_->try_object_count();
+    }
+
     [[nodiscard]] std::size_t object_count() const noexcept {
         return inner_->object_count();
     }

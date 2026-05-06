@@ -41,6 +41,8 @@ pub struct TgmAsyncStreamingEncoder {
     path_string: CString,
 }
 
+/// Borrowed pointer to the encoder's path string.  Valid for the
+/// lifetime of the handle.  Returns NULL on a NULL handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_async_streaming_encoder_path(
     enc: *const TgmAsyncStreamingEncoder,
@@ -226,6 +228,21 @@ fn write_object_dispatch(
     spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
+/// Encode and append one data object to the stream.
+///
+/// `descriptor_json` is a JSON-serialised `DataObjectDescriptor`
+/// matching the sync `tgm_streaming_encoder_write_object` schema.
+/// `data` / `len` describe the raw element buffer; the encoder runs
+/// the configured filter / compression / encoding pipeline on it.
+///
+/// The C caller's `data` buffer is **copied** before this function
+/// returns, so the buffer may be reused immediately.  The returned
+/// task resolves to `void` (joinable via
+/// [`tgm_async_task_join_void`]).
+///
+/// Concurrent `write_*` calls on the same encoder are serialised
+/// via an internal `tokio::sync::Mutex`; the underlying AsyncWrite
+/// is naturally serial.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_async_streaming_encoder_write_object(
@@ -249,6 +266,15 @@ pub extern "C" fn tgm_async_streaming_encoder_write_object(
     )
 }
 
+/// Append one already-encoded data object to the stream, bypassing
+/// the encoder's filter / compression / encoding pipeline.  `data`
+/// is treated as the final on-disk payload bytes; `descriptor_json`
+/// must describe the post-pipeline frame.
+///
+/// Useful for relaying frames between encoders without redundant
+/// transcoding.  Other semantics (data copy, serialisation,
+/// cancellation, void result) match
+/// [`tgm_async_streaming_encoder_write_object`].
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_async_streaming_encoder_write_pre_encoded(
@@ -272,6 +298,12 @@ pub extern "C" fn tgm_async_streaming_encoder_write_pre_encoded(
     )
 }
 
+/// Append a per-message preceder metadata frame.  `metadata_json`
+/// is a flat JSON object (one level of nesting); keys become CBOR
+/// map keys, values are converted to CBOR primitives.
+///
+/// Resolves to `void` (joinable via [`tgm_async_task_join_void`]).
+/// Serialised against `write_*` via the same internal mutex.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_async_streaming_encoder_write_preceder(
     enc: *mut TgmAsyncStreamingEncoder,
@@ -324,6 +356,21 @@ pub extern "C" fn tgm_async_streaming_encoder_write_preceder(
     spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
 }
 
+/// Finalise the stream: flush pending frames, write the footer,
+/// and (if `backfill = true`) seek back to update the preamble's
+/// `total_length`.
+///
+/// Consumes the encoder's inner state — subsequent `write_*` /
+/// `finish` calls on the same handle return
+/// [`TensogramError::Framing`] (`encoder already finished`).  The
+/// handle itself must still be released with
+/// [`tgm_async_streaming_encoder_free`].
+///
+/// `backfill` requires that the underlying `tokio::fs::File`
+/// supports seeks (true for local files, may not be true for
+/// future remote sinks).  If a clean file is required and the
+/// task is cancelled mid-finish, the on-disk file is structurally
+/// invalid (see free's drop semantics).
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_async_streaming_encoder_finish(
     enc: *mut TgmAsyncStreamingEncoder,

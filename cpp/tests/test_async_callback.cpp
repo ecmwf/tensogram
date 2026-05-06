@@ -194,6 +194,57 @@ TEST(AsyncCallback, StreamingEncoderRoundTrip) {
     std::filesystem::remove(path);
 }
 
+TEST(AsyncCallback, TryObjectCountStateMachine) {
+    auto path = make_temp_path(".tgm");
+    std::string meta_json = R"json({"base":[]})json";
+
+    auto create_fut = as_future<tac::async_streaming_encoder>([&](auto cb) {
+        tac::async_streaming_encoder::create(path.string(), meta_json, std::move(cb));
+    });
+    auto cr = create_fut.get();
+    ASSERT_TRUE(cr.ok()) << cr.message();
+    auto enc = cr.take();
+
+    // Fresh encoder, no writes yet, no in-flight ops → ok / 0.
+    {
+        auto r = enc.try_object_count();
+        EXPECT_EQ(r.status,
+                  tac::async_streaming_encoder::object_count_status::ok);
+        EXPECT_EQ(r.value, 0u);
+        EXPECT_EQ(enc.object_count(), 0u);
+    }
+
+    // After one successful write → ok / 1.
+    std::string desc = R"json({
+        "type":"ntensor","ndim":1,"shape":[4],"strides":[1],
+        "dtype":"float32","byte_order":"little","encoding":"none",
+        "filter":"none","compression":"none","params":{}
+    })json";
+    std::vector<std::uint8_t> data(16);
+    auto wr_fut = as_future<void>(
+        [&](auto cb) { enc.write_object(desc, data.data(), data.size(), std::move(cb)); });
+    ASSERT_TRUE(wr_fut.get().ok());
+    {
+        auto r = enc.try_object_count();
+        EXPECT_EQ(r.status,
+                  tac::async_streaming_encoder::object_count_status::ok);
+        EXPECT_EQ(r.value, 1u);
+    }
+
+    // After finish → finished / 0 (count value is meaningless here).
+    auto fin_fut = as_future<void>([&](auto cb) { enc.finish(std::move(cb)); });
+    ASSERT_TRUE(fin_fut.get().ok());
+    {
+        auto r = enc.try_object_count();
+        EXPECT_EQ(r.status,
+                  tac::async_streaming_encoder::object_count_status::finished);
+        // Convenience accessor collapses to the historical sentinel.
+        EXPECT_EQ(enc.object_count(), static_cast<std::size_t>(-1));
+    }
+
+    std::filesystem::remove(path);
+}
+
 TEST(AsyncCallback, RuntimeConfigureAfterInitErrors) {
     // The runtime is built lazily on first call.  Trigger it.
     auto path = make_sync_test_file();
