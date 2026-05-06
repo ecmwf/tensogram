@@ -62,7 +62,29 @@ typedef enum {
    * thread-local error.
    */
   TGM_ERROR_MISSING_HASH = 11,
+  /**
+   * Async task exceeded its deadline; the underlying tokio future
+   * was dropped at the next yield point.  See
+   * `plans/PLAN_CPP_ASYNC.md` §7.1.
+   */
+  TGM_ERROR_TIMEOUT = 12,
+  /**
+   * Async task observed its cancellation token fire before the
+   * future resolved.  See `plans/PLAN_CPP_ASYNC.md` §7.2.
+   */
+  TGM_ERROR_CANCELLED = 13,
 } tgm_error;
+
+/**
+ * Async file handle backed by `Arc<TensogramFile>` so the same handle
+ * is safely shareable across multiple in-flight tasks.
+ */
+typedef struct TgmAsyncFile TgmAsyncFile;
+
+/**
+ * Opaque task handle exposed to C as `tgm_async_task_t*`.
+ */
+typedef struct TgmAsyncTask TgmAsyncTask;
 
 /**
  * Opaque handle for iterating over messages in a byte buffer.
@@ -70,6 +92,12 @@ typedef enum {
  * The caller's buffer must remain valid for the lifetime of this iterator.
  */
 typedef struct tgm_buffer_iter_t tgm_buffer_iter_t;
+
+/**
+ * Opaque cancellation-token handle exposed to C as
+ * `tgm_cancellation_token_t*`.
+ */
+typedef struct TgmCancellationToken TgmCancellationToken;
 
 /**
  * File handle.
@@ -886,5 +914,148 @@ tgm_error tgm_validate_file(const char *path,
                             const char *level,
                             int32_t check_canonical,
                             tgm_bytes_t *out);
+
+TgmCancellationToken *tgm_cancellation_token_create(void);
+
+void tgm_cancellation_token_cancel(TgmCancellationToken *tok);
+
+bool tgm_cancellation_token_is_cancelled(const TgmCancellationToken *tok);
+
+void tgm_cancellation_token_free(TgmCancellationToken *tok);
+
+/**
+ * Register a completion callback on `task`.  Must be called exactly
+ * once.  The callback fires on a dispatcher pool worker (NOT a tokio
+ * worker) and must obey the §4.1 contract documented in the plan.
+ *
+ * If the task has already resolved, the callback is invoked inline
+ * on the calling thread before the function returns.
+ */
+tgm_error tgm_async_task_set_completion(TgmAsyncTask *task, void (*cb)(void*), void *userdata);
+
+bool tgm_async_task_is_ready(const TgmAsyncTask *task);
+
+/**
+ * Cancel an in-flight task by signalling its internal token.  The
+ * task transitions to [`TgmError::Cancelled`] at the next yield point.
+ */
+void tgm_async_task_cancel(TgmAsyncTask *task);
+
+void tgm_async_task_free(TgmAsyncTask *task);
+
+tgm_error tgm_async_task_join_void(TgmAsyncTask *task);
+
+tgm_error tgm_async_task_join_size(TgmAsyncTask *task, uint64_t *out);
+
+tgm_error tgm_async_task_join_bytes(TgmAsyncTask *task, tgm_bytes_t *out);
+
+tgm_error tgm_async_task_join_message(TgmAsyncTask *task, tgm_message_t **out);
+
+tgm_error tgm_async_task_join_metadata(TgmAsyncTask *task, tgm_metadata_t **out);
+
+tgm_error tgm_async_task_join_async_file(TgmAsyncTask *task, TgmAsyncFile **out);
+
+tgm_error tgm_async_task_join_multi_bytes(TgmAsyncTask *task,
+                                          tgm_bytes_t **out_array,
+                                          size_t *out_count);
+
+/**
+ * Free an array of `TgmBytes` returned by `tgm_async_task_join_multi_bytes`.
+ */
+void tgm_multi_bytes_free(tgm_bytes_t *array, size_t count);
+
+const char *tgm_async_file_path(const TgmAsyncFile *file);
+
+void tgm_async_file_close(TgmAsyncFile *file);
+
+/**
+ * Open a Tensogram file asynchronously.  Returns immediately with a
+ * task handle; join via `tgm_async_task_join_async_file`.
+ */
+tgm_error tgm_async_file_open(const char *path,
+                              TgmCancellationToken *cancel,
+                              uint64_t timeout_ms,
+                              TgmAsyncTask **out_task);
+
+tgm_error tgm_async_file_open_remote(const char *url,
+                                     const char *const *storage_keys,
+                                     const char *const *storage_values,
+                                     size_t nopts,
+                                     bool bidirectional,
+                                     TgmCancellationToken *cancel,
+                                     uint64_t timeout_ms,
+                                     TgmAsyncTask **out_task);
+
+tgm_error tgm_async_file_message_count(TgmAsyncFile *file,
+                                       TgmCancellationToken *cancel,
+                                       uint64_t timeout_ms,
+                                       TgmAsyncTask **out_task);
+
+tgm_error tgm_async_file_read_message(TgmAsyncFile *file,
+                                      size_t index,
+                                      TgmCancellationToken *cancel,
+                                      uint64_t timeout_ms,
+                                      TgmAsyncTask **out_task);
+
+tgm_error tgm_async_file_decode_message(TgmAsyncFile *file,
+                                        size_t index,
+                                        bool native_byte_order,
+                                        uint32_t threads,
+                                        bool restore_non_finite,
+                                        bool verify_hash,
+                                        TgmCancellationToken *cancel,
+                                        uint64_t timeout_ms,
+                                        TgmAsyncTask **out_task);
+
+tgm_error tgm_async_file_decode_metadata(TgmAsyncFile *file,
+                                         size_t index,
+                                         TgmCancellationToken *cancel,
+                                         uint64_t timeout_ms,
+                                         TgmAsyncTask **out_task);
+
+tgm_error tgm_async_file_decode_object(TgmAsyncFile *file,
+                                       size_t msg_index,
+                                       size_t obj_index,
+                                       bool native_byte_order,
+                                       uint32_t threads,
+                                       bool restore_non_finite,
+                                       bool verify_hash,
+                                       TgmCancellationToken *cancel,
+                                       uint64_t timeout_ms,
+                                       TgmAsyncTask **out_task);
+
+tgm_error tgm_async_file_decode_range(TgmAsyncFile *file,
+                                      size_t msg_index,
+                                      size_t obj_index,
+                                      const uint64_t *offsets,
+                                      const uint64_t *counts,
+                                      size_t n_ranges,
+                                      bool native_byte_order,
+                                      uint32_t threads,
+                                      TgmCancellationToken *cancel,
+                                      uint64_t timeout_ms,
+                                      TgmAsyncTask **out_task);
+
+/**
+ * Configure the FFI tokio runtime.  Must be called before any other
+ * `tgm_async_*` call; subsequent calls return [`TgmError::InvalidArg`].
+ *
+ * Pass `0` to use the default for any field.
+ */
+tgm_error tgm_runtime_configure(uint32_t workers,
+                                uint32_t dispatcher_workers,
+                                uint64_t multipart_part_size_bytes);
+
+/**
+ * Drain in-flight tasks and shut down the runtime.  Returns the count
+ * of tasks that did not finish within `timeout_ms`.  On a clean shutdown
+ * the count is `0`.
+ *
+ * Implementation note: tokio's `Runtime::shutdown_timeout` does not
+ * expose unfinished-task count directly.  We approximate by recording
+ * the difference between active task count before and after shutdown.
+ * For PR 2 the count is best-effort; precision can be improved later.
+ */
+uint64_t tgm_runtime_shutdown_blocking(uint64_t timeout_ms);
 
 #endif  /* TENSOGRAM_H */

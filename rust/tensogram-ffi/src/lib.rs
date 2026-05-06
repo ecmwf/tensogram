@@ -45,6 +45,9 @@ use std::path::Path;
 use std::ptr;
 use std::slice;
 
+#[cfg(feature = "async")]
+pub mod async_core;
+
 use tensogram::encode::MaskMethod;
 use tensogram::validate::{
     ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
@@ -104,6 +107,13 @@ pub enum TgmError {
     /// `tgm_last_error_object_index()` for the duration of the
     /// thread-local error.
     MissingHash = 11,
+    /// Async task exceeded its deadline; the underlying tokio future
+    /// was dropped at the next yield point.  See
+    /// `plans/PLAN_CPP_ASYNC.md` §7.1.
+    Timeout = 12,
+    /// Async task observed its cancellation token fire before the
+    /// future resolved.  See `plans/PLAN_CPP_ASYNC.md` §7.2.
+    Cancelled = 13,
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
