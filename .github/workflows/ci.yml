@@ -632,13 +632,23 @@ jobs:
         with:
           fetch-depth: 0  # need base branch for --in-diff
       - run: mkdir -p "$TMPDIR"
+      - name: Compute diff vs base
+        # Generated here rather than inside `make mutants-diff` so the
+        # `actions/checkout`-set `safe.directory` config applies (it's
+        # configured on the host runner, not always inherited into the
+        # Docker container — manifests as "Not a git repository" when
+        # git is invoked from inside the container's recipe shell).
+        run: |
+          git -c safe.directory='*' diff \
+            origin/${{ github.base_ref }}...HEAD \
+            > "$TMPDIR/mutants-diff.patch"
       - name: Mutate diff vs base
         # `make mutants-diff` runs cargo-mutants with the project's
         # seven concurrency clamps applied; only `MUTANTS_JOBS` is
         # tunable (the others are pinned at 1/-j1 to prevent the
         # nested-fan-out load spikes documented in
-        # docs/src/dev/mutation-testing.md "Concurrency".
-        run: make mutants-diff MUTANTS_JOBS=2
+        # docs/src/dev/mutation-testing.md "Concurrency").
+        run: make mutants-diff DIFF_FILE="$TMPDIR/mutants-diff.patch" MUTANTS_JOBS=2
       - uses: actions/upload-artifact@v4
         if: always()
         with:

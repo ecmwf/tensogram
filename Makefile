@@ -174,14 +174,36 @@ mutants: mutants-install ## Full-workspace cargo-mutants sweep (long; use mutant
 	$(MUTANTS_ENV) cargo mutants $(MUTANTS_FLAGS)
 
 # `cargo-mutants --in-diff` takes a path to a diff FILE, not a git
-# revision range.  Generate it from `git diff origin/main...HEAD`
-# (three-dot form: PR-relative diff, ignoring main commits made after
-# the branch point).  Tempfile cleanup via trap on failure.
-mutants-diff: mutants-install ## Run cargo-mutants on the diff vs origin/main (used by CI)
-	@DIFF=$$(mktemp -t mutants-diff.XXXXXX.patch); \
+# revision range.  Two ways to drive this target:
+#
+#   make mutants-diff                                 # auto-compute
+#   make mutants-diff DIFF_FILE=path/to/diff.patch    # pre-generated
+#
+# The auto-compute path runs `git diff origin/main...HEAD` (three-dot
+# form: PR-relative diff, ignoring main commits made after the branch
+# point) with `safe.directory='*'` set so it works inside Docker
+# containers where the runner's checkout safe-directory configuration
+# isn't inherited.  The DIFF_FILE override is the recommended path
+# for CI workflows that want to compute the diff in a step that's
+# already authenticated against the repo (e.g. right after
+# actions/checkout) — see `.github/workflows/ci.yml`.
+mutants-diff: mutants-install ## Run cargo-mutants on a diff (auto from origin/main, or DIFF_FILE=path)
+	@if [ -n "$(DIFF_FILE)" ]; then \
+	  DIFF="$(DIFF_FILE)"; \
+	  echo "[make mutants-diff] using pre-generated diff: $$DIFF"; \
+	  $(MUTANTS_ENV) cargo mutants --in-diff "$$DIFF" $(MUTANTS_FLAGS); \
+	else \
+	  DIFF=$$(mktemp -t mutants-diff.XXXXXX) && DIFF=$${DIFF}.patch && touch "$$DIFF"; \
 	  trap "rm -f $$DIFF" EXIT; \
-	  git diff origin/main...HEAD > $$DIFF && \
-	  $(MUTANTS_ENV) cargo mutants --in-diff $$DIFF $(MUTANTS_FLAGS)
+	  echo "[make mutants-diff] computing git diff origin/main...HEAD into $$DIFF"; \
+	  git -c safe.directory='*' diff origin/main...HEAD > "$$DIFF" || { \
+	    echo "ERROR: git diff origin/main...HEAD failed (cwd=$$(pwd))" >&2; \
+	    echo "       In CI, ensure actions/checkout uses fetch-depth: 0," >&2; \
+	    echo "       or pass a pre-computed diff via DIFF_FILE=path." >&2; \
+	    exit 1; \
+	  }; \
+	  $(MUTANTS_ENV) cargo mutants --in-diff "$$DIFF" $(MUTANTS_FLAGS); \
+	fi
 
 # Single-shard run.  SHARD must be N/M (e.g. SHARD=1/16).
 # Used by .github/workflows/mutants-weekly.yml; matrix-ed across all
