@@ -41,11 +41,12 @@ to Python, C++, TypeScript, or WASM bindings (those rely on golden-file
 byte-parity tests).
 
 **Regimes:**
-- **PR-time** (`--in-diff origin/main..HEAD`): non-blocking job in
+- **PR-time** (`make mutants-diff`): non-blocking job in
   `.github/workflows/ci.yml`; uploads `mutants.out/` as artifact.
   Flip to required-for-merge after Phase-1 stabilises (see rollout plan).
-- **Weekly full sweep** (sharded 1/16..16/16, Sat+Sun 09:00 UTC): `.github/workflows/mutants-weekly.yml`,
-  weekdays 02:00 UTC. Surviving mutants → auto-issue tagged `mutation-testing`.
+- **Weekly full sweep** (sharded 1/16..16/16): `.github/workflows/mutants-weekly.yml`,
+  Saturday + Sunday 09:00 UTC. Surviving mutants → auto-issue tagged
+  `mutation-testing`.
 
 **Config:** `.cargo/mutants.toml` at repo root. Excludes: `remote.rs` (I/O-driven),
 `doctor/**`, `tensogram-cli/**`, benchmarks, examples, `tensogram-sz3-sys`.

@@ -31,13 +31,10 @@ on:
     # Saturday + Sunday 09:00 UTC = 10:00-11:00 CET/CEST.
     # Daytime weekend — minimal contention on shared builder fleet.
     - cron: "0 9 * * 6,0"
-  workflow_dispatch:
-    inputs:
-      shards:
-        description: "Number of shards (default 16; reduce for ad-hoc smaller runs)"
-        required: false
-        default: "16"
+  workflow_dispatch: {}
 
+# Default least-privilege GITHUB_TOKEN permissions: read-only.
+# `open-issue-on-fail` overrides at job level to add `issues: write`.
 permissions:
   contents: read
   actions: read
@@ -49,11 +46,11 @@ concurrency:
   group: mutants-weekly
   cancel-in-progress: false
 
-# Explicit least-privilege GITHUB_TOKEN permissions for this workflow.
-permissions:
-  contents: read
-  actions: read
-  issues: write
+# TMPDIR pinned at workflow level so `mkdir -p "$TMPDIR"` in steps
+# works even when the runner / container leaves it unset (matches
+# `ci.yml` convention).
+env:
+  TMPDIR: ${{ github.workspace }}/.tmp
 
 jobs:
   full-sweep:
@@ -85,27 +82,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
-      - run: cargo install cargo-mutants --version 27.0.0 --locked
+      # `make mutants-shard` runs cargo-mutants with the project's seven
+      # concurrency clamps applied; only `MUTANTS_JOBS` is tunable (the
+      # others are pinned at 1/-j1 to prevent the nested-fan-out load
+      # spikes documented in docs/src/dev/mutation-testing.md
+      # "Concurrency").  Auto-installs cargo-mutants on first run.
+      #
+      # Wrap with a 7-hour `timeout` so cargo-mutants gets SIGTERM one
+      # hour before the GH-Actions 8-hour hard kill, giving the
+      # artifact-upload step time to run with whatever was tested
+      # before the timeout.  In practice unused — typical shard
+      # wallclock is ~30 min — but cheap insurance.
       - name: Run shard
-        env:
-          # Mutation-testing concurrency clamps — see MUTATION_TESTING.md §3.0.1
-          # for why all 7 layers must be capped, not just CARGO_MUTANTS_JOBS.
-          CARGO_MUTANTS_JOBS: 2
-          TENSOGRAM_THREADS: 1
-          CMAKE_BUILD_PARALLEL_LEVEL: 1
-          MAKEFLAGS: -j1
-        # Wrap with a 7-hour `timeout` so cargo-mutants gets SIGTERM
-        # one hour before the GH-Actions 8-hour hard kill.  This gives
-        # the artifact-upload step time to run with whatever was
-        # tested before the timeout.  In practice unused — typical
-        # shard wallclock is ~30 min — but cheap insurance.
         run: |
           timeout --signal=TERM --kill-after=60 7h \
-            cargo mutants \
-              --shard ${{ matrix.shard }}/16 \
-              --no-shuffle \
-              --jobserver-tasks 2 \
-              --timeout-multiplier 3.0 \
+            make mutants-shard SHARD=${{ matrix.shard }}/16 MUTANTS_JOBS=2 \
             || rc=$?
           # `timeout` exits 124 on SIGTERM-due-to-time, 137 on SIGKILL.
           # Treat both as "shard incomplete but partial results saved" —
@@ -133,6 +124,7 @@ jobs:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
     steps:
+      - run: mkdir -p "$TMPDIR"
       - uses: actions/download-artifact@v4
         with:
           path: shards/
