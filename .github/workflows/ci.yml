@@ -632,19 +632,13 @@ jobs:
         with:
           fetch-depth: 0  # need base branch for --in-diff
       - run: mkdir -p "$TMPDIR"
-      - run: cargo install cargo-mutants --version 27.0.0 --locked
       - name: Mutate diff vs base
-        env:
-          CARGO_MUTANTS_JOBS: 2          # mutant worker count — see MUTATION_TESTING.md §3.0.1
-          TENSOGRAM_THREADS: 1           # cap library-internal rayon
-          CMAKE_BUILD_PARALLEL_LEVEL: 1  # cmake-driven build.rs in deps (libaec-sys, blosc2-sys, …)
-          MAKEFLAGS: -j1                 # nested make invocations from cmake
-        run: |
-          cargo mutants \
-            --in-diff origin/${{ github.base_ref }}..HEAD \
-            --no-shuffle \
-            --jobserver-tasks 2 \
-            --timeout-multiplier 3.0
+        # `make mutants-diff` runs cargo-mutants with the project's
+        # seven concurrency clamps applied; only `MUTANTS_JOBS` is
+        # tunable (the others are pinned at 1/-j1 to prevent the
+        # nested-fan-out load spikes documented in
+        # docs/src/dev/mutation-testing.md "Concurrency".
+        run: make mutants-diff MUTANTS_JOBS=2
       - uses: actions/upload-artifact@v4
         if: always()
         with:

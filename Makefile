@@ -15,6 +15,7 @@
         earthkit-install earthkit-test earthkit-lint \
         cpp-build cpp-test \
         cargo-c-build cargo-c-install cargo-c-smoke \
+        mutants-install mutants mutants-diff mutants-shard \
         wasm-test docs-build \
         ts-install ts-build ts-test ts-typecheck \
         remote-parity-rust-build remote-parity-ts-install remote-parity-fixtures \
@@ -134,6 +135,60 @@ cargo-c-install: ## Install via cargo-c into PREFIX (default $HOME/.local)
 
 cargo-c-smoke: cargo-c-install ## Install + run the C-API smoke test against the install prefix
 	bash cpp/tests/test_cargo_c_smoke.sh $(PREFIX)
+
+# ── Mutation testing (cargo-mutants) ──────────────────────────────────────
+#
+# Three targets wrapping cargo-mutants with the project's seven concurrency
+# clamps (see docs/src/dev/mutation-testing.md "Concurrency — seven nested
+# layers").  Only the *mutant worker count* is exposed as a tunable knob
+# via `MUTANTS_JOBS=N` (defaults to 2); TENSOGRAM_THREADS, jobserver-tasks,
+# CMAKE_BUILD_PARALLEL_LEVEL, and MAKEFLAGS are pinned because they MUST
+# stay at 1/-j1 during mutation testing — a 12-core laptop has experienced
+# power-down events when these were unbounded.
+
+# Mutant worker count.  Override at the command line:
+#   make mutants-diff MUTANTS_JOBS=4
+MUTANTS_JOBS ?= 2
+
+# Common cargo-mutants prefix (env vars + jobserver-tasks).
+# `cargo-mutants` is installed on demand if missing — the `--locked`
+# install is idempotent (cargo skips when version already present).
+mutants-install: ## Install cargo-mutants 27.0.0 if missing
+	@command -v cargo-mutants >/dev/null 2>&1 || \
+	  cargo install cargo-mutants --version 27.0.0 --locked
+
+# Build the env-var prefix once for reuse across the three sweep targets.
+# Note the dollar-double-dollar: makefile-time vs shell-time expansion.
+MUTANTS_ENV = \
+	CARGO_MUTANTS_JOBS=$(MUTANTS_JOBS) \
+	TENSOGRAM_THREADS=1 \
+	CMAKE_BUILD_PARALLEL_LEVEL=1 \
+	MAKEFLAGS=-j1
+
+MUTANTS_FLAGS = \
+	--no-shuffle \
+	--jobserver-tasks $(MUTANTS_JOBS) \
+	--timeout-multiplier 3.0
+
+mutants: mutants-install ## Full-workspace cargo-mutants sweep (long; use mutants-diff for PRs)
+	$(MUTANTS_ENV) cargo mutants $(MUTANTS_FLAGS)
+
+# `cargo-mutants --in-diff` takes a path to a diff FILE, not a git
+# revision range.  Generate it from `git diff origin/main...HEAD`
+# (three-dot form: PR-relative diff, ignoring main commits made after
+# the branch point).  Tempfile cleanup via trap on failure.
+mutants-diff: mutants-install ## Run cargo-mutants on the diff vs origin/main (used by CI)
+	@DIFF=$$(mktemp -t mutants-diff.XXXXXX.patch); \
+	  trap "rm -f $$DIFF" EXIT; \
+	  git diff origin/main...HEAD > $$DIFF && \
+	  $(MUTANTS_ENV) cargo mutants --in-diff $$DIFF $(MUTANTS_FLAGS)
+
+# Single-shard run.  SHARD must be N/M (e.g. SHARD=1/16).
+# Used by .github/workflows/mutants-weekly.yml; matrix-ed across all
+# 16 shards by GitHub Actions.
+mutants-shard: mutants-install ## Run a single mutant shard (SHARD=N/M, e.g. SHARD=1/16)
+	@test -n "$(SHARD)" || (echo "Usage: make mutants-shard SHARD=N/M  (e.g. SHARD=1/16)" && exit 1)
+	$(MUTANTS_ENV) cargo mutants --shard $(SHARD) $(MUTANTS_FLAGS)
 
 # ── WASM ──────────────────────────────────────────────────────────────────
 
