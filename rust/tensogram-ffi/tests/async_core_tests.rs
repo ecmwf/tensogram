@@ -508,3 +508,280 @@ fn async_file_open_remote_without_feature_returns_remote_error() {
         "expected diagnostic to mention the async-remote feature: got {msg:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Null-argument validation regression tests for async_core.rs.
+//
+// Mirror the structure of the streaming-encoder null-arg tests:
+// pin down each `if a.is_null() || b.is_null() { return InvalidArg; }`
+// branch and each accessor's NULL behaviour, plus the trivial
+// _free / _cancel / _is_cancelled noop paths.  Without these,
+// cargo-mutants would replace the early-return with `&&`, drop the
+// `!` from null checks, or reduce the function body to `()`, and
+// every existing happy-path test would still pass.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cancellation_token_free_null_is_noop() {
+    // Mutation: `delete !` in `if !tok.is_null()` would dereference
+    // NULL.  This test would crash under the mutation but pass on
+    // the unmutated function.
+    tgm_cancellation_token_free(ptr::null_mut());
+}
+
+#[test]
+fn cancellation_token_cancel_null_is_noop() {
+    tgm_cancellation_token_cancel(ptr::null_mut());
+}
+
+#[test]
+fn cancellation_token_is_cancelled_null_returns_false() {
+    // Mutation: `replace -> bool with true` would return true here.
+    assert!(!tgm_cancellation_token_is_cancelled(ptr::null()));
+}
+
+#[test]
+fn cancellation_token_full_lifecycle() {
+    // Drives the unmutated lifecycle: create → not cancelled →
+    // cancel → cancelled → free.  Catches the
+    // `replace tgm_cancellation_token_create -> ... with Default::default()`
+    // mutation (would return NULL → subsequent calls crash) and
+    // `replace tgm_cancellation_token_cancel with ()` (would leave
+    // is_cancelled false).
+    let tok = tgm_cancellation_token_create();
+    assert!(!tok.is_null());
+    assert!(!tgm_cancellation_token_is_cancelled(tok));
+    tgm_cancellation_token_cancel(tok);
+    assert!(tgm_cancellation_token_is_cancelled(tok));
+    tgm_cancellation_token_free(tok);
+}
+
+#[test]
+fn async_task_free_null_is_noop() {
+    tgm_async_task_free(ptr::null_mut());
+}
+
+#[test]
+fn async_task_cancel_null_is_noop() {
+    tgm_async_task_cancel(ptr::null_mut());
+}
+
+#[test]
+fn async_task_is_ready_null_returns_false() {
+    // Mutation: `replace -> bool with true` would return true here.
+    assert!(!tgm_async_task_is_ready(ptr::null()));
+}
+
+#[test]
+fn async_file_close_null_is_noop() {
+    tgm_async_file_close(ptr::null_mut());
+}
+
+#[test]
+fn async_file_path_null_returns_null() {
+    // Mutation: `replace -> *const c_char with Default::default()`
+    // returns NULL, which equals our expected null result — UNVIABLE
+    // mutation in cargo-mutants terms.  But the explicit assertion
+    // here documents the contract.
+    assert!(tgm_async_file_path(ptr::null()).is_null());
+}
+
+#[test]
+fn multi_bytes_free_null_is_noop() {
+    // Pass a NULL array.  Mutation: `replace tgm_multi_bytes_free
+    // with ()` would skip the early-return guard; ignored here
+    // because we're already passing NULL.  But the `delete !` on
+    // `if !array.is_null()` (currently `if array.is_null()`)
+    // mutation would call `Vec::from_raw_parts(NULL, 0, 0)` — UB.
+    tgm_multi_bytes_free(ptr::null_mut(), 0);
+}
+
+#[test]
+fn async_file_open_rejects_null_path() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open(ptr::null(), ptr::null_mut(), 0, &mut task);
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn async_file_open_rejects_null_out_task() {
+    let path = cstring("/tmp/nonexistent.tgm");
+    let err = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, ptr::null_mut());
+    assert!(matches!(err, TgmError::InvalidArg));
+}
+
+#[test]
+fn async_file_message_count_rejects_null_file() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_message_count(ptr::null_mut(), ptr::null_mut(), 0, &mut task);
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn async_file_message_count_rejects_null_out_task() {
+    let f = make_test_file();
+    let mut open_task: *mut TgmAsyncTask = ptr::null_mut();
+    let path = cstring(f.path().to_str().unwrap());
+    tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut open_task);
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    tgm_async_task_join_async_file(open_task, &mut file);
+    tgm_async_task_free(open_task);
+
+    let err = tgm_async_file_message_count(file, ptr::null_mut(), 0, ptr::null_mut());
+    assert!(matches!(err, TgmError::InvalidArg));
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn async_file_read_message_rejects_null_file() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_read_message(ptr::null_mut(), 0, ptr::null_mut(), 0, &mut task);
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn async_file_decode_message_rejects_null_file() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_decode_message(
+        ptr::null_mut(),
+        0,
+        false,
+        0,
+        false,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn async_file_decode_metadata_rejects_null_file() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_decode_metadata(ptr::null_mut(), 0, ptr::null_mut(), 0, &mut task);
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn async_file_decode_object_rejects_null_file() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_decode_object(
+        ptr::null_mut(),
+        0,
+        0,
+        false,
+        0,
+        false,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn async_file_decode_range_rejects_null_offsets() {
+    let counts = [0u64; 1];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_decode_range(
+        ptr::null_mut(),
+        0,
+        0,
+        ptr::null(),
+        counts.as_ptr(),
+        1,
+        false,
+        0,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn async_file_decode_range_rejects_null_counts() {
+    let offsets = [0u64; 1];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_decode_range(
+        ptr::null_mut(),
+        0,
+        0,
+        offsets.as_ptr(),
+        ptr::null(),
+        1,
+        false,
+        0,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_file_open_remote_rejects_null_url() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open_remote(
+        ptr::null(),
+        ptr::null(),
+        ptr::null(),
+        0,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_file_open_remote_rejects_null_out_task() {
+    let url = cstring("s3://test/file.tgm");
+    let err = tgm_async_file_open_remote(
+        url.as_ptr(),
+        ptr::null(),
+        ptr::null(),
+        0,
+        false,
+        ptr::null_mut(),
+        0,
+        ptr::null_mut(),
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+}
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_file_open_remote_rejects_null_storage_keys() {
+    let url = cstring("s3://test/file.tgm");
+    let v_value = cstring("v");
+    let v_ptr = v_value.as_ptr();
+    let v_arr: [*const std::os::raw::c_char; 1] = [v_ptr];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open_remote(
+        url.as_ptr(),
+        ptr::null(),    // null storage_keys array...
+        v_arr.as_ptr(), // ...but non-null storage_values; nopts > 0 → reject.
+        1,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
