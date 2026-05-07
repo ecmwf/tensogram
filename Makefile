@@ -178,7 +178,8 @@ MUTANTS_ENV = \
 MUTANTS_FLAGS = \
 	--no-shuffle \
 	--jobserver-tasks $(MUTANTS_JOBS) \
-	--timeout-multiplier 3.0
+	--timeout-multiplier 3.0 \
+	--features async,async-remote
 
 mutants: mutants-install ## Full-workspace cargo-mutants sweep (long; use mutants-diff for PRs)
 	$(MUTANTS_ENV) cargo mutants $(MUTANTS_FLAGS)
