@@ -367,3 +367,339 @@ fn async_streaming_encoder_pre_encoded_round_trip() {
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].1, data);
 }
+
+// ---------------------------------------------------------------------------
+// Null-argument validation regression tests.
+//
+// The async streaming encoder entry points all start with a null-pointer
+// guard — typically `if a.is_null() || b.is_null() || ... { return InvalidArg; }`.
+// Without explicit coverage, cargo-mutants would replace those `||` with
+// `&&` (so the early-return only fires when ALL pointers are null) or
+// replace the entire function with `Default::default()` (i.e. `Ok`) and
+// the tests above would still pass.  These tests pin down each null-arg
+// branch.
+// ---------------------------------------------------------------------------
+
+/// Helper: dummy descriptor JSON for write tests.
+fn dummy_descriptor() -> CString {
+    cstring(
+        r#"{"type":"ntensor","ndim":1,"shape":[1],"strides":[1],"dtype":"uint8","byte_order":"little","encoding":"none","filter":"none","compression":"none","params":{}}"#,
+    )
+}
+
+/// Build a real encoder handle so we can also test "valid encoder, but
+/// other args null" branches.
+fn make_test_encoder() -> (tempfile::TempPath, *mut TgmAsyncStreamingEncoder) {
+    let path = temp_path();
+    let path_str = cstring(path.to_str().unwrap());
+    let meta = cstring(r#"{"base":[]}"#);
+    let mut create_task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_create(
+        path_str.as_ptr(),
+        meta.as_ptr(),
+        ptr::null(),
+        0,
+        ptr::null_mut(),
+        0,
+        &mut create_task,
+    );
+    assert!(matches!(err, TgmError::Ok));
+    let mut enc: *mut TgmAsyncStreamingEncoder = ptr::null_mut();
+    assert!(matches!(
+        tgm_async_task_join_async_streaming_encoder(create_task, &mut enc),
+        TgmError::Ok
+    ));
+    tgm_async_task_free(create_task);
+    (path, enc)
+}
+
+#[test]
+fn create_rejects_null_path() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let meta = cstring(r#"{"base":[]}"#);
+    let err = tgm_async_streaming_encoder_create(
+        ptr::null(),
+        meta.as_ptr(),
+        ptr::null(),
+        0,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn create_rejects_null_metadata() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let path = cstring("/tmp/never-created.tgm");
+    let err = tgm_async_streaming_encoder_create(
+        path.as_ptr(),
+        ptr::null(),
+        ptr::null(),
+        0,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn create_rejects_null_out_task() {
+    let path = cstring("/tmp/never-created.tgm");
+    let meta = cstring(r#"{"base":[]}"#);
+    let err = tgm_async_streaming_encoder_create(
+        path.as_ptr(),
+        meta.as_ptr(),
+        ptr::null(),
+        0,
+        ptr::null_mut(),
+        0,
+        ptr::null_mut(),
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+}
+
+#[test]
+fn write_object_rejects_null_encoder() {
+    let desc = dummy_descriptor();
+    let data = [0u8; 1];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_write_object(
+        ptr::null_mut(),
+        desc.as_ptr(),
+        data.as_ptr(),
+        data.len(),
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn write_object_rejects_null_descriptor() {
+    let (_p, enc) = make_test_encoder();
+    let data = [0u8; 1];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_write_object(
+        enc,
+        ptr::null(),
+        data.as_ptr(),
+        data.len(),
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+    tgm_async_streaming_encoder_free(enc);
+}
+
+#[test]
+fn write_object_rejects_null_data() {
+    let (_p, enc) = make_test_encoder();
+    let desc = dummy_descriptor();
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_write_object(
+        enc,
+        desc.as_ptr(),
+        ptr::null(),
+        0,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+    tgm_async_streaming_encoder_free(enc);
+}
+
+#[test]
+fn write_object_rejects_null_out_task() {
+    let (_p, enc) = make_test_encoder();
+    let desc = dummy_descriptor();
+    let data = [0u8; 1];
+    let err = tgm_async_streaming_encoder_write_object(
+        enc,
+        desc.as_ptr(),
+        data.as_ptr(),
+        data.len(),
+        ptr::null_mut(),
+        0,
+        ptr::null_mut(),
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    tgm_async_streaming_encoder_free(enc);
+}
+
+#[test]
+fn write_pre_encoded_rejects_null_encoder() {
+    let desc = dummy_descriptor();
+    let data = [0u8; 1];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_write_pre_encoded(
+        ptr::null_mut(),
+        desc.as_ptr(),
+        data.as_ptr(),
+        data.len(),
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn write_pre_encoded_rejects_null_data() {
+    let (_p, enc) = make_test_encoder();
+    let desc = dummy_descriptor();
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_write_pre_encoded(
+        enc,
+        desc.as_ptr(),
+        ptr::null(),
+        0,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+    tgm_async_streaming_encoder_free(enc);
+}
+
+#[test]
+fn write_preceder_rejects_null_encoder() {
+    let meta = cstring(r#"{"k":"v"}"#);
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_write_preceder(
+        ptr::null_mut(),
+        meta.as_ptr(),
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn write_preceder_rejects_null_metadata() {
+    let (_p, enc) = make_test_encoder();
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err =
+        tgm_async_streaming_encoder_write_preceder(enc, ptr::null(), ptr::null_mut(), 0, &mut task);
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+    tgm_async_streaming_encoder_free(enc);
+}
+
+#[test]
+fn write_preceder_rejects_null_out_task() {
+    let (_p, enc) = make_test_encoder();
+    let meta = cstring(r#"{"k":"v"}"#);
+    let err = tgm_async_streaming_encoder_write_preceder(
+        enc,
+        meta.as_ptr(),
+        ptr::null_mut(),
+        0,
+        ptr::null_mut(),
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    tgm_async_streaming_encoder_free(enc);
+}
+
+#[test]
+fn finish_rejects_null_encoder() {
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err =
+        tgm_async_streaming_encoder_finish(ptr::null_mut(), false, ptr::null_mut(), 0, &mut task);
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn finish_rejects_null_out_task() {
+    let (_p, enc) = make_test_encoder();
+    let err = tgm_async_streaming_encoder_finish(enc, false, ptr::null_mut(), 0, ptr::null_mut());
+    assert!(matches!(err, TgmError::InvalidArg));
+    tgm_async_streaming_encoder_free(enc);
+}
+
+/// Mutation-killer for the `threads` field in `EncodeOptions`
+/// construction.  cargo-mutants mutates the struct expression to drop
+/// the field; under that mutation the encoder still works because the
+/// default is also reasonable, but with a non-trivial payload running
+/// through the multi-threaded encode path we surface any difference.
+///
+/// The on-disk decode round-trip closes the related "function returns
+/// Default::default()" mutation surface for `write_object` /
+/// `write_pre_encoded` / `write_preceder` (the mutated function would
+/// return Ok without writing, and the file would fail to decode).
+#[test]
+fn create_with_explicit_threads_round_trips() {
+    let path = temp_path();
+    let path_str = cstring(path.to_str().unwrap());
+    let meta = cstring(r#"{"base":[]}"#);
+
+    let mut create_task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_create(
+        path_str.as_ptr(),
+        meta.as_ptr(),
+        ptr::null(),
+        4, // explicit threads > 0
+        ptr::null_mut(),
+        0,
+        &mut create_task,
+    );
+    assert!(matches!(err, TgmError::Ok));
+    assert!(!create_task.is_null());
+
+    let mut enc: *mut TgmAsyncStreamingEncoder = ptr::null_mut();
+    assert!(matches!(
+        tgm_async_task_join_async_streaming_encoder(create_task, &mut enc),
+        TgmError::Ok
+    ));
+    tgm_async_task_free(create_task);
+
+    // Drive a real write through the threaded path so the runtime
+    // actually invokes the encoder's parallel stages.  Shape matches
+    // data length so the encoder accepts the buffer without
+    // complaining about size mismatch.
+    let desc = cstring(
+        r#"{"type":"ntensor","ndim":1,"shape":[1024],"strides":[1],"dtype":"uint8","byte_order":"little","encoding":"none","filter":"none","compression":"none","params":{}}"#,
+    );
+    let data = vec![0u8; 1024];
+    let mut wt: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_streaming_encoder_write_object(
+        enc,
+        desc.as_ptr(),
+        data.as_ptr(),
+        data.len(),
+        ptr::null_mut(),
+        0,
+        &mut wt,
+    );
+    assert!(matches!(err, TgmError::Ok));
+    assert!(matches!(tgm_async_task_join_void(wt), TgmError::Ok));
+    tgm_async_task_free(wt);
+
+    let mut ft: *mut TgmAsyncTask = ptr::null_mut();
+    let _ = tgm_async_streaming_encoder_finish(enc, true, ptr::null_mut(), 0, &mut ft);
+    assert!(matches!(tgm_async_task_join_void(ft), TgmError::Ok));
+    tgm_async_task_free(ft);
+    tgm_async_streaming_encoder_free(enc);
+
+    // Verify the on-disk file decodes.  Guards against
+    // "replace write_object -> TgmError with Default::default()".
+    let bytes = std::fs::read(path.as_os_str()).unwrap();
+    let (_, objects) = tensogram::decode(&bytes, &tensogram::DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0].1.len(), 1024);
+}
