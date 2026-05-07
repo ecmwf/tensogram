@@ -70,6 +70,39 @@ For speculative ideas, see `IDEAS.md`.
     `Runtime::shutdown_timeout`, and return the count that did not
     finish.  The C ABI is already shaped for this; only the
     implementation behind it changes.
+
+- [ ] **cpp-async follow-up: close mutation-test gaps in
+      `streaming_async.rs` and `tensogram-ffi/src/async_*.rs`**
+    The `Mutants (diff)` CI job for PR #115 surfaced ~150 MISSED
+    mutants concentrated in:
+    - `rust/tensogram/src/streaming_async.rs`: most accessor /
+      finish / write helpers can be replaced with `Ok(())` or
+      `Default::default()` and the existing round-trip tests still
+      pass.  Need targeted unit tests on `object_count`,
+      `bytes_written`, `write_padding`, `write_footer_frames_and_postamble`,
+      and the `+= -=`/`< >=` arithmetic-flag mutations on the byte
+      counter logic.
+    - `rust/tensogram/src/streaming.rs:779` (`padding_for`): the
+      arithmetic body has 8 missed mutations (% → +/-, padding-for → 0/1,
+      etc.).  A direct unit test on `padding_for(n, align)` covering
+      `align = 1, 8, 64` and `n = 0, align - 1, align, align + 1`
+      would close all of these.
+    - `rust/tensogram-ffi/src/async_streaming.rs`: 9 null-arg
+      mutations are now killed by tests in
+      `async_streaming_tests.rs` (see commit `8a10037`); remaining
+      mutations are largely in the descriptor / metadata parsing
+      paths.
+
+    Each individual fix is small (5-15 lines of test code per missed
+    mutant), but the volume justifies a separate hardening PR rather
+    than blocking this one.  The current CI run is also constrained
+    by the `Mutants (diff)` job's 30-minute timeout — a large PR
+    diff plus serialised-by-design `MUTANTS_JOBS=2` runs through
+    only ~30 mutations before the budget elapses, so even if all
+    mutations were killed locally, the CI signal would remain
+    "cancelled".  Consider either bumping the timeout to 90 min for
+    feature-PR scope, or splitting future feature PRs so each
+    sits under the typical small-diff window.
     - Two-process producer/consumer integration test on local tmpfs
       (HPC-filesystem testing handled separately by ops).
     - Cross-language parity test: C++ async producer + Python async
