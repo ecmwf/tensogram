@@ -7,6 +7,8 @@ implement until promoted to `TODO.md`.
 
 - [ ] `tensogram filter` subcommand (v2 rules engine)
 - [ ] Inspectors/Viewers: Command-line or GUI tools to peer inside the file without writing a custom script. -- a TUI for tensograms?
+  - this is a nice parquet tool which could be an inspiration https://github.com/raulcd/datanomy
+  - it makes sense to also develop a GUI-in-browser, to manage a directory structure with partition columns -- and use it standalone or eg within forecast in abox
 
 ## Features
 
