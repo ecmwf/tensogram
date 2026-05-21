@@ -4,6 +4,7 @@ import wasm from 'vite-plugin-wasm'
 import cesium from 'vite-plugin-cesium'
 import path from 'path'
 import { readFileSync } from 'fs'
+import { Readable } from 'stream'
 
 const tensogramPkg = path.resolve(
   __dirname, 'node_modules/@ecmwf.int/tensogram/dist/index.js',
@@ -16,7 +17,9 @@ const tgPkg = JSON.parse(readFileSync(
 
 /** Vite plugin: proxy /api/proxy?url=... to bypass CORS for remote .tgm files.
  *  Forwards the request method and Range header so TensogramFile.fromUrl can
- *  use lazy per-message Range requests in dev mode, matching nginx behaviour. */
+ *  use lazy per-message Range requests in dev mode, matching nginx behaviour.
+ *  Streams the upstream response body (instead of buffering it) so large files
+ *  are forwarded incrementally. */
 function corsProxy(): Plugin {
   return {
     name: 'cors-proxy',
@@ -55,16 +58,21 @@ function corsProxy(): Plugin {
             if (val) res.setHeader(key, val);
           }
 
-          if (req.method === 'HEAD') {
+          if (req.method === 'HEAD' || !upstream.body) {
             res.end();
             return;
           }
 
-          const buf = Buffer.from(await upstream.arrayBuffer());
-          res.end(buf);
+          // Stream the response body instead of buffering it in memory.
+          // This lets the client start processing chunks as they arrive,
+          // matching the nginx production proxy's `proxy_buffering off`.
+          const nodeStream = Readable.fromWeb(upstream.body as import('stream/web').ReadableStream);
+          nodeStream.pipe(res);
         } catch (err) {
-          res.statusCode = 502;
-          res.end(`Proxy error: ${err}`);
+          if (!res.headersSent) {
+            res.statusCode = 502;
+            res.end(`Proxy error: ${err}`);
+          }
         }
       });
     },

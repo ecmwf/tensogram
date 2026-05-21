@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import {
+  Ion,
   Viewer,
   ImageryLayer,
   UrlTemplateImageryProvider,
@@ -19,6 +20,10 @@ import {
   Cartographic,
   SceneTransforms,
 } from 'cesium';
+
+// Suppress the default Cesium Ion token warning -- we use third-party
+// imagery (CARTO basemap tiles) instead of Cesium Ion services.
+Ion.defaultAccessToken = '';
 
 function markerPixelSize(gridSpacing: number | null | undefined): number {
   const s = gridSpacing ?? 2;

@@ -703,6 +703,18 @@ h2 {
   background: rgba(17, 19, 24, 0.55);
 }
 
+/* Shown while lazy-loading the Cesium globe module */
+.cesium-loading-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1a2e;
+  color: #888;
+  font-size: 14px;
+}
+
 .map-loading-spinner {
   width: 40px;
   height: 40px;
