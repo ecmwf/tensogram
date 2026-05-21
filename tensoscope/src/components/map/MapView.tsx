@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, lazy, Suspense } from 'react';
 import { Map, Source, Layer } from 'react-map-gl/maplibre';
 import type { MapRef, MapLayerMouseEvent } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -6,12 +6,17 @@ import type { ClickPoint } from './usePointInspection';
 import { useFieldImage } from './FieldOverlay';
 import { ColorBar } from './ColorBar';
 import { ColorScaleControls } from './ColorScaleControls';
-import { CesiumView } from './CesiumView';
 import { RenderModePicker } from './RenderModePicker';
 import type { FieldOverlayProps, ViewBounds } from './FieldOverlay';
-import { ProjectionPicker, PROJECTION_PRESETS } from './ProjectionPicker';
-import type { ProjectionPreset } from './ProjectionPicker';
+import { ProjectionPicker, PROJECTION_PRESETS, type ProjectionPreset } from './ProjectionPicker';
 import type { CustomStop } from './colormaps';
+
+// Lazy-load CesiumView -- Cesium is ~2.5 MB of JS plus skybox textures,
+// terrain workers, and other assets.  Deferring the import until the user
+// actually switches to globe mode shaves seconds off the initial load.
+const CesiumView = lazy(() =>
+  import('./CesiumView').then((m) => ({ default: m.CesiumView })),
+);
 
 const BASEMAP_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
 
@@ -134,7 +139,11 @@ export function MapView(props: MapViewProps) {
     isLoading,
   } = props;
 
-  const [activePreset, setActivePreset] = useState<ProjectionPreset>(PROJECTION_PRESETS[0]);
+  // Default to flat map -- Cesium (globe) is lazy-loaded and weighs ~2.5 MB.
+  // Starting on flat avoids that cost for users who never switch to globe.
+  const [activePreset, setActivePreset] = useState<ProjectionPreset>(
+    PROJECTION_PRESETS.find((p) => p.id === 'flat') ?? PROJECTION_PRESETS[0],
+  );
   const [renderMode, setRenderMode] = useState<'heatmap' | 'contours'>('heatmap');
   const [highResEnabled, setHighResEnabled] = usePersistedState('tensoscope.display.highRes', true);
   const [showLabels, setShowLabels] = usePersistedState('tensoscope.display.labels', false);
@@ -260,8 +269,20 @@ export function MapView(props: MapViewProps) {
     basemapLineIdsRef.current = lineIds;
     basemapSymbolIdsRef.current = symbolIds;
 
+    // Apply the current toggle state immediately -- the useEffect that
+    // watches [showLabels, showLines, isGlobe] may have already fired
+    // before the map style loaded, so the refs were empty at that point.
+    for (const id of lineIds) {
+      if (!ml.getLayer(id)) continue;
+      ml.setLayoutProperty(id, 'visibility', showLines ? 'visible' : 'none');
+    }
+    for (const id of symbolIds) {
+      if (!ml.getLayer(id)) continue;
+      ml.setLayoutProperty(id, 'visibility', showLabels ? 'visible' : 'none');
+    }
+
     captureViewport();
-  }, [captureViewport]);
+  }, [captureViewport, showLabels, showLines]);
 
   const isGlobe = activePreset.id === 'globe';
 
@@ -405,20 +426,22 @@ export function MapView(props: MapViewProps) {
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       {isGlobe ? (
-        <CesiumView
-          fieldImage={frontGlobeImage}
-          backFieldImage={backGlobeImage}
-          showLabels={showLabels}
-          showLines={showLines}
-          initialCenter={cameraCenter}
-          onUnmount={handleCesiumUnmount}
-          onViewChange={(b, w, h) => { setCesiumBounds(b); setCesiumViewSize({ width: w, height: h }); }}
-          onMapClick={onMapClick}
-          selectedPoint={selectedPoint}
-          selectedPointGridSpacing={selectedPointGridSpacing}
-          onSelectedPointScreen={onSelectedPointScreen}
-          onSelectedPointOutOfView={onSelectedPointOutOfView}
-        />
+        <Suspense fallback={<div className="cesium-loading-fallback">Loading globe...</div>}>
+          <CesiumView
+            fieldImage={frontGlobeImage}
+            backFieldImage={backGlobeImage}
+            showLabels={showLabels}
+            showLines={showLines}
+            initialCenter={cameraCenter}
+            onUnmount={handleCesiumUnmount}
+            onViewChange={(b, w, h) => { setCesiumBounds(b); setCesiumViewSize({ width: w, height: h }); }}
+            onMapClick={onMapClick}
+            selectedPoint={selectedPoint}
+            selectedPointGridSpacing={selectedPointGridSpacing}
+            onSelectedPointScreen={onSelectedPointScreen}
+            onSelectedPointOutOfView={onSelectedPointOutOfView}
+          />
+        </Suspense>
       ) : (
         <Map
           ref={mapRef}
