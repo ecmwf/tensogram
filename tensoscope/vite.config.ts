@@ -4,7 +4,7 @@ import wasm from 'vite-plugin-wasm'
 import cesium from 'vite-plugin-cesium'
 import path from 'path'
 import { readFileSync } from 'fs'
-import { Readable } from 'stream'
+import { pipeline, Readable } from 'stream'
 
 const tensogramPkg = path.resolve(
   __dirname, 'node_modules/@ecmwf.int/tensogram/dist/index.js',
@@ -67,7 +67,18 @@ function corsProxy(): Plugin {
           // This lets the client start processing chunks as they arrive,
           // matching the nginx production proxy's `proxy_buffering off`.
           const nodeStream = Readable.fromWeb(upstream.body as import('stream/web').ReadableStream);
-          nodeStream.pipe(res);
+
+          // Abort the upstream fetch if the client disconnects early.
+          res.on('close', () => {
+            if (!res.writableFinished) nodeStream.destroy();
+          });
+
+          pipeline(nodeStream, res, (err) => {
+            if (err && !res.headersSent) {
+              res.statusCode = 502;
+              res.end(`Proxy stream error: ${err}`);
+            }
+          });
         } catch (err) {
           if (!res.headersSent) {
             res.statusCode = 502;

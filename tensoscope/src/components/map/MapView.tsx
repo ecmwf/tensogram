@@ -8,8 +8,7 @@ import { ColorBar } from './ColorBar';
 import { ColorScaleControls } from './ColorScaleControls';
 import { RenderModePicker } from './RenderModePicker';
 import type { FieldOverlayProps, ViewBounds } from './FieldOverlay';
-import { ProjectionPicker, PROJECTION_PRESETS } from './ProjectionPicker';
-import type { ProjectionPreset } from './ProjectionPicker';
+import { ProjectionPicker, PROJECTION_PRESETS, type ProjectionPreset } from './ProjectionPicker';
 import type { CustomStop } from './colormaps';
 
 // Lazy-load CesiumView -- Cesium is ~2.5 MB of JS plus skybox textures,
@@ -142,7 +141,9 @@ export function MapView(props: MapViewProps) {
 
   // Default to flat map -- Cesium (globe) is lazy-loaded and weighs ~2.5 MB.
   // Starting on flat avoids that cost for users who never switch to globe.
-  const [activePreset, setActivePreset] = useState<ProjectionPreset>(PROJECTION_PRESETS[1]);
+  const [activePreset, setActivePreset] = useState<ProjectionPreset>(
+    PROJECTION_PRESETS.find((p) => p.id === 'flat') ?? PROJECTION_PRESETS[0],
+  );
   const [renderMode, setRenderMode] = useState<'heatmap' | 'contours'>('heatmap');
   const [highResEnabled, setHighResEnabled] = usePersistedState('tensoscope.display.highRes', true);
   const [showLabels, setShowLabels] = usePersistedState('tensoscope.display.labels', false);
