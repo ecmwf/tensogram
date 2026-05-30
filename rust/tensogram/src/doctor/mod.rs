@@ -942,15 +942,11 @@ mod tests {
 
     #[test]
     fn feature_row_off_serialises_flat() {
-        // We need a guaranteed-Off feature.  `szip-pure` is mutually exclusive
-        // with `szip` in the typical default build; either one of them is Off.
-        let report = run_diagnostics();
-        let off_row = report
-            .features
-            .iter()
-            .find(|f| matches!(f.state, FeatureState::Off))
-            .expect("at least one feature should be Off in default build");
-        let json = serde_json::to_value(off_row).expect("feature row serialises");
+        // The serialised *shape* of an Off feature row is what's under test,
+        // so construct one directly rather than depending on the build having
+        // an Off feature — under `--all-features` every feature is On.
+        let off_row = FeatureStatus::off("szip-pure", FeatureKind::Compression);
+        let json = serde_json::to_value(&off_row).expect("feature row serialises");
         let obj = json.as_object().expect("feature row is a JSON object");
         assert_eq!(
             obj["state"],
