@@ -61,6 +61,18 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] **cpp-async — PR 6: Integration tests, docs, polish**
 
+- [x] **cpp-async follow-up: caller examples, streaming-async guide, and
+      remote `open_remote` frontend**
+    Closed the documented gaps left by the rollup: added
+    `examples/cpp/19`–`24` (callback / `std::future` / coroutine
+    producer / consumer / remote), `docs/src/guide/cpp-streaming-async.md`,
+    and the `plans/DONE.md` / `CHANGELOG.md` / `README.md` /
+    `plans/ARCHITECTURE.md` entries.  Surfaced `async_file::open_remote`
+    on all three C++ frontends (over the always-linkable
+    `tgm_async_file_open_remote`) and added the `TENSOGRAM_ASYNC_REMOTE`
+    CMake option — the FFI `async-remote` feature plus object_store's
+    `fs` backend so `file://` URLs work through the remote read path.
+
 - [ ] **cpp-async follow-up: real `tgm_runtime_shutdown_blocking`**
     The function is currently a no-op stub that returns 0.  The shared
     runtime lives behind a `OnceLock` so it cannot be torn down without
@@ -103,14 +115,13 @@ For speculative ideas, see `IDEAS.md`.
     "cancelled".  Consider either bumping the timeout to 90 min for
     feature-PR scope, or splitting future feature PRs so each
     sits under the typical small-diff window.
-    - Two-process producer/consumer integration test on local tmpfs
-      (HPC-filesystem testing handled separately by ops).
-    - Cross-language parity test: C++ async producer + Python async
-      consumer via in-process HTTP fixture.
-    - `docs/src/guide/cpp-async.md` and
-      `docs/src/guide/cpp-streaming-async.md`.
-    - Update `plans/DONE.md`, `README.md`, `plans/ARCHITECTURE.md`.
-    - See `plans/PLAN_CPP_ASYNC.md` §11.3, §13 PR 6.
+    Still open from the original PR 6 scope: a **cross-language parity
+    test** (C++ async producer + Python async consumer via an
+    in-process HTTP fixture).  The single-process producer/consumer
+    integration test (`cpp/tests/test_async_producer_consumer.cpp`),
+    the `cpp-async` / `cpp-streaming-async` guides, and the
+    DONE / README / ARCHITECTURE entries are done.
+    See `plans/PLAN_CPP_ASYNC.md` §11.3, §13 PR 6.
 
 ## Multi-Language Support
 

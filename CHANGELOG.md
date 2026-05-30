@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Asynchronous C++ API
+
+A header-only asynchronous read/write surface for the C++ wrapper,
+sharing Tensogram's internal tokio runtime with no tokio types in the
+public API. Three opt-in frontends layer on one callback-based FFI
+core: `tensogram/async/callback.hpp` (C++17, always available),
+`tensogram/async/std_future.hpp` (C++17, `std::future<T>`), and
+`tensogram/async/coro.hpp` (C++20 `task<T>` + `co_await`, with an
+`async_for_each` message walker). The surface covers async file open,
+message count/read, decode (message / metadata / object), and a
+local-file streaming encoder for the producer side — all with
+cancellation tokens and per-call timeouts (`TGM_ERROR_CANCELLED` /
+`TGM_ERROR_TIMEOUT`). A contained multi-thread tokio runtime (default
+workers `min(num_cpus, 8)`) drives the work; a separate dispatcher pool
+runs user callbacks so a slow callback cannot starve I/O.
+
+`async_file::open_remote` reads `.tgm` files over an object store or a
+`file://` URL (`s3://`, `gs://`, `az://`, `https://`, `file://`) on all
+three frontends; enable it with the CMake `TENSOGRAM_ASYNC_REMOTE`
+option (FFI `async-remote` feature, which also turns on object_store's
+`fs` backend for `file://`). The async streaming encoder produces
+byte-identical output to the synchronous encoder, so async-written
+files round-trip through every binding.
+
+New caller examples `examples/cpp/19`–`24` and user guides
+`docs/src/guide/cpp-async.md` and
+`docs/src/guide/cpp-streaming-async.md`.
+
 ## [0.21.0] - 2026-04-29
 
 ### Added — Decode-time hash verification with per-frame `HASH_PRESENT` flag

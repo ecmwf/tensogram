@@ -383,6 +383,29 @@ public:
         });
     }
 
+    /// Open a remote `.tgm` (S3 / GCS / Azure / HTTP / `file://`).
+    /// See `tensogram::async_callback::async_file::open_remote` for
+    /// the `storage_options` / `bidirectional` semantics and the
+    /// `async-remote` feature requirement.
+    [[nodiscard]] static awaiter<async_file> open_remote(
+        const std::string& url,
+        const std::vector<std::pair<std::string, std::string>>& storage_options,
+        bool bidirectional,
+        tac::cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) {
+        return detail::launch_awaiter<async_file>(
+            [url, storage_options, bidirectional, token, timeout](auto cb) {
+                tac::async_file::open_remote(url, storage_options, bidirectional,
+                    [cb = std::move(cb)](tac::result<tac::async_file> r) mutable {
+                        if (r.ok()) {
+                            cb(tac::result<async_file>::ok_value(async_file(r.take())));
+                        } else {
+                            cb(tac::result<async_file>::err(r.code(), r.message()));
+                        }
+                    }, token, timeout);
+            });
+    }
+
     [[nodiscard]] awaiter<std::size_t> message_count(
         tac::cancellation_token* token = nullptr,
         std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {

@@ -240,8 +240,46 @@ tac::runtime_configure(/*workers=*/16,
 Subsequent calls throw `invalid_arg_error` because the runtime is
 built lazily on first use and cannot be reconfigured after that.
 
-`runtime_shutdown_blocking(timeout)` drains in-flight tasks and
-returns the count that did not finish within the deadline.
+`runtime_shutdown_blocking(timeout)` is reserved for graceful shutdown.
+In the current release it is a no-op that returns `0`: process exit is
+abrupt by design and tokio drops in-flight tasks at teardown. The
+signature is stable so a future release can drain tasks and report the
+count that did not finish within the deadline without an ABI break.
+
+## Remote reads (`open_remote`)
+
+All three frontends can open a `.tgm` over an object store or a
+`file://` URL on the read path:
+
+```cpp
+// callback frontend
+tac::async_file::open_remote(
+    "s3://bucket/forecast.tgm",
+    /*storage_options=*/{{"aws_region", "eu-west-1"}},
+    /*bidirectional=*/true,
+    [](tac::result<tac::async_file> r) { /* ... */ });
+
+// std::future frontend
+auto file = tsf::async_file::open_remote("gs://bucket/f.tgm", {}, true).get();
+
+// coroutine frontend
+auto file = co_await tco::async_file::open_remote("az://c/f.tgm", {}, true);
+```
+
+`storage_options` are object-store key→value pairs (credentials,
+region, endpoint); pass an empty list to use ambient configuration.
+`bidirectional` selects the pipelined two-ended remote scan.
+
+Supported schemes: `s3://`, `gs://`, `az://`, `https://`, and
+`file://`.  Requires the FFI built with `--features=async-remote`
+(`cmake -S cpp -B build -DTENSOGRAM_ASYNC_REMOTE=ON`).  The
+`tgm_async_file_open_remote` symbol is always linkable; in a build
+without the feature it resolves with `TGM_ERROR_REMOTE` and a
+diagnostic naming the missing feature, so callers never hit an
+undefined symbol.
+
+See `examples/cpp/19_async_decode_remote.cpp` and the
+[producer/consumer guide](cpp-streaming-async.md).
 
 ## What's not in scope (v1)
 

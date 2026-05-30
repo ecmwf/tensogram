@@ -96,3 +96,13 @@ TEST(AsyncStdFuture, StreamingEncoderRoundTrip) {
 
     std::filesystem::remove(path);
 }
+
+TEST(AsyncStdFuture, OpenRemoteSurfacesError) {
+    // open_remote returns a std::future; the error (TGM_ERROR_REMOTE
+    // without the async-remote feature, file-not-found with it) surfaces
+    // as a typed tensogram::error through .get().
+    auto fut = tsf::async_file::open_remote(
+        "file:///nonexistent/tensogram_open_remote_probe.tgm",
+        {{"region", "eu-west-1"}}, /*bidirectional=*/false);
+    EXPECT_THROW(fut.get(), tensogram::error);
+}

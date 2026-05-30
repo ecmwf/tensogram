@@ -6,10 +6,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ---------------------------------------------------------------------------
-# Async surface (PR 4 of the cpp-async plan)
+# Async surface
 # ---------------------------------------------------------------------------
+# TENSOGRAM_ASYNC enables the header-only C++ async frontends and builds the
+# FFI with --features=async.  TENSOGRAM_ASYNC_REMOTE additionally enables the
+# object-store backend (s3://, gs://, az://, https:// and file://) by building
+# the FFI with --features=async-remote; it implies TENSOGRAM_ASYNC.
 option(TENSOGRAM_ASYNC "Build the async FFI surface and C++ frontends" ON)
-if(TENSOGRAM_ASYNC)
+option(TENSOGRAM_ASYNC_REMOTE
+    "Build the async object-store backend (implies TENSOGRAM_ASYNC)" OFF)
+if(TENSOGRAM_ASYNC_REMOTE AND NOT TENSOGRAM_ASYNC)
+    message(STATUS "TENSOGRAM_ASYNC_REMOTE=ON -> forcing TENSOGRAM_ASYNC=ON")
+    set(TENSOGRAM_ASYNC ON)
+endif()
+if(TENSOGRAM_ASYNC_REMOTE)
+    set(CARGO_FEATURES "--features=async-remote")
+elseif(TENSOGRAM_ASYNC)
     set(CARGO_FEATURES "--features=async")
 else()
     set(CARGO_FEATURES "")
@@ -64,6 +76,9 @@ if(TENSOGRAM_ASYNC)
     target_compile_definitions(tensogram INTERFACE TENSOGRAM_ASYNC=1)
     find_package(Threads REQUIRED)
     target_link_libraries(tensogram INTERFACE Threads::Threads)
+endif()
+if(TENSOGRAM_ASYNC_REMOTE)
+    target_compile_definitions(tensogram INTERFACE TENSOGRAM_ASYNC_REMOTE=1)
 endif()
 
 # Platform-specific system libraries required by the Rust static library

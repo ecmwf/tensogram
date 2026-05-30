@@ -257,3 +257,53 @@ TEST(AsyncCallback, RuntimeConfigureAfterInitErrors) {
 
     std::filesystem::remove(path);
 }
+
+TEST(AsyncCallback, OpenRemoteSurfacesError) {
+    // open_remote marshals the storage-option key/value arrays and calls
+    // the always-linkable tgm_async_file_open_remote.  Without the
+    // async-remote feature it resolves synchronously with
+    // TGM_ERROR_REMOTE; with it, a nonexistent file:// URL resolves with
+    // a not-found error.  Either way the result is an error, never a
+    // value, and the call never crashes.
+    auto fut = as_future<tac::async_file>([&](auto cb) {
+        tac::async_file::open_remote(
+            "file:///nonexistent/tensogram_open_remote_probe.tgm",
+            {{"region", "eu-west-1"}},  // exercises the key/value marshalling
+            /*bidirectional=*/false, std::move(cb));
+    });
+    auto r = fut.get();
+    EXPECT_FALSE(r.ok());
+#ifndef TENSOGRAM_ASYNC_REMOTE
+    EXPECT_EQ(r.code(), TGM_ERROR_REMOTE) << r.message();
+#endif
+}
+
+#ifdef TENSOGRAM_ASYNC_REMOTE
+TEST(AsyncCallback, OpenRemoteFileUrlRoundTrip) {
+    // With the async-remote feature a file:// URL routes through
+    // object_store's LocalFileSystem, so the full remote read path
+    // (open_remote -> message_count -> decode) can be exercised offline
+    // and deterministically.  This is the success-path counterpart to
+    // OpenRemoteSurfacesError.
+    auto path = make_sync_test_file();
+    const std::string url = "file://" + std::filesystem::absolute(path).string();
+
+    auto open_r = as_future<tac::async_file>([&](auto cb) {
+        tac::async_file::open_remote(url, {}, /*bidirectional=*/false, std::move(cb));
+    }).get();
+    ASSERT_TRUE(open_r.ok()) << open_r.message();
+    auto file = open_r.take();
+
+    auto count_r = as_future<std::size_t>(
+        [&](auto cb) { file.message_count(std::move(cb)); }).get();
+    ASSERT_TRUE(count_r.ok()) << count_r.message();
+    EXPECT_EQ(count_r.value(), 1u);
+
+    auto dec_r = as_future<tensogram::message>(
+        [&](auto cb) { file.decode_message(0, std::move(cb)); }).get();
+    ASSERT_TRUE(dec_r.ok()) << dec_r.message();
+    EXPECT_EQ(dec_r.value().num_objects(), 1u);
+
+    std::filesystem::remove(path);
+}
+#endif  // TENSOGRAM_ASYNC_REMOTE

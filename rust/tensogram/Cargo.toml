@@ -49,7 +49,7 @@ tracing.workspace = true
 memmap2 = { version = "0.9", optional = true }
 tokio = { version = "1", features = ["fs", "rt"], optional = true }
 # Remote object store access (S3, GCS, Azure, HTTP)
-object_store = { version = "0.13", default-features = false, features = ["aws", "gcp", "azure", "http"], optional = true }
+object_store = { version = "0.13", default-features = false, features = ["aws", "gcp", "azure", "http", "fs"], optional = true }
 url = { version = "2", optional = true }
 bytes = { version = "1", optional = true }
 rayon = { workspace = true, optional = true }

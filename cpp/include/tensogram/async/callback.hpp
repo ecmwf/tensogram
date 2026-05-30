@@ -267,6 +267,56 @@ public:
         register_async_file_completion(task, std::move(cb));
     }
 
+    /// Open a remote `.tgm` over S3 / GCS / Azure / HTTP asynchronously.
+    ///
+    /// `url` is an object-store URL (`s3://bucket/key.tgm`, `gs://…`,
+    /// `az://…`, `https://…`) or a `file://…` URL routed through the
+    /// same object-store backend.  `storage_options` carries backend
+    /// credentials / configuration as key→value pairs (e.g.
+    /// `{{"aws_region", "eu-west-1"}}`); pass an empty vector to rely
+    /// on ambient credentials (environment, instance role).
+    /// `bidirectional` selects the pipelined two-ended remote scan.
+    ///
+    /// Requires the FFI to be built with the `async-remote` Cargo
+    /// feature.  Without it the callback fires with `TGM_ERROR_REMOTE`
+    /// and a diagnostic naming the missing feature — the symbol is
+    /// always linkable, so this never becomes an undefined reference.
+    /// `timeout` is in milliseconds; pass `0` for no timeout.
+    static void open_remote(
+        const std::string& url,
+        const std::vector<std::pair<std::string, std::string>>& storage_options,
+        bool bidirectional,
+        std::function<void(result<async_file>)> cb,
+        cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) {
+        // The FFI copies every key/value string into an owned map
+        // before returning, so these `c_str()` views only need to
+        // stay valid across the synchronous launch call below.
+        std::vector<const char*> keys;
+        std::vector<const char*> values;
+        keys.reserve(storage_options.size());
+        values.reserve(storage_options.size());
+        for (const auto& [k, v] : storage_options) {
+            keys.push_back(k.c_str());
+            values.push_back(v.c_str());
+        }
+        tgm_async_task_t* task = nullptr;
+        tgm_error err = tgm_async_file_open_remote(
+            url.c_str(),
+            keys.empty() ? nullptr : keys.data(),
+            values.empty() ? nullptr : values.data(),
+            storage_options.size(),
+            bidirectional,
+            token ? token->raw() : nullptr,
+            static_cast<uint64_t>(timeout.count()),
+            &task);
+        if (err != TGM_ERROR_OK) {
+            cb(result<async_file>::err(err, detail::error_message_from_last()));
+            return;
+        }
+        register_async_file_completion(task, std::move(cb));
+    }
+
     /// Async message-count.
     void message_count(std::function<void(result<std::size_t>)> cb,
                        cancellation_token* token = nullptr,

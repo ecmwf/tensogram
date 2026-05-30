@@ -44,6 +44,7 @@ Tensogram defines a binary message format, not strictly a file format. Multiple 
 - **File API** — `TensogramFile` for multi-message `.tgm` files: append, random-access read, iterate, and decode individual messages or objects
 - **Remote access** — read `.tgm` files directly from S3, GCS, Azure Blob, or HTTP via `object_store` integration (`open_remote`, `open_source`)
 - **Async API** — full async counterparts for file open, message read, decode, and iteration via tokio (`open_async`, `decode_message_async`, etc.)
+- **Async C++ API** — header-only asynchronous C++ frontends (callback, `std::future`, and C++20 coroutines) over the FFI async core, built for HPC streaming producer/consumer pipelines; includes cancellation/timeouts and remote reads (`open_remote`)
 - **Streaming encoder** — progressive encode/transmit without buffering the full message; preceder metadata frames enable consumer-side streaming decode
 - **Compression** — szip, zstd, lz4, blosc2, zfp, sz3 per data object; pure-Rust backends available (`szip-pure`, `zstd-pure`) for environments without C libraries
 - **Hash verified integrity** — xxHash xxh3-64 integrity check per frame
@@ -199,6 +200,12 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure  # run C++ tests
 ```
 See `examples/cpp/` for encode/decode, metadata, file API, and iterator examples.
+
+The async surface is built by default (`-DTENSOGRAM_ASYNC=ON`). Examples
+`19`–`24` cover the callback, `std::future`, and C++20 coroutine
+frontends; add `-DTENSOGRAM_ASYNC_REMOTE=ON` to build the object-store
+read path (example `19`). See the [C++ Async API](docs/src/guide/cpp-async.md)
+and [C++ Async Streaming](docs/src/guide/cpp-streaming-async.md) guides.
 
 **Python bindings** (PyO3 + maturin, requires [uv](https://docs.astral.sh/uv/getting-started/installation/)):
 ```bash

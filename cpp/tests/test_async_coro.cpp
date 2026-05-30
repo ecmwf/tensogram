@@ -132,3 +132,17 @@ TEST(AsyncCoro, AsyncForEachWalksAllMessages) {
     EXPECT_EQ(n, 1u);
     std::filesystem::remove(path);
 }
+
+TEST(AsyncCoro, OpenRemoteSurfacesError) {
+    // open_remote is awaitable; the error surfaces as a thrown
+    // tensogram::error out of block_on (TGM_ERROR_REMOTE without the
+    // async-remote feature, file-not-found with it).
+    auto run = []() -> tco::task<int> {
+        auto file = co_await tco::async_file::open_remote(
+            "file:///nonexistent/tensogram_open_remote_probe.tgm",
+            {{"region", "eu-west-1"}}, /*bidirectional=*/false);
+        (void)file;
+        co_return 0;
+    };
+    EXPECT_THROW(tco::block_on(run()), tensogram::error);
+}
