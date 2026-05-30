@@ -442,15 +442,12 @@ pub(crate) fn validate_structure<'a>(
                 // v3 data-object footer: [cbor_offset u64][hash u64][ENDF 4]
                 // cbor_offset lives at endf_offset - 16 (not -8 as in v2).
                 let cbor_offset_pos = endf_offset - 16;
-                if cbor_offset_pos < pos + FRAME_HEADER_SIZE {
-                    issues.push(err(
-                        IssueCode::DataObjectTooSmall,
-                        ValidationLevel::Structure,
-                        Some(obj_idx),
-                        Some(pos),
-                        format!("data object frame at offset {pos} too small for cbor_offset"),
-                    ));
-                } else {
+                // The data-object `min_size` guard above guarantees
+                // `frame_total >= FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE`,
+                // so `cbor_offset_pos` (= `endf_offset - 16`) is always
+                // `>= pos + FRAME_HEADER_SIZE`.  The frame therefore always has
+                // room for the footer; there is no reachable "too small" case.
+                {
                     let cbor_offset_raw = wire::read_u64_be(buf, cbor_offset_pos);
                     let cbor_offset = match usize::try_from(cbor_offset_raw) {
                         Ok(v) => v,
