@@ -785,3 +785,269 @@ fn async_file_open_remote_rejects_null_storage_keys() {
     assert!(matches!(err, TgmError::InvalidArg));
     assert!(task.is_null());
 }
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_open_remote_file_url_round_trip() {
+    // The async-remote success path: a file:// URL routes through
+    // object_store's LocalFileSystem, so open_remote can be exercised
+    // offline and deterministically (no network, no credentials).  Covers
+    // the URL parse, the no-options branch, the spawn, and the downstream
+    // remote scan that the null-argument tests above never reach.
+    let f = make_test_file();
+    let abs = std::fs::canonicalize(f.path()).unwrap();
+    let url = cstring(&format!("file://{}", abs.display()));
+
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open_remote(
+        url.as_ptr(),
+        ptr::null(),
+        ptr::null(),
+        0,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::Ok));
+
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let err = tgm_async_task_join_async_file(task, &mut file);
+    assert!(matches!(err, TgmError::Ok));
+    tgm_async_task_free(task);
+    assert!(!file.is_null());
+
+    // The handle is usable: a remote-backed message_count returns 1.
+    let mut count_task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_message_count(file, ptr::null_mut(), 0, &mut count_task);
+    assert!(matches!(err, TgmError::Ok));
+    let mut n: u64 = 0;
+    let err = tgm_async_task_join_size(count_task, &mut n);
+    assert!(matches!(err, TgmError::Ok));
+    assert_eq!(n, 1);
+    tgm_async_task_free(count_task);
+
+    tgm_async_file_close(file);
+}
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_open_remote_marshals_storage_options() {
+    // Exercises the storage-option key/value marshalling loop (nopts > 0)
+    // on the success path.  The launch builds the option map synchronously
+    // before spawning, so it returns Ok regardless of whether the backend
+    // later accepts the options.
+    let f = make_test_file();
+    let abs = std::fs::canonicalize(f.path()).unwrap();
+    let url = cstring(&format!("file://{}", abs.display()));
+
+    let key = cstring("region");
+    let value = cstring("eu-west-1");
+    let keys: [*const std::os::raw::c_char; 1] = [key.as_ptr()];
+    let values: [*const std::os::raw::c_char; 1] = [value.as_ptr()];
+
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open_remote(
+        url.as_ptr(),
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        false,
+        ptr::null_mut(),
+        5000,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::Ok)); // map built synchronously, task spawned
+
+    // Join either succeeds (option ignored) or surfaces a backend error;
+    // either way the marshalling path under test already ran.  Free
+    // whatever the join produced so the test leaks nothing.
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let join_err = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+    if matches!(join_err, TgmError::Ok) {
+        assert!(!file.is_null());
+        tgm_async_file_close(file);
+    }
+}
+
+#[test]
+fn async_decode_object_round_trip() {
+    // Success path of decode_object (the existing tests only cover its
+    // null-argument rejection).  Resolves to a single-object message.
+    let f = make_test_file();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let _ = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut task);
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+
+    let mut obj_task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_decode_object(
+        file,
+        0,
+        0,
+        true,
+        0,
+        true,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut obj_task,
+    );
+    assert!(matches!(err, TgmError::Ok));
+    let mut msg: *mut TgmMessage = ptr::null_mut();
+    let err = tgm_async_task_join_message(obj_task, &mut msg);
+    assert!(matches!(err, TgmError::Ok));
+    tgm_async_task_free(obj_task);
+    assert_eq!(tgm_message_num_objects(msg), 1);
+    tgm_message_free(msg);
+
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn async_decode_range_round_trip() {
+    // Success path of decode_range, which resolves to a MultiBytes task —
+    // so this also covers tgm_async_task_join_multi_bytes and
+    // tgm_multi_bytes_free, none of which the null-argument tests reach.
+    // The test object is a float32[4]; decode the whole [0, 4) element
+    // range -> one buffer of 16 bytes.
+    let f = make_test_file();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let _ = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut task);
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+
+    let offsets: [u64; 1] = [0];
+    let counts: [u64; 1] = [4];
+    let mut range_task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_decode_range(
+        file,
+        0,
+        0,
+        offsets.as_ptr(),
+        counts.as_ptr(),
+        1,
+        true,
+        0,
+        ptr::null_mut(),
+        0,
+        &mut range_task,
+    );
+    assert!(matches!(err, TgmError::Ok));
+
+    let mut array: *mut TgmBytes = ptr::null_mut();
+    let mut count: usize = 0;
+    let err = tgm_async_task_join_multi_bytes(range_task, &mut array, &mut count);
+    assert!(matches!(err, TgmError::Ok));
+    tgm_async_task_free(range_task);
+    assert_eq!(count, 1);
+    assert!(!array.is_null());
+    let first = unsafe { &*array };
+    assert_eq!(first.len, 16); // 4 × float32
+    tgm_multi_bytes_free(array, count);
+
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn async_runtime_shutdown_blocking_is_noop() {
+    // Reserved ABI: currently a no-op that reports zero unfinished tasks
+    // (process exit is abrupt by design).  Must not panic.
+    assert_eq!(tgm_runtime_shutdown_blocking(100), 0);
+}
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_open_remote_rejects_non_utf8_url() {
+    // Adversarial: a non-UTF-8 URL must be rejected, not interpreted.
+    let url = CString::new(vec![0xFF, 0xFE, 0x80]).unwrap();
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open_remote(
+        url.as_ptr(),
+        ptr::null(),
+        ptr::null(),
+        0,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_open_remote_rejects_null_storage_entry() {
+    // Non-null arrays, but a null key pointer inside them.
+    let url = cstring("file:///tmp/x.tgm");
+    let value = cstring("v");
+    let keys: [*const std::os::raw::c_char; 1] = [ptr::null()];
+    let values: [*const std::os::raw::c_char; 1] = [value.as_ptr()];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open_remote(
+        url.as_ptr(),
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_open_remote_rejects_non_utf8_storage_key() {
+    // Adversarial: non-UTF-8 bytes in a storage-option key.
+    let url = cstring("file:///tmp/x.tgm");
+    let bad_key = CString::new(vec![0xFF, 0xFE]).unwrap();
+    let value = cstring("v");
+    let keys: [*const std::os::raw::c_char; 1] = [bad_key.as_ptr()];
+    let values: [*const std::os::raw::c_char; 1] = [value.as_ptr()];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open_remote(
+        url.as_ptr(),
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[cfg(feature = "async-remote")]
+#[test]
+fn async_open_remote_rejects_non_utf8_storage_value() {
+    // Adversarial: non-UTF-8 bytes in a storage-option value.
+    let url = cstring("file:///tmp/x.tgm");
+    let key = cstring("k");
+    let bad_value = CString::new(vec![0xFF, 0xFE]).unwrap();
+    let keys: [*const std::os::raw::c_char; 1] = [key.as_ptr()];
+    let values: [*const std::os::raw::c_char; 1] = [bad_value.as_ptr()];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open_remote(
+        url.as_ptr(),
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        false,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
