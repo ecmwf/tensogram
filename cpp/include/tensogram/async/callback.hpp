@@ -21,6 +21,18 @@
 #ifndef TENSOGRAM_ASYNC_CALLBACK_HPP
 #define TENSOGRAM_ASYNC_CALLBACK_HPP
 
+// The async frontends call `tgm_async_*` symbols that exist only when the
+// FFI is built with the `async` Cargo feature.  CMake defines
+// `TENSOGRAM_ASYNC=1` on the `tensogram` target exactly when that build is
+// selected (`-DTENSOGRAM_ASYNC=ON`, the default).  Including an async
+// header in an async-disabled build would otherwise fail at link time with
+// undefined `tgm_async_*` references; fail fast with a clear message
+// instead.  (coro.hpp and std_future.hpp include this header, so the guard
+// covers the whole `async/` family.)
+#if !defined(TENSOGRAM_ASYNC)
+#  error "tensogram/async/*.hpp requires the async build: configure CMake with -DTENSOGRAM_ASYNC=ON (the default), or define TENSOGRAM_ASYNC if you build the FFI with --features=async by hand."
+#endif
+
 #include "../../tensogram.hpp"
 
 #include <chrono>

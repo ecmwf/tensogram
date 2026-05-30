@@ -193,15 +193,17 @@ public:
 
 namespace detail {
 
-/// Throw the typed C++ exception that matches a non-OK C error code,
-/// using `message` as the exception text.
+/// Throw the typed C++ exception that matches a C error code, using
+/// `message` as the exception text.
 ///
-/// `TGM_ERROR_OK` is silently a no-op so callers can hand any code
-/// through without prior screening.  Used both by [`check()`] (which
-/// captures the FFI's thread-local last-error string) and by the
-/// async frontends (which capture the message inside completion
-/// handlers, before any other FFI call on the thread can clobber the
-/// last-error slot).
+/// This is `[[noreturn]]` and must be called with a *non-OK* code:
+/// `TGM_ERROR_OK` has no corresponding exception and falls through to
+/// the generic [`error`], so callers screen for OK first.  [`check()`]
+/// only calls this on a non-OK code, and the async frontends only on a
+/// failed `result`.  Used both by [`check()`] (which captures the FFI's
+/// thread-local last-error string) and by the async frontends (which
+/// capture the message inside completion handlers, before any other FFI
+/// call on the thread can clobber the last-error slot).
 [[noreturn]] inline void throw_for_code(tgm_error err, const std::string& message) {
     switch (err) {
         case TGM_ERROR_FRAMING:       throw framing_error(err, message);

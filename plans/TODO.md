@@ -30,10 +30,10 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] **cpp-async — PR 3: FFI async core (write path)**
     - `tgm_async_streaming_encoder_*` family.
-    - Local file (`tokio::fs::File`) and object-store
-      (`object_store::MultipartUpload`) backends.
+    - Local file (`tokio::fs::File`) backend.  Object-store
+      `MultipartUpload` streaming-write is deferred: v1 writes are
+      local-file only (see `cpp-async.md` "What's not in scope (v1)").
     - Cancellation mid-stream leaves file as-is (no truncate/delete).
-    - Tests including in-process HTTP fixture for object-store path.
     - See `plans/PLAN_CPP_ASYNC.md` §3.4, §5, §13 PR 3.
 
 - [x] **cpp-async — PR 4: C++ `async/callback.hpp` (callback frontend)**

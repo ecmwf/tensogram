@@ -524,6 +524,10 @@ fn json_to_cbor(v: serde_json::Value) -> ciborium::Value {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 ciborium::Value::Integer(Integer::from(i))
+            } else if let Some(u) = n.as_u64() {
+                // Unsigned integers above i64::MAX would lose precision via
+                // the f64 fallback, so keep them as CBOR integers.
+                ciborium::Value::Integer(Integer::from(u))
             } else if let Some(f) = n.as_f64() {
                 ciborium::Value::Float(f)
             } else {

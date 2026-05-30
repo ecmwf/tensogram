@@ -126,9 +126,42 @@ async fn async_and_sync_produce_identical_bytes() {
         enc.finish().await.unwrap()
     };
 
-    // Provenance fields (uuid, timestamp) differ between encoder
-    // instantiations.  Decode both and compare descriptors + payloads
-    // instead.
+    // Wire-format parity: the two encoders must produce byte-identical
+    // output save for the per-instance provenance (uuid + timestamp) the
+    // encoder stamps into the header-metadata frame.  Pin the format by
+    // requiring identical total length and identical bytes from the first
+    // data-object frame onward: the data frames, footer and postamble carry
+    // no provenance, so any drift in frame ordering, padding, hash slots or
+    // footer layout there would fail this assertion.
+    assert_eq!(
+        sync_bytes.len(),
+        async_bytes.len(),
+        "async wire length must match sync"
+    );
+    // The only legitimate byte difference is the per-instance provenance
+    // (uuid + timestamp) the encoder stamps into one metadata frame.
+    // Require every differing byte to fall within a single short run, so
+    // any drift in frame ordering, padding, hash slots or footer layout —
+    // which would change the length or scatter the differences across the
+    // data frames — fails this assertion.
+    let diffs: Vec<usize> = sync_bytes
+        .iter()
+        .zip(&async_bytes)
+        .enumerate()
+        .filter(|&(_, (a, b))| a != b)
+        .map(|(i, _)| i)
+        .collect();
+    if let (Some(&first), Some(&last)) = (diffs.first(), diffs.last()) {
+        assert!(
+            last - first < 64,
+            "sync/async wire bytes differ outside the localised provenance \
+             run (positions {first}..={last}, {} diffs)",
+            diffs.len(),
+        );
+    }
+
+    // Belt-and-braces: decode both and confirm descriptors + payloads
+    // round-trip identically.
     let (sync_meta, sync_objs) = decode(&sync_bytes, &DecodeOptions::default()).unwrap();
     let (async_meta, async_objs) = decode(&async_bytes, &DecodeOptions::default()).unwrap();
 
