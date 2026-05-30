@@ -45,6 +45,11 @@ use std::path::Path;
 use std::ptr;
 use std::slice;
 
+#[cfg(feature = "async")]
+pub mod async_core;
+#[cfg(feature = "async")]
+pub mod async_streaming;
+
 use tensogram::encode::MaskMethod;
 use tensogram::validate::{
     ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
@@ -83,6 +88,7 @@ const _: () = assert!(
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TgmError {
     Ok = 0,
     Framing = 1,
@@ -104,6 +110,13 @@ pub enum TgmError {
     /// `tgm_last_error_object_index()` for the duration of the
     /// thread-local error.
     MissingHash = 11,
+    /// Async task exceeded its deadline; the underlying tokio future
+    /// was dropped at the next yield point.  See
+    /// `plans/PLAN_CPP_ASYNC.md` §7.1.
+    Timeout = 12,
+    /// Async task observed its cancellation token fire before the
+    /// future resolved.  See `plans/PLAN_CPP_ASYNC.md` §7.2.
+    Cancelled = 13,
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
@@ -646,7 +659,7 @@ struct ParsedEncode<'a> {
 /// idiom is "if you want a feature, name it; if you don't, pass
 /// NULL" and the FFI's `tgm_encode_*` functions always require an
 /// explicit `hash_algo` argument anyway.
-fn parse_hash_algo(hash_algo: *const c_char) -> Result<bool, (TgmError, String)> {
+pub(crate) fn parse_hash_algo(hash_algo: *const c_char) -> Result<bool, (TgmError, String)> {
     if hash_algo.is_null() {
         return Ok(false);
     }
@@ -2735,6 +2748,9 @@ pub extern "C" fn tgm_error_string(err: TgmError) -> *const c_char {
         8 => b"invalid argument\0",
         9 => b"end of iteration\0",
         10 => b"remote error\0",
+        11 => b"missing hash\0",
+        12 => b"async task timed out\0",
+        13 => b"async task cancelled\0",
         _ => b"unknown error\0",
     };
     s.as_ptr() as *const c_char
@@ -6576,7 +6592,7 @@ struct StreamingEncodeJson {
 }
 
 /// Parse metadata JSON for the streaming encoder (no "descriptors" key).
-fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, String> {
+pub(crate) fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, String> {
     let parsed: StreamingEncodeJson = serde_json::from_str(json_str)
         .map_err(|e| format!("failed to parse metadata JSON: {e}"))?;
 

@@ -20,6 +20,30 @@ C++17 interface over the C FFI.
 | `09_streaming_consumer.cpp` | Consumer-side streaming: scan a growing buffer, decode messages as they arrive |
 | `13_validate.cpp` | Structural, integrity, and fidelity validation at four levels |
 | `16_multi_threaded_pipeline.cpp` | Caller-controlled `threads=N` encode/decode with determinism invariants |
+| `19_async_decode_remote.cpp` | Async remote decode over an object store / `file://` (coroutine frontend) |
+| `20_async_producer.cpp` | Async streaming producer: stream forecast steps into a `.tgm` (coroutine frontend) |
+| `21_async_consumer.cpp` | Async streaming consumer: walk messages with `async_for_each` (coroutine frontend) |
+| `22_async_callback.cpp` | Async read via the callback frontend (C++17): open, count, decode with completion handlers |
+| `23_async_stdfuture.cpp` | Async read via the `std::future` frontend (C++17) |
+| `24_async_cancellation.cpp` | Cancellation tokens and timeouts (callback frontend) |
+
+### Async examples (19–24)
+
+These require the async surface (`TENSOGRAM_ASYNC=ON`, the default). The
+callback / `std::future` examples (22–24) compile on C++17. The
+coroutine examples (19–21) are built as separate C++20 targets — disable
+with `-DTENSOGRAM_ASYNC_CORO_EXAMPLES=OFF` if your compiler lacks C++20
+coroutines. Example 19 additionally needs the object-store backend:
+
+```bash
+cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release -DTENSOGRAM_ASYNC_REMOTE=ON
+cmake --build build -j
+./build/bin/19_async_decode_remote
+```
+
+See the [C++ Async API](../../docs/src/guide/cpp-async.md) and
+[C++ Async Streaming](../../docs/src/guide/cpp-streaming-async.md) guides
+for the API reference and the producer/consumer recipe.
 
 ## API Overview
 

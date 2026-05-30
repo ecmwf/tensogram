@@ -2531,11 +2531,11 @@ fn validate_cbor_offset_out_of_range_detected() {
 
     let report = validate_message(&msg, &ValidateOptions::default());
     assert!(
-        report.issues.iter().any(|i| matches!(
-            i.code,
-            IssueCode::CborOffsetInvalid | IssueCode::DataObjectTooSmall
-        )),
-        "expected CborOffsetInvalid or DataObjectTooSmall, got: {:?}",
+        report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::CborOffsetInvalid),
+        "expected CborOffsetInvalid, got: {:?}",
         report.issues
     );
 

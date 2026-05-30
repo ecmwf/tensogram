@@ -8,7 +8,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## C++ Async API
 
-- [ ] **cpp-async — PR 1: Rust `AsyncStreamingEncoder`**
+- [x] **cpp-async — PR 1: Rust `AsyncStreamingEncoder`**
     - New `rust/tensogram/src/streaming_async.rs` with
       `AsyncStreamingEncoder<W: AsyncWrite + Unpin>`.
     - Refactor `StreamingEncoder` to share frame-emission logic via a
@@ -18,7 +18,7 @@ For speculative ideas, see `IDEAS.md`.
     - No FFI or C++ changes in this PR.
     - See `plans/PLAN_CPP_ASYNC.md` §5 and §13 PR 1.
 
-- [ ] **cpp-async — PR 2: FFI async core (read path)**
+- [x] **cpp-async — PR 2: FFI async core (read path)**
     - New `tgm_async_task_t`, `tgm_cancellation_token_t`, completion
       callbacks, typed join functions for all read-side async fns.
     - Wire to existing `TensogramFile` async methods.
@@ -28,15 +28,15 @@ For speculative ideas, see `IDEAS.md`.
       returning count of unfinished tasks.
     - See `plans/PLAN_CPP_ASYNC.md` §3 and §13 PR 2.
 
-- [ ] **cpp-async — PR 3: FFI async core (write path)**
+- [x] **cpp-async — PR 3: FFI async core (write path)**
     - `tgm_async_streaming_encoder_*` family.
-    - Local file (`tokio::fs::File`) and object-store
-      (`object_store::MultipartUpload`) backends.
+    - Local file (`tokio::fs::File`) backend.  Object-store
+      `MultipartUpload` streaming-write is deferred: v1 writes are
+      local-file only (see `cpp-async.md` "What's not in scope (v1)").
     - Cancellation mid-stream leaves file as-is (no truncate/delete).
-    - Tests including in-process HTTP fixture for object-store path.
     - See `plans/PLAN_CPP_ASYNC.md` §3.4, §5, §13 PR 3.
 
-- [ ] **cpp-async — PR 4: C++ `async/callback.hpp` (callback frontend)**
+- [x] **cpp-async — PR 4: C++ `async/callback.hpp` (callback frontend)**
     - Header-only, C++17, always available.
     - `result<T>` discriminated union (no exceptions required).
     - `async_file`, `async_streaming_encoder`, `cancellation_token`.
@@ -46,7 +46,7 @@ For speculative ideas, see `IDEAS.md`.
       `24_async_cancellation.cpp`).
     - See `plans/PLAN_CPP_ASYNC.md` §4.1 and §13 PR 4.
 
-- [ ] **cpp-async — PR 5: C++ `async/coro.hpp` + `async/std_future.hpp`**
+- [x] **cpp-async — PR 5: C++ `async/coro.hpp` + `async/std_future.hpp`**
     - `coro.hpp`: C++20 `task<T>`, `when_all`, `block_on`,
       `async_for_each` helper.
     - `std_future.hpp`: C++17 `std::future<T>` adapter via
@@ -59,15 +59,69 @@ For speculative ideas, see `IDEAS.md`.
       `23_async_stdfuture.cpp`).
     - See `plans/PLAN_CPP_ASYNC.md` §4.2–4.3 and §13 PR 5.
 
-- [ ] **cpp-async — PR 6: Integration tests, docs, polish**
-    - Two-process producer/consumer integration test on local tmpfs
-      (HPC-filesystem testing handled separately by ops).
-    - Cross-language parity test: C++ async producer + Python async
-      consumer via in-process HTTP fixture.
-    - `docs/src/guide/cpp-async.md` and
-      `docs/src/guide/cpp-streaming-async.md`.
-    - Update `plans/DONE.md`, `README.md`, `plans/ARCHITECTURE.md`.
-    - See `plans/PLAN_CPP_ASYNC.md` §11.3, §13 PR 6.
+- [x] **cpp-async — PR 6: Integration tests, docs, polish**
+
+- [x] **cpp-async follow-up: caller examples, streaming-async guide, and
+      remote `open_remote` frontend**
+    Closed the documented gaps left by the rollup: added
+    `examples/cpp/19`–`24` (callback / `std::future` / coroutine
+    producer / consumer / remote), `docs/src/guide/cpp-streaming-async.md`,
+    and the `plans/DONE.md` / `CHANGELOG.md` / `README.md` /
+    `plans/ARCHITECTURE.md` entries.  Surfaced `async_file::open_remote`
+    on all three C++ frontends (over the always-linkable
+    `tgm_async_file_open_remote`) and added the `TENSOGRAM_ASYNC_REMOTE`
+    CMake option — the FFI `async-remote` feature plus object_store's
+    `fs` backend so `file://` URLs work through the remote read path.
+
+- [ ] **cpp-async follow-up: real `tgm_runtime_shutdown_blocking`**
+    The function is currently a no-op stub that returns 0.  The shared
+    runtime lives behind a `OnceLock` so it cannot be torn down without
+    leaking the slot.  A real implementation needs to switch the
+    singleton to an owning container (e.g. `Arc<RwLock<Option<Runtime>>>`
+    or a `parking_lot` mutex), drain tasks via
+    `Runtime::shutdown_timeout`, and return the count that did not
+    finish.  The C ABI is already shaped for this; only the
+    implementation behind it changes.
+
+- [ ] **cpp-async follow-up: close mutation-test gaps in
+      `streaming_async.rs` and `tensogram-ffi/src/async_*.rs`**
+    The `Mutants (diff)` CI job for PR #115 surfaced ~150 MISSED
+    mutants concentrated in:
+    - `rust/tensogram/src/streaming_async.rs`: most accessor /
+      finish / write helpers can be replaced with `Ok(())` or
+      `Default::default()` and the existing round-trip tests still
+      pass.  Need targeted unit tests on `object_count`,
+      `bytes_written`, `write_padding`, `write_footer_frames_and_postamble`,
+      and the `+= -=`/`< >=` arithmetic-flag mutations on the byte
+      counter logic.
+    - `rust/tensogram/src/streaming.rs:779` (`padding_for`): the
+      arithmetic body has 8 missed mutations (% → +/-, padding-for → 0/1,
+      etc.).  A direct unit test on `padding_for(n, align)` covering
+      `align = 1, 8, 64` and `n = 0, align - 1, align, align + 1`
+      would close all of these.
+    - `rust/tensogram-ffi/src/async_streaming.rs`: 9 null-arg
+      mutations are now killed by tests in
+      `async_streaming_tests.rs` (see commit `8a10037`); remaining
+      mutations are largely in the descriptor / metadata parsing
+      paths.
+
+    Each individual fix is small (5-15 lines of test code per missed
+    mutant), but the volume justifies a separate hardening PR rather
+    than blocking this one.  The current CI run is also constrained
+    by the `Mutants (diff)` job's 30-minute timeout — a large PR
+    diff plus serialised-by-design `MUTANTS_JOBS=2` runs through
+    only ~30 mutations before the budget elapses, so even if all
+    mutations were killed locally, the CI signal would remain
+    "cancelled".  Consider either bumping the timeout to 90 min for
+    feature-PR scope, or splitting future feature PRs so each
+    sits under the typical small-diff window.
+    Still open from the original PR 6 scope: a **cross-language parity
+    test** (C++ async producer + Python async consumer via an
+    in-process HTTP fixture).  The single-process producer/consumer
+    integration test (`cpp/tests/test_async_producer_consumer.cpp`),
+    the `cpp-async` / `cpp-streaming-async` guides, and the
+    DONE / README / ARCHITECTURE entries are done.
+    See `plans/PLAN_CPP_ASYNC.md` §11.3, §13 PR 6.
 
 ## Multi-Language Support
 

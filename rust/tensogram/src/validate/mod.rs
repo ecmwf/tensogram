@@ -3099,25 +3099,28 @@ mod tests {
         None
     }
 
-    /// DataObjectTooSmall: data object frame has total_length below the
-    /// minimum for cbor_offset + ENDF. We carve a legit message and shrink
-    /// the data object frame's total_length to exactly FRAME_HEADER_SIZE + 8
-    /// (the ENDF marker, no room for cbor_offset).
+    /// An undersized data-object frame — `total_length` below the data-object
+    /// minimum (`FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE`) — is rejected by
+    /// the frame `min_size` guard with `FrameTooSmall`, with no panic.  (This
+    /// guard is also what makes a separate "data object too small for its
+    /// cbor_offset" check unreachable, so no such code path exists.)
     #[test]
-    fn structure_data_object_too_small() {
+    fn structure_undersized_data_object_frame_errors() {
         let msg = make_test_message();
         let (pos, _) = find_data_object_frame(&msg).expect("no DataObject frame");
         let mut patched = msg.clone();
-        // Shrink to FRAME_HEADER_SIZE + 8 so frame_end - 8 < pos + FRAME_HEADER_SIZE,
-        // triggering the DataObjectTooSmall branch at L443.
+        // Shrink the data-object frame to FRAME_HEADER_SIZE + 8, below the
+        // FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE minimum.
         let new_total = (FRAME_HEADER_SIZE + 8) as u64;
         patched[pos + 8..pos + 16].copy_from_slice(&new_total.to_be_bytes());
         let report = validate_message(&patched, &ValidateOptions::default());
-        // The patched message is malformed — we expect *some* structure issue.
-        // The key invariant: no panic, and a clear structural code fires.
         assert!(
-            !report.issues.is_empty(),
-            "expected at least one issue on shrunk data object"
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::FrameTooSmall),
+            "expected FrameTooSmall, got: {:?}",
+            report.issues
         );
     }
 

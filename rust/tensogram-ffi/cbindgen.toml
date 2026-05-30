@@ -33,6 +33,10 @@ usize_is_size_t = true
 "TgmFileIter" = "tgm_file_iter_t"
 "TgmObjectIter" = "tgm_object_iter_t"
 "TgmStreamingEncoder" = "tgm_streaming_encoder_t"
+"TgmAsyncTask" = "tgm_async_task_t"
+"TgmAsyncFile" = "tgm_async_file_t"
+"TgmAsyncStreamingEncoder" = "tgm_async_streaming_encoder_t"
+"TgmCancellationToken" = "tgm_cancellation_token_t"
 
 [enum]
 rename_variants = "ScreamingSnakeCase"

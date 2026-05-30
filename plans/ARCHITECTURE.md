@@ -134,6 +134,22 @@ The CMake build system (`cpp/CMakeLists.txt`) invokes `cargo build
 INTERFACE header-only target that links the static lib and
 platform-specific system libraries.
 
+### Asynchronous frontends
+
+Three opt-in, header-only async frontends layer on a callback-based FFI
+async core (`tensogram-ffi/src/async_core.rs` for the read path and task
+lifecycle, `async_streaming.rs` for the local-file streaming encoder):
+`cpp/include/tensogram/async/callback.hpp` (C++17, the minimal surface),
+`std_future.hpp` (C++17 `std::future<T>`), and `coro.hpp` (C++20
+`task<T>` + `async_for_each`). They share Tensogram's internal tokio
+runtime through opaque `tgm_async_task_t` handles, cancellation tokens,
+and per-call timeouts — no tokio type crosses the FFI, and every
+definition is `inline` so the only ABI surface is the C FFI.
+`async_file::open_remote` reaches object stores and `file://` URLs. The
+CMake `TENSOGRAM_ASYNC` (default on) and `TENSOGRAM_ASYNC_REMOTE` options
+select the `--features=async` / `async-remote` cargo builds. See
+`docs/src/guide/cpp-async.md` and `cpp-streaming-async.md`.
+
 ## Core Modules (`tensogram`)
 
 ```

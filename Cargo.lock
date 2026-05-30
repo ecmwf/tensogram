@@ -1439,6 +1439,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "walkdir",
  "wasm-bindgen-futures",
  "web-time",
 ]
@@ -2298,8 +2299,11 @@ dependencies = [
  "ciborium",
  "serde",
  "serde_json",
+ "tempfile",
  "tensogram",
  "tensogram-encodings",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

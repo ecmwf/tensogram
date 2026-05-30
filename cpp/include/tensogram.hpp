@@ -173,17 +173,38 @@ public:
     remote_error(tgm_error code, const std::string& msg) : error(code, msg) {}
 };
 
+/// Thrown when an async task exceeds its deadline.  See
+/// `plans/PLAN_CPP_ASYNC.md` §7.1.
+class timeout_error : public error {
+public:
+    timeout_error(tgm_error code, const std::string& msg) : error(code, msg) {}
+};
+
+/// Thrown when an async task is cancelled via its
+/// `cancellation_token`.  See `plans/PLAN_CPP_ASYNC.md` §7.2.
+class cancelled_error : public error {
+public:
+    cancelled_error(tgm_error code, const std::string& msg) : error(code, msg) {}
+};
+
 // ============================================================
 // detail — error checking helper
 // ============================================================
 
 namespace detail {
 
-/// Check a C error code and throw the appropriate typed exception.
-inline void check(tgm_error err) {
-    if (err == TGM_ERROR_OK) return;
-    const char* msg = tgm_last_error();
-    std::string message = msg ? msg : tgm_error_string(err);
+/// Throw the typed C++ exception that matches a C error code, using
+/// `message` as the exception text.
+///
+/// This is `[[noreturn]]` and must be called with a *non-OK* code:
+/// `TGM_ERROR_OK` has no corresponding exception and falls through to
+/// the generic [`error`], so callers screen for OK first.  [`check()`]
+/// only calls this on a non-OK code, and the async frontends only on a
+/// failed `result`.  Used both by [`check()`] (which captures the FFI's
+/// thread-local last-error string) and by the async frontends (which
+/// capture the message inside completion handlers, before any other FFI
+/// call on the thread can clobber the last-error slot).
+[[noreturn]] inline void throw_for_code(tgm_error err, const std::string& message) {
     switch (err) {
         case TGM_ERROR_FRAMING:       throw framing_error(err, message);
         case TGM_ERROR_METADATA:      throw metadata_error(err, message);
@@ -195,9 +216,19 @@ inline void check(tgm_error err) {
         case TGM_ERROR_MISSING_HASH:  throw missing_hash_error(err, message);
         case TGM_ERROR_INVALID_ARG:   throw invalid_arg_error(err, message);
         case TGM_ERROR_REMOTE:        throw remote_error(err, message);
+        case TGM_ERROR_TIMEOUT:       throw timeout_error(err, message);
+        case TGM_ERROR_CANCELLED:     throw cancelled_error(err, message);
         case TGM_ERROR_END_OF_ITER:   throw error(err, message);
         default:                      throw error(err, message);
     }
+}
+
+/// Check a C error code and throw the appropriate typed exception.
+inline void check(tgm_error err) {
+    if (err == TGM_ERROR_OK) return;
+    const char* msg = tgm_last_error();
+    std::string message = msg ? msg : tgm_error_string(err);
+    throw_for_code(err, message);
 }
 
 /// Adapter that splits a vector of (pointer, length) pairs into parallel
@@ -356,6 +387,14 @@ class buffer_iterator;
 class file_iterator;
 class object_iterator;
 class streaming_encoder;
+
+// Async-frontend bridge helpers (forward-declared for friend access).
+// Defined inline in `tensogram/async/callback.hpp` once the message
+// and metadata types are complete.
+namespace detail {
+    inline message message_from_raw(tgm_message_t* raw);
+    inline metadata metadata_from_raw(tgm_metadata_t* raw);
+}
 
 // Free functions (forward-declared for friend access)
 [[nodiscard]] inline message decode(const std::uint8_t* buf, std::size_t len,
@@ -556,6 +595,9 @@ private:
                                             std::size_t, const decode_options&);
     friend class file;
     friend class object_iterator;
+    // Async frontends (callback / coro / std_future) build a message
+    // from an FFI handle returned by tgm_async_task_join_message.
+    friend message tensogram::detail::message_from_raw(tgm_message_t*);
 
     struct deleter {
         void operator()(tgm_message_t* p) const noexcept { tgm_message_free(p); }
@@ -626,6 +668,9 @@ public:
 private:
     friend metadata tensogram::decode_metadata(const std::uint8_t*, std::size_t);
     friend class message;
+    // Async frontends construct a metadata wrapper from an FFI handle
+    // returned by tgm_async_task_join_metadata.
+    friend metadata tensogram::detail::metadata_from_raw(tgm_metadata_t*);
 
     struct deleter {
         void operator()(tgm_metadata_t* p) const noexcept { tgm_metadata_free(p); }
