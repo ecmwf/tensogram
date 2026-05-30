@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace tco = tensogram::coro;
@@ -138,9 +139,14 @@ TEST(AsyncCoro, OpenRemoteSurfacesError) {
     // tensogram::error out of block_on (TGM_ERROR_REMOTE without the
     // async-remote feature, file-not-found with it).
     auto run = []() -> tco::task<int> {
+        // Build the storage-option vector before the co_await: constructing
+        // this temporary inside the co_await argument list triggers an
+        // internal compiler error on some GCC versions.
+        const std::vector<std::pair<std::string, std::string>> opts = {
+            {"region", "eu-west-1"}};
         auto file = co_await tco::async_file::open_remote(
-            "file:///nonexistent/tensogram_open_remote_probe.tgm",
-            {{"region", "eu-west-1"}}, /*bidirectional=*/false);
+            "file:///nonexistent/tensogram_open_remote_probe.tgm", opts,
+            /*bidirectional=*/false);
         (void)file;
         co_return 0;
     };
