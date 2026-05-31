@@ -275,10 +275,13 @@ zero-copy non-contiguous input — deferred (§4.1, Path C).
   `c_char` array (allocatable + `target` so `c_loc` is valid); returned
   `const char*` → Fortran `allocatable` string via `strlen` +
   `c_f_pointer`.
-- **Building the JSON**: a hand-built descriptor builder is fine for the
-  fixed descriptor fields; for *structured application metadata*
-  (`base[i]`, MARS-like namespaces) prefer wiring in **json-fortran**
-  rather than growing brittle string concatenation. (Open Question §10.)
+- **Building the JSON — zero-dependency (DECIDED, §10).** A hand-built
+  descriptor builder handles the fixed descriptor fields; *structured
+  application metadata* (`base[i]`, namespaces) is assembled by a small
+  internal key/value/string escaper in the Fortran layer — **no
+  `json-fortran` dependency**, so the binding depends only on
+  `libtensogram`. The escaper must cover the JSON string-escape set
+  (`"`, `\`, control characters) to avoid emitting malformed metadata.
 - The descriptor JSON must match the documented schema
   (`docs/src/guide/c-api.md` quick start): `type`, `ndim`, `shape`,
   `strides`, `dtype`, `byte_order`, `encoding`, `filter`, `compression`.
@@ -295,10 +298,28 @@ zero-copy non-contiguous input — deferred (§4.1, Path C).
 - Provide explicit `close`/`free` methods too: Fortran finalizers do
   **not** fire on every path (e.g. `error stop`) and interact awkwardly
   with copy semantics.
-- These types are **move-like**. Fortran cannot delete the default
-  assignment, so `b = a` makes two shallow copies that would double-free.
-  Document "pass by reference, let scope-exit finalisation reclaim; do
-  not intrinsic-assign handle types." Keep them non-copyable *in spirit*.
+- **Copy-safety — DECIDED: non-copyable handles (approach "A+", §10).**
+  Fortran has no way to *delete* the copy: `b = a` shallow-copies the
+  `c_ptr`, so two objects alias one Rust resource and both finalisers
+  free it → double-free. The idempotent guard above only stops the
+  *same-object* double-free, not this *aliased* one. We therefore:
+  1. **design the API so handles are never implicitly copied** — factory
+     procedures return via `intent(out)` arguments (never function
+     results); handles are passed `intent(in)` / `intent(inout)` by
+     reference; never stored in value arrays;
+  2. **define `assignment(=)` to `error stop`** with a clear message, so
+     any accidental `b = a` (or other whole-type copy) aborts **loudly at
+     the copy site** instead of corrupting the heap later — Fortran can't
+     prevent the copy, but it can make it fail deterministically;
+  3. keep the idempotent explicit `free` / `close` + the `final`
+     procedure as the normal path and backstop.
+  **Reference counting is rejected** (see §10): it is the most code, its
+  correctness rides on the two shakiest Fortran mechanisms
+  (defined-assignment-on-implicit-copies and finalisers), and a
+  thread-safe count would need atomics because `libtensogram` is used
+  multi-threaded (free-threaded Python, OpenMP in IFS). A test must
+  assert the `error stop` guard does **not** fire on the legitimate
+  `intent(out)` factory / component-assignment paths.
 
 ### 5.5 Error mapping (and a single-source-of-truth check)
 
@@ -335,14 +356,28 @@ moves us from "zero compiled code" to "one small Fortran library" — *not*
 to "Fortran + a C shim + Rust changes." This is exactly the
 `eccodes_f90` model; it is the Fortran norm, not a regression.
 
-Packaging:
+Packaging (**DECIDED: CMake primary, fpm retained — §10**):
 
 - Link via the shipped `tensogram.pc` (`pkg-config --cflags --libs
   tensogram`).
-- Offer **both** `fpm` (primary, mirrors per-language tooling) and
-  **CMake** (`FindPkgConfig` → `PkgConfig::TENSOGRAM`) for HPC sites that
-  standardise on CMake. (Open Question §10 on which is the system of
-  record.)
+- **CMake is the system of record.** It discovers the FFI natively
+  (`find_package(PkgConfig)` → `pkg_check_modules(... IMPORTED_TARGET
+  tensogram)` → `PkgConfig::TENSOGRAM`), builds and installs the library
+  + `.mod` files, and integrates with the wider package (a superbuild can
+  `add_subdirectory(fortran)` once the FFI is installed). CMake is the
+  more widely used compiled-language tool and the natural fit for
+  IFS/HPC sites.
+- **fpm is retained** as a thin Fortran-native devloop. Its one friction
+  is that fpm has **no native pkg-config integration**, so the external
+  `libtensogram` is wired in by injecting flags at invocation —
+  `fpm test --flag "$(pkg-config --cflags tensogram)" --link-flag
+  "$(pkg-config --libs tensogram)"`, hidden behind a `make
+  fortran-fpm-test` wrapper. `fpm.toml` keeps `[build] link =
+  ["tensogram"]` and auto-globs `fortran/src/`.
+- **Anti-drift**: the two build descriptions share the same sources (fpm
+  globs the source dir; CMake lists files explicitly), so CI **builds the
+  binding both ways** to catch any divergence. Keeping the binding to
+  one/few module files makes this trivial.
 - Ensure `.mod` files install somewhere discoverable.
 - Live in `fortran/` beside `cpp/`; examples in `examples/fortran/`.
 
@@ -385,8 +420,8 @@ fortran/
 │   ├── test_dtype_rank.f90      # dtype × rank matrix
 │   ├── test_file_api.f90        # multi-message append/read
 │   └── test_errors.f90          # error mapping + last_error
-├── fpm.toml                     # fpm manifest (version == repo VERSION)
-└── CMakeLists.txt               # CMake/pkg-config build (secondary)
+├── CMakeLists.txt               # CMake/pkg-config build (PRIMARY)
+└── fpm.toml                     # fpm manifest (secondary; version == repo VERSION)
 
 examples/fortran/
 ├── encode_decode.f90            # the round-trip walking skeleton
@@ -458,8 +493,9 @@ behaviour-driven). Ordering is by dependency, not by ceremony.
   keys back via getters; assert a Python reader sees the same metadata.
 - **Deliverable**: descriptor JSON builder (explicit `ndim`, reversed
   `shape`/`strides`, `byte_order`, pipeline fields); `base[i]`
-  application-metadata builder; optional **json-fortran** integration;
-  metadata getters (`get_string`/`get_int`/`get_float` by dotted key).
+  application-metadata builder backed by the **zero-dependency internal
+  key/value/string escaper** (no `json-fortran`, §10); metadata getters
+  (`get_string`/`get_int`/`get_float` by dotted key).
 - **Acceptance**: metadata round-trip + Python parity pass.
 
 ### Milestone — Packaging, docs & CI hardening
@@ -518,16 +554,19 @@ How we know it is correct, beyond per-milestone tests:
 
 Beyond the new `fortran/` tree, landing this touches:
 
-- **`Makefile`**: add `fortran-build` / `fortran-test` (model on
-  `cpp-build` / `cpp-test`; the Fortran job must build/install the FFI so
-  `tensogram.pc` is discoverable first).
+- **`Makefile`**: add `fortran-build` / `fortran-test` (CMake, primary;
+  model on `cpp-build` / `cpp-test`) **and** a `fortran-fpm-test` wrapper
+  that injects `$(pkg-config …)` flags into fpm. The Fortran jobs must
+  build/install the FFI first so `tensogram.pc` is discoverable. CI runs
+  **both** build paths to prevent CMake/fpm drift (§5.6).
 - **`.github/workflows/ci.yml`**: add a Fortran job; ensure the CI Docker
   images (`ci-image.yml`, `ci-image-ffi.yml`) carry **gfortran + fpm**
   (image manifest update likely required).
-- **VERSION single source of truth**: set `fortran/fpm.toml` `version` to
-  the repo `VERSION` (**0.21.0**, not the scaffold's `0.1.0`) and **add
-  `fortran/fpm.toml` to the VERSION-sync list in `AGENTS.md` and
-  `CLAUDE.md`** so future releases keep it in lockstep.
+- **VERSION single source of truth**: set `fortran/fpm.toml` `version`
+  (and any `project(... VERSION ...)` in `fortran/CMakeLists.txt`) to the
+  repo `VERSION` (**0.21.0**, not the scaffold's `0.1.0`) and **add both
+  files to the VERSION-sync list in `AGENTS.md` and `CLAUDE.md`** so
+  future releases keep them in lockstep.
 - **Docs**: `docs/src/guide/fortran-api.md` + `SUMMARY.md` entry; update
   README "Language Support" + "Repository Layout"; add a `CHANGELOG.md`
   `[Unreleased]` entry when the first arc merges.
@@ -536,9 +575,10 @@ Beyond the new `fortran/` tree, landing this touches:
 
 ---
 
-## 10. Decisions and open questions
+## 10. Decisions
 
-### Decided
+All settled at planning time. (Numbered for cross-references elsewhere in
+this document.)
 
 1. **Column-major contract (§5.1) — DECIDED: reverse shape+strides at the
    boundary.** A Fortran `a(ni,nj)` is written with the on-wire
@@ -559,20 +599,32 @@ Beyond the new `fortran/` tree, landing this touches:
    (`-std=f2018`), so portability is preserved — only the *tested* matrix
    is gfortran.
 
-### Still open (raise with the maintainer when each becomes relevant)
+4. **Metadata JSON — DECIDED: zero-dependency (hand-built).** No
+   `json-fortran`; the binding's only dependency stays `libtensogram`.
+   The descriptor JSON is small and fixed; structured application
+   metadata (`base[i]`, namespaces) is assembled via a small internal
+   key/value/string escaper in the Fortran layer to avoid quoting bugs.
+   (§5.3.)
+5. **Build system of record — DECIDED: CMake primary, fpm retained.**
+   CMake discovers the FFI via pkg-config and integrates with the wider
+   package; fpm stays as a Fortran-native devloop with pkg-config flags
+   injected at invocation. CI builds both ways to prevent drift.
+   (§5.6, §9.)
+6. **Public naming — DECIDED: `tensogram_*`.** Public procedures and
+   derived types use the `tensogram_*` namespace (`tensogram_message`,
+   `tensogram_buffer`, …); the private raw `bind(C)` layer keeps the C
+   `tgm_*` names. (Scaffold rename noted in §11.)
+7. **Handle copy-safety — DECIDED: non-copyable handles ("A+").**
+   Idempotent explicit `free` / `close` + a `final` backstop; an API that
+   never implicitly copies handles (`intent(out)` factories, by-reference
+   passing); and a defined `assignment(=)` that `error stop`s so any
+   accidental `b = a` fails loudly at the copy site. Reference counting
+   is rejected — most code, depends on the shakiest Fortran mechanisms
+   (defined-assignment-on-implicit-copies, finalisers), and would need
+   atomics under multi-threaded use. (§5.4.)
 
-4. **json-fortran dependency.** Acceptable as an fpm dependency for
-   metadata ergonomics, or keep the binding zero-dependency with
-   hand-built JSON? (Becomes relevant at the *Metadata ergonomics*
-   milestone.)
-5. **Build system of record.** fpm-primary + CMake-secondary (mirrors
-   `cpp/`), or CMake-primary (many IFS/HPC sites standardise on CMake)?
-6. **Public naming.** Module `tensogram`; procedure prefix `tensogram_*`
-   vs. an `eccodes`-style short prefix (`codes_*` → e.g. `tgm_*`)? Match
-   ECMWF house conventions IFS users expect.
-7. **Handle copy-safety.** Accept the documented "don't `b = a`"
-   convention, or invest in reference-counting / opaque-by-construction
-   handles (Fortran can't fully prevent the copy)?
+No open questions remain at planning time; new ones are raised against
+the relevant milestone as implementation surfaces them.
 
 ---
 
@@ -607,6 +659,12 @@ deliberately and re-verify when integrating:
 5. **Decode `verify_hash` default.** Decided **off** (§10) to match the
    library. Change the scaffold's `tensogram_decode` default from
    `verify_hash = .true.` to `.false.` (keep the flag exposed).
+6. **Public type names + copy guard.** Per the `tensogram_*` naming
+   decision (§10), rename the scaffold's handle types `tgm_buffer` →
+   `tensogram_buffer` and `tgm_message` → `tensogram_message` (keep the
+   `tgm_*` prefix only for the private `bind(C)` layer), and add a defined
+   `assignment(=)` that `error stop`s to each handle type to make them
+   non-copyable ("A+", §5.4).
 
 ---
 
