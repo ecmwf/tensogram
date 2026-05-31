@@ -7,6 +7,7 @@ by `cargo cinstall -p tensogram-ffi` or the release tarballs).
 | Example | Shows |
 |---------|-------|
 | `encode_decode.f90` | Encode a `real(:,:)` field, decode it back, and assert the round-trip is bit-identical |
+| `file_api.f90` | Append several fields to a multi-message `.tgm`, then reopen, count, and decode each by index |
 
 ## Build & run
 

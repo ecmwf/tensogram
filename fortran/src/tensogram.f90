@@ -43,6 +43,11 @@ module tensogram
    public :: tensogram_encode      !> generic: real32/64, int32/64, rank 0..7
    public :: tensogram_decode
    public :: tensogram_to_array    !> generic: real32/64, int32/64, rank 0..7
+   public :: tensogram_file
+   public :: tensogram_file_open, tensogram_file_create
+   public :: tensogram_file_message_count
+   public :: tensogram_file_append   !> generic: real32/64, int32/64, rank 0..7
+   public :: tensogram_file_decode_message, tensogram_file_read_message
    public :: tensogram_num_objects, tensogram_object_ndim
    public :: tensogram_object_shape, tensogram_object_dtype
    public :: tensogram_strerror, tensogram_last_error, tensogram_check
@@ -96,7 +101,17 @@ module tensogram
       final     :: message_final
    end type tensogram_message
 
-   ! ---- Generic encode / decode over dtype ---------------------------------
+   ! ---- Owned file handle (RAII over tgm_file_t*) --------------------------
+   type :: tensogram_file
+      type(c_ptr), private :: ptr = c_null_ptr
+   contains
+      procedure :: close => file_close
+      procedure, private :: file_assign
+      generic, public :: assignment(=) => file_assign
+      final     :: file_final
+   end type tensogram_file
+
+   ! ---- Generic encode / decode / append over dtype ------------------------
    interface tensogram_encode
       module procedure encode_f32, encode_f64, encode_i32, encode_i64
    end interface tensogram_encode
@@ -104,6 +119,10 @@ module tensogram
    interface tensogram_to_array
       module procedure to_array_f32, to_array_f64, to_array_i32, to_array_i64
    end interface tensogram_to_array
+
+   interface tensogram_file_append
+      module procedure append_f32, append_f64, append_i32, append_i64
+   end interface tensogram_file_append
 
    ! =========================================================================
    !  Raw C ABI — synchronous subset of tensogram.h.
@@ -197,6 +216,67 @@ module tensogram
          type(c_ptr), value :: s
          integer(c_size_t)  :: n
       end function
+
+      function c_tgm_file_open(path, out) bind(C, name="tgm_file_open") result(err)
+         import :: c_ptr, c_int
+         type(c_ptr), value       :: path
+         type(c_ptr), intent(out) :: out
+         integer(c_int)           :: err
+      end function
+
+      function c_tgm_file_create(path, out) bind(C, name="tgm_file_create") result(err)
+         import :: c_ptr, c_int
+         type(c_ptr), value       :: path
+         type(c_ptr), intent(out) :: out
+         integer(c_int)           :: err
+      end function
+
+      function c_tgm_file_message_count(file, cnt) &
+            bind(C, name="tgm_file_message_count") result(err)
+         import :: c_ptr, c_size_t, c_int
+         type(c_ptr), value             :: file
+         integer(c_size_t), intent(out) :: cnt
+         integer(c_int)                 :: err
+      end function
+
+      function c_tgm_file_decode_message(file, idx, native_bo, threads, verify, out) &
+            bind(C, name="tgm_file_decode_message") result(err)
+         import :: c_ptr, c_size_t, c_int32_t, c_int
+         type(c_ptr),        value       :: file
+         integer(c_size_t),  value       :: idx
+         integer(c_int32_t), value       :: native_bo
+         integer(c_int32_t), value       :: threads
+         integer(c_int32_t), value       :: verify
+         type(c_ptr),        intent(out) :: out
+         integer(c_int)                  :: err
+      end function
+
+      function c_tgm_file_read_message(file, idx, out) &
+            bind(C, name="tgm_file_read_message") result(err)
+         import :: c_ptr, c_size_t, c_int, tgm_bytes_t
+         type(c_ptr),       value       :: file
+         integer(c_size_t), value       :: idx
+         type(tgm_bytes_t), intent(out) :: out
+         integer(c_int)                 :: err
+      end function
+
+      function c_tgm_file_append(file, meta, ptrs, lens, n, hash, threads) &
+            bind(C, name="tgm_file_append") result(err)
+         import :: c_ptr, c_size_t, c_int32_t, c_int
+         type(c_ptr),        value :: file
+         type(c_ptr),        value :: meta
+         type(c_ptr),        value :: ptrs
+         type(c_ptr),        value :: lens
+         integer(c_size_t),  value :: n
+         type(c_ptr),        value :: hash
+         integer(c_int32_t), value :: threads
+         integer(c_int)            :: err
+      end function
+
+      subroutine c_tgm_file_close(file) bind(C, name="tgm_file_close")
+         import :: c_ptr
+         type(c_ptr), value :: file
+      end subroutine
    end interface
 
 contains
@@ -695,5 +775,171 @@ contains
       call c_f_pointer(c_loc(out), dst, [nelem])
       dst = src
    end subroutine to_array_i64
+
+   ! =========================================================================
+   !  tensogram_file methods
+   ! =========================================================================
+
+   subroutine file_close(self)
+      class(tensogram_file), intent(inout) :: self
+      if (c_associated(self%ptr)) then
+         call c_tgm_file_close(self%ptr)
+         self%ptr = c_null_ptr
+      end if
+   end subroutine file_close
+
+   subroutine file_final(self)
+      type(tensogram_file), intent(inout) :: self
+      call self%close()
+   end subroutine file_final
+
+   subroutine file_assign(lhs, rhs)
+      class(tensogram_file), intent(out) :: lhs
+      type(tensogram_file),  intent(in)  :: rhs
+      if (c_associated(rhs%ptr)) then
+         error stop "tensogram_file is non-copyable: assigning a live handle would alias and double-close; pass by reference"
+      else
+         error stop "tensogram_file is non-copyable: do not assign handles; pass by reference"
+      end if
+   end subroutine file_assign
+
+   !> Open an existing .tgm file for reading.
+   subroutine tensogram_file_open(path, file, err)
+      character(len=*),      intent(in)  :: path
+      type(tensogram_file),  intent(out) :: file
+      integer(c_int),        intent(out) :: err
+      character(kind=c_char), allocatable, target :: path_c(:)
+      type(c_ptr) :: out
+      call f_to_cstr(path, path_c)
+      err = c_tgm_file_open(c_loc(path_c), out)
+      if (err == TGM_ERROR_OK) file%ptr = out
+   end subroutine tensogram_file_open
+
+   !> Create a new .tgm file for writing (append messages with file_append).
+   subroutine tensogram_file_create(path, file, err)
+      character(len=*),      intent(in)  :: path
+      type(tensogram_file),  intent(out) :: file
+      integer(c_int),        intent(out) :: err
+      character(kind=c_char), allocatable, target :: path_c(:)
+      type(c_ptr) :: out
+      call f_to_cstr(path, path_c)
+      err = c_tgm_file_create(c_loc(path_c), out)
+      if (err == TGM_ERROR_OK) file%ptr = out
+   end subroutine tensogram_file_create
+
+   !> Number of messages in the file (may trigger a lazy scan).
+   subroutine tensogram_file_message_count(file, count, err)
+      type(tensogram_file), intent(in)  :: file
+      integer,              intent(out) :: count
+      integer(c_int),       intent(out) :: err
+      integer(c_size_t) :: cnt
+      cnt = 0_c_size_t
+      err = c_tgm_file_message_count(file%ptr, cnt)
+      count = int(cnt)
+   end subroutine tensogram_file_message_count
+
+   !> Decode the message at `index` (1-based) into a handle.
+   subroutine tensogram_file_decode_message(file, index, msg, err, &
+                                            verify_hash, native_byte_order)
+      type(tensogram_file),    intent(in)  :: file
+      integer,                 intent(in)  :: index
+      type(tensogram_message), intent(out) :: msg
+      integer(c_int),          intent(out) :: err
+      logical, intent(in), optional :: verify_hash       ! default .false.
+      logical, intent(in), optional :: native_byte_order ! default .true.
+      integer(c_int32_t) :: vh, nbo
+      type(c_ptr) :: out
+      vh = 0_c_int32_t
+      if (present(verify_hash)) vh = merge(1_c_int32_t, 0_c_int32_t, verify_hash)
+      nbo = 1_c_int32_t
+      if (present(native_byte_order)) &
+         nbo = merge(1_c_int32_t, 0_c_int32_t, native_byte_order)
+      err = c_tgm_file_decode_message(file%ptr, int(index - 1, c_size_t), &
+                                      nbo, 0_c_int32_t, vh, out)
+      if (err == TGM_ERROR_OK) msg%ptr = out
+   end subroutine tensogram_file_decode_message
+
+   !> Read the raw message bytes at `index` (1-based) into a buffer.
+   subroutine tensogram_file_read_message(file, index, buf, err)
+      type(tensogram_file),   intent(in)  :: file
+      integer,                intent(in)  :: index
+      type(tensogram_buffer), intent(out) :: buf
+      integer(c_int),         intent(out) :: err
+      err = c_tgm_file_read_message(file%ptr, int(index - 1, c_size_t), buf%raw)
+   end subroutine tensogram_file_read_message
+
+   ! =========================================================================
+   !  Append core + generic append overloads
+   ! =========================================================================
+
+   !> Encode one tensor and append it to `file_ptr` as a new message. Mirrors
+   !> encode_core but targets the file-append entry point (no buffer returned).
+   subroutine append_core(file_ptr, ptr, nbytes, fshape, dtype, err, metadata_json, hash)
+      type(c_ptr),        intent(in)  :: file_ptr
+      type(c_ptr),        intent(in)  :: ptr
+      integer(c_size_t),  intent(in)  :: nbytes
+      integer(c_int64_t), intent(in)  :: fshape(:)
+      character(len=*),   intent(in)  :: dtype
+      integer(c_int),     intent(out) :: err
+      character(len=*), intent(in), optional :: metadata_json, hash
+      character(kind=c_char), allocatable, target :: meta_c(:), hash_c(:)
+      character(len=:),       allocatable         :: meta_s, hash_s
+      type(c_ptr),       target :: ptrs(1)
+      integer(c_size_t), target :: lens(1)
+      type(c_ptr)               :: hash_ptr
+      meta_s = descriptor_json(fshape, dtype, metadata_json)
+      call f_to_cstr(meta_s, meta_c)
+      if (present(hash)) then
+         hash_s = hash
+      else
+         hash_s = 'xxh3'
+      end if
+      if (len(hash_s) == 0) then
+         hash_ptr = c_null_ptr
+      else
+         call f_to_cstr(hash_s, hash_c)
+         hash_ptr = c_loc(hash_c)
+      end if
+      ptrs(1) = ptr
+      lens(1) = nbytes
+      err = c_tgm_file_append(file_ptr, c_loc(meta_c), c_loc(ptrs), c_loc(lens), &
+                              1_c_size_t, hash_ptr, 0_c_int32_t)
+   end subroutine append_core
+
+   subroutine append_f32(file, a, err, metadata_json, hash)
+      type(tensogram_file),  intent(inout) :: file
+      real(c_float), target, contiguous, intent(in) :: a(..)
+      integer(c_int),        intent(out) :: err
+      character(len=*), intent(in), optional :: metadata_json, hash
+      call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+                       int(shape(a), c_int64_t), 'float32', err, metadata_json, hash)
+   end subroutine append_f32
+
+   subroutine append_f64(file, a, err, metadata_json, hash)
+      type(tensogram_file),   intent(inout) :: file
+      real(c_double), target, contiguous, intent(in) :: a(..)
+      integer(c_int),         intent(out) :: err
+      character(len=*), intent(in), optional :: metadata_json, hash
+      call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+                       int(shape(a), c_int64_t), 'float64', err, metadata_json, hash)
+   end subroutine append_f64
+
+   subroutine append_i32(file, a, err, metadata_json, hash)
+      type(tensogram_file),       intent(inout) :: file
+      integer(c_int32_t), target, contiguous, intent(in) :: a(..)
+      integer(c_int),             intent(out) :: err
+      character(len=*), intent(in), optional :: metadata_json, hash
+      call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+                       int(shape(a), c_int64_t), 'int32', err, metadata_json, hash)
+   end subroutine append_i32
+
+   subroutine append_i64(file, a, err, metadata_json, hash)
+      type(tensogram_file),       intent(inout) :: file
+      integer(c_int64_t), target, contiguous, intent(in) :: a(..)
+      integer(c_int),             intent(out) :: err
+      character(len=*), intent(in), optional :: metadata_json, hash
+      call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+                       int(shape(a), c_int64_t), 'int64', err, metadata_json, hash)
+   end subroutine append_i64
 
 end module tensogram

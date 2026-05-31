@@ -18,6 +18,13 @@ RAII handle types (`tensogram_buffer` / `tensogram_message`), and a
 non-copyable handle guard that `error stop`s on an accidental `b = a`
 rather than aliasing and double-freeing.
 
+A multi-message **file API** completes the synchronous surface:
+`tensogram_file_open` / `_create` / `_message_count` / `_append`
+(generic, encodes one array per message) / `_decode_message` /
+`_read_message`, with a non-copyable `tensogram_file` RAII handle and
+1-based message indices. New `examples/fortran/file_api.f90` shows the
+append-then-random-access pattern.
+
 Native array ergonomics come from the Fortran 2008 `contiguous`
 attribute, so the array descriptor never crosses the FFI boundary. A
 Fortran `a(ni,nj)` is written with the on-wire shape/strides reversed to

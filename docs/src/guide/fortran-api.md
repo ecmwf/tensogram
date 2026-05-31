@@ -5,10 +5,10 @@ the [C ABI](c-api.md). It is a thin `iso_c_binding` layer that links the
 same `libtensogram` the C and C++ wrappers use — no new C or Rust code —
 following the `eccodes_f90` model ECMWF Fortran codes already expect.
 
-> **Status.** Emerging. The first synchronous slice — encode a native
-> `real(:,:)` field, decode it back, and inspect object metadata — is in
-> place. The file API, more dtypes/ranks, streaming, and async are
-> planned; see [`PLAN_FORTRAN.md`](https://github.com/ecmwf/tensogram/blob/main/PLAN_FORTRAN.md)
+> **Status.** Emerging. Synchronous encode/decode (generic over dtype and
+> rank) and the multi-message file API are in place. Structured metadata
+> builders, streaming, and async are planned; see
+> [`PLAN_FORTRAN.md`](https://github.com/ecmwf/tensogram/blob/main/PLAN_FORTRAN.md)
 > for the staged roadmap.
 
 ## The memory-order contract (read this first)
@@ -182,20 +182,57 @@ end if
 | `tensogram_object_shape(msg, iobj)` | Extents in Fortran (column-major) order |
 | `tensogram_object_dtype(msg, iobj)` | dtype string (e.g. `"float32"`) |
 | `tensogram_to_array(msg, iobj, out, err)` | Copy an object into a Fortran array — **generic** over dtype and rank of `out` |
+| `tensogram_file_open/create(path, file, err)` | Open / create a `.tgm` file |
+| `tensogram_file_message_count(file, n, err)` | Number of messages in the file |
+| `tensogram_file_append(file, a, err [, metadata_json, hash])` | Encode `a` and append it as a message — **generic** over dtype and rank |
+| `tensogram_file_decode_message(file, index, msg, err [, verify_hash, native_byte_order])` | Decode message `index` (1-based) |
+| `tensogram_file_read_message(file, index, buf, err)` | Read raw message bytes at `index` |
 | `buf%as_array(out)` / `buf%size()` / `buf%free()` | Buffer access and release |
+| `file%close()` | Close a file handle (also automatic at scope exit) |
 | `tensogram_check` / `tensogram_last_error` / `tensogram_strerror` | Error helpers |
 
-`tensogram_encode` and `tensogram_to_array` are generic interfaces over
-**dtype** (`real32`, `real64`, `int32`, `int64`) and **rank** (`0`–`7`).
-`a` / `out` are assumed-rank; the dtype is resolved from the array's
-type/kind, the rank from the array itself. A dtype mismatch on decode
-returns `TGM_ERROR_OBJECT`. (`int8`/`int16`/`complex`/`float16` are
-follow-ups — Fortran has no native unsigned or half/complex-as-pair
-mapping.)
+`tensogram_encode`, `tensogram_to_array`, and `tensogram_file_append` are
+generic interfaces over **dtype** (`real32`, `real64`, `int32`, `int64`)
+and **rank** (`0`–`7`). `a` / `out` are assumed-rank; the dtype is
+resolved from the array's type/kind, the rank from the array itself. A
+dtype mismatch on decode returns `TGM_ERROR_OBJECT`.
+(`int8`/`int16`/`complex`/`float16` are follow-ups — Fortran has no
+native unsigned or half/complex-as-pair mapping.)
 
-Planned next (see `PLAN_FORTRAN.md`): the file API (`.tgm` multi-message
-append / random-access decode), structured metadata builders, then the
-streaming encoder.
+## Working with files
+
+`tensogram_file` is an RAII handle for a multi-message `.tgm` file (the
+common "append forecast steps" pattern). Like the buffer/message handles
+it is non-copyable and closes automatically at scope exit (or eagerly via
+`call f%close()`). Message indices are **1-based**.
+
+```fortran
+type(tensogram_file)    :: f
+type(tensogram_message) :: msg
+real(c_float)              :: field(ni, nj)
+real(c_float), allocatable :: out(:,:)
+integer(c_int) :: err, n, step
+
+call tensogram_file_create('forecast.tgm', f, err)
+do step = 1, nsteps
+   ! ... fill field ...
+   call tensogram_file_append(f, field, err)      ! one message per step
+end do
+call f%close()
+
+call tensogram_file_open('forecast.tgm', f, err)
+call tensogram_file_message_count(f, n, err)       ! n == nsteps
+do step = 1, n
+   call tensogram_file_decode_message(f, step, msg, err)   ! random access
+   call tensogram_to_array(msg, 1, out, err)
+end do
+call f%close()
+```
+
+See [`examples/fortran/file_api.f90`](https://github.com/ecmwf/tensogram/blob/main/examples/fortran/file_api.f90).
+
+Planned next (see `PLAN_FORTRAN.md`): structured metadata builders, then
+the streaming encoder.
 
 ## Build and test
 
