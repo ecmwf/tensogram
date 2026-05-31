@@ -7,8 +7,8 @@ design looks the way it does.
 For the wire format byte layout, see
 [../docs/src/format/wire-format.md](../docs/src/format/wire-format.md) and
 [WIRE_FORMAT.md](WIRE_FORMAT.md) in this directory. For the full design
-rationale, see [DESIGN.md](DESIGN.md). For the ongoing implementation path
-followed, see [DONE.md](DONE.md).
+rationale, see [DESIGN.md](DESIGN.md). For release history and
+merged-but-unreleased work, see [../CHANGELOG.md](../CHANGELOG.md).
 
 ## High-Level Structure
 

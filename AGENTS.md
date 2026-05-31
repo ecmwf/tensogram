@@ -92,18 +92,18 @@
 
 # Design & Purpose
 
-- README.md -- entry level generic information
-- plans/MOTIVATION.md -- why Tensogram exists and what we're building
-- plans/DESIGN.md -- design rationale and key architectural decisions
-- plans/STYLE.md -- code style conventions
+- README.md -- short entry-level overview (also the GitHub landing page)
+- plans/MOTIVATION.md -- why Tensogram exists and what we're building (long form)
+- plans/DESIGN.md -- design rationale and key design decisions
+- plans/ARCHITECTURE.md -- crate structure, module map, feature gates
 - plans/WIRE_FORMAT.md -- canonical wire format specification
-- plans/DONE.md -- current implementation status (keep updated)
 - plans/TODO.md -- features decided to implement (accepted backlog)
-- plans/IDEAS.md -- ideas for possible future features (not yet decided)
-- plans/TEST.md -- test plan and coverage summary
-- CHANGELOG.md -- release history
+- plans/IDEAS.md -- speculative ideas + long-form "Horizon" brainstorm (not yet decided)
+- plans/TEST.md -- test plan and coverage shape
+- CONTRIBUTING.md -- contributor setup, workflow, and code style
+- CHANGELOG.md -- release history + the [Unreleased] record of merged work
 
-Follow plans/DESIGN.md principles and plans/STYLE.md conventions in all code.
+Follow plans/DESIGN.md principles and the Code Style section of CONTRIBUTING.md in all code.
 
 # Build / lint / test (required before marking done)
 
@@ -206,7 +206,11 @@ Serves at http://localhost:8000/ (set BASE_PATH env var to deploy under a subpat
 
 # Tracking Work Done
 
-Keep track of implementations in plans/DONE.md for all code changes.
+Record every code change in `CHANGELOG.md` under the `[Unreleased]`
+section as it merges — this is the single backward-looking record
+(there is no separate status file). Keep entries user-facing and
+concise. Durable design decisions and rationale go in
+`plans/DESIGN.md`; behaviour and usage go in `docs/`.
 
 # Documentation
 

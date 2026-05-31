@@ -68,7 +68,6 @@ panic = "abort"
 # `--jobserver-tasks 2` that's 2 × 16 = 32 simultaneous codegen threads
 # during peak build.  On a 12-core laptop this triggers brief peak-power
 # events that load average smooths over but a power supply does not.
-# See MUTATION_TESTING.md §3.0.1 for the full story.
 [profile.release-mutants]
 inherits = "release"
 codegen-units = 1

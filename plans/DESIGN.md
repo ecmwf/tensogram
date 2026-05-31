@@ -4,7 +4,7 @@ Repo: ecmwf/tensogram
 
 > For **why** Tensogram exists and what problem it solves, see `MOTIVATION.md`.
 > For the **wire format specification**, see `WIRE_FORMAT.md`.
-> For the **current implementation status**, see `DONE.md`.
+> For **release history and merged-but-unreleased work**, see `../CHANGELOG.md`.
 
 ## Design Premises
 
@@ -156,7 +156,7 @@ Each data object specifies an independent pipeline: **encode → filter → comp
 
 **Encoding:**
 - `none` — raw bytes in the logical dtype
-- `simple_packing` — GRIB-style lossy quantization: `value = reference_value + 2^E * 10^(-D) * packed_integer`. Supports 0-64 bits per value. NaN inputs rejected with EncodingError.
+- `simple_packing` — GRIB-style lossy quantization: `value = reference_value + 2^E * 10^(-D) * packed_integer`. Supports 0-64 bits per value. NaN / Inf inputs rejected with EncodingError. Descriptor params use the `sp_*` prefix (`sp_bits_per_value`, `sp_reference_value`, `sp_binary_scale_factor`, `sp_decimal_scale_factor`); supplying only `sp_bits_per_value` makes the encoder auto-compute the reference value and scale factors and stamp the full set, so the encoded message stays self-describing.
 
 **Filters:**
 - `none` — no pre-processing
@@ -179,7 +179,7 @@ Each data object specifies an independent pipeline: **encode → filter → comp
 
 - **Algorithm:** xxh3 (64-bit, non-cryptographic, ~30 GB/s)
 - **Scope:** Per-object payload, computed over final encoded bytes (after full pipeline)
-- **Encoding:** Hash computation is on by default (negligible overhead vs compression).  The hash is produced **inline with encoding** — the pipeline drives an `Xxh3Default` streaming hasher in lockstep with codec output, so the encoded payload is walked exactly once for both encoding and hashing.  See `plans/DONE.md` → *Hash-while-encoding* for the design and benchmark numbers.
+- **Encoding:** Hash computation is on by default (negligible overhead vs compression).  The hash is produced **inline with encoding** — the pipeline drives an `Xxh3Default` streaming hasher in lockstep with codec output, so the encoded payload is walked exactly once for both encoding and hashing.  `encode_pre_encoded` hashes the caller's opaque bytes in a single pass (no pipeline to fuse with).
 - **Decoding:** Hash verification is **off by default** and **opt-in** via `DecodeOptions::verify_hash = true` (or its equivalent kwarg/field in every binding).  Off by default because most transports already provide error correction (TCP, HTTPS, object-store ETag validation); enable it when the consumer wants end-to-end integrity.
 
   Verification is fused with decode — bytes are hashed while hot in cache/buffer, so the cost is one extra walk over the post-encoding payload (typically a small fraction of decode time, dominated by decompression).  This is materially cheaper than running `tensogram validate --checksum` as a pre-flight pass and then decoding, which reads every byte twice.
@@ -193,6 +193,32 @@ Each data object specifies an independent pipeline: **encode → filter → comp
 
   **`decode_range` is unverified by construction.**  The inline hash covers the whole post-encoding payload of the source frame; verifying it would require reading every byte that the range-decode optimisation is designed to avoid.  No binding's `decode_range` accepts a `verify_hash` flag.  When integrity matters, use `decode_object(buf, idx, { verify_hash: true })` — that path materialises the full body anyway, so the verification is free.
 - **Threading invariant:** hashing runs in the calling thread *after* any intra-codec parallelism (axis B) has joined, and each object's hasher is owned by one thread (axis A).  Transparent codecs produce byte-identical hashes across thread counts; opaque codecs (blosc2, zstd with workers) hash their worker-completion-ordered output and round-trip losslessly.  This matches the determinism contract of the multi-threaded pipeline itself.
+
+### Multi-Threaded Pipeline
+
+Encoding and decoding accept an optional `threads: u32` budget on
+`EncodeOptions` / `DecodeOptions`, off by default (the env var
+`TENSOGRAM_THREADS` fills in when `threads = 0`).  `threads = 0` matches
+the sequential path **byte-for-byte**, so golden files are unchanged.
+
+Work is dispatched along one of two axes, chosen once per call from the
+object descriptors:
+
+- **Axis B (intra-object)** — parallelise *within* an object's codec
+  (chunked `simple_packing`, byte-plane `shuffle`, blosc2 / zstd worker
+  threads).  Preferred so that a few very large objects still scale.
+- **Axis A (inter-object)** — parallelise *across* objects; the fallback
+  when no object has an axis-B-friendly codec, to avoid N×M thread
+  over-subscription.
+
+**Determinism contract.** Transparent codecs (`none`, `lz4`, `szip`,
+`zfp`, `sz3`, `simple_packing`, `shuffle`) produce **byte-identical**
+output at any thread count.  Opaque codecs (`blosc2`, `zstd` with
+workers) may emit different compressed bytes — block boundaries land in
+worker-completion order — but always **round-trip losslessly**.  Hashing
+follows the same rule (see the Integrity Hashing threading invariant
+above).  This is what lets the hash-while-encoding fusion and the
+golden-file tests stay valid across thread counts.
 
 ### Per-Object Byte Order
 
@@ -226,6 +252,7 @@ Each data object describes its tensor via `shape` + `strides`, separating logica
 - **Partial reads:** Messages without postamble are never valid. Partial messages at end-of-stream are reported as truncated.
 - **Unknown CBOR keys:** Decoders MUST ignore unknown keys (forward compatibility). Unknown encoding types are rejected with clear error.
 - **Frame-level corruption:** Each frame's FR/ENDF markers and length are verified. Corrupted object frames are rejected but other objects remain accessible via index frame.
+- **Hostile descriptor sizes:** every decode-path allocation derived from a descriptor's claimed tensor size is *fallible* (`try_reserve`), and every size multiplication is checked (`u128` promotion / `checked_mul`). A malformed descriptor claiming a terabyte-scale tensor returns a structured error instead of aborting the process via OOM. No static size cap is imposed — legitimate multi-GiB objects (ERA5, ML weights) must pass — so fallible allocation, not a ceiling, is the guard.
 - **API error surface:** All functions return Result (Rust), error codes (C FFI), exceptions (C++/Python) with categories: Framing, Metadata, Encoding, Compression, Object, IO, HashMismatch.
 
 ## Testing Strategy

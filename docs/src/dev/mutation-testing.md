@@ -29,9 +29,10 @@ ideal targets for mutation testing:
   reveals whether those golden files actually exercise every branch
   in the encoder and decoder.
 
-The full rollout plan, including phasing, shard strategy, and triage
-SLAs, lives in [`MUTATION_TESTING.md`](../../../MUTATION_TESTING.md) at
-the repository root.
+This page is the reference for the process. Remaining rollout work
+(weekly-sweep triage, finishing critical-path coverage, and flipping
+the PR-time gate to required-for-merge) is tracked in
+[`plans/TODO.md`](../../../plans/TODO.md) under *Code Quality*.
 
 ## The two regimes
 
@@ -293,9 +294,8 @@ and this documentation. Version bumps land in dedicated PRs that:
 
 ## References
 
-- [`MUTATION_TESTING.md`](../../../MUTATION_TESTING.md) — full rollout
-  plan at the repository root (phasing, shard strategy, triage SLAs,
-  anti-patterns).
+- [`plans/TODO.md`](../../../plans/TODO.md) — remaining mutation-testing
+  rollout work (*Code Quality* section).
 - [`plans/TEST.md`](../../../plans/TEST.md) — test plan covering the
   full suite shape, including the mutation testing layer.
 - [mutants.rs](https://mutants.rs/) — upstream `cargo-mutants`

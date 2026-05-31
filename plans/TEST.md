@@ -5,8 +5,7 @@ Repo: ecmwf/tensogram
 > This document describes the *shape* of the test suite — what is
 > tested, where, and why. It deliberately avoids concrete test counts
 > and version numbers because both drift with every release. For
-> release-by-release changes, see `../CHANGELOG.md`. For the
-> implementation path followed, see `DONE.md`.
+> release-by-release changes, see `../CHANGELOG.md`.
 
 ## Coverage shape
 
@@ -28,7 +27,7 @@ Repo: ecmwf/tensogram
 | `tensogram-zarr` | `python/tensogram-zarr/tests/*.py` | Zarr v3 store read + write, mapping, edge cases, remote |
 | `tensogram-earthkit` | `python/tensogram-earthkit/tests/*.py` | earthkit-data source + encoder plugins, MARS FieldList path, xarray non-MARS path, memory + stream + remote inputs, array-namespace interop |
 | `tensogram-benchmarks` | `tests/smoke.rs` + per-binary unit | Smoke coverage so benchmarks do not silently rot |
-| Mutation testing | `.cargo/mutants.toml`, `.github/workflows/mutants-weekly.yml` | Measurement layer over the existing Rust suite — see `MUTATION_TESTING.md` |
+| Mutation testing | `.cargo/mutants.toml`, `.github/workflows/mutants-weekly.yml` | Measurement layer over the existing Rust suite — see [`docs/src/dev/mutation-testing.md`](../docs/src/dev/mutation-testing.md) |
 
 To see current counts, run `cargo test --workspace`, `cargo test` in
 each opt-in crate directory, and `pytest` / `ctest` for the other
@@ -50,8 +49,8 @@ byte-parity tests).
 
 **Config:** `.cargo/mutants.toml` at repo root. Excludes: `remote.rs` (I/O-driven),
 `doctor/**`, `tensogram-cli/**`, benchmarks, examples, `tensogram-sz3-sys`.
-Rollout plan: `MUTATION_TESTING.md` (repo root). User-facing docs:
-`docs/src/dev/mutation-testing.md`.
+Process and rollout reference: `docs/src/dev/mutation-testing.md`;
+remaining rollout work is tracked in `TODO.md` (*Code Quality*).
 
 **Critical-path priority order (Phase 1, 8 files):**
 

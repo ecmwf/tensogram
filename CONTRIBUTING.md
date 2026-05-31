@@ -80,7 +80,7 @@ Work on a branch. The codebase follows these conventions:
 - **Short functions.** 10-50 lines typical, extract helpers when a function grows past that.
 - **CBOR determinism.** All metadata encoding goes through the canonicalization step.
 
-See [plans/STYLE.md](plans/STYLE.md) for the full style guide.
+See the [Code Style](#code-style) section below for the full style guide.
 
 ### 2. Run the checks
 
@@ -112,7 +112,7 @@ cargo test -p tensogram --features mmap,async
 
 ### 4. Update documentation
 
-- **Code changes** should be reflected in `plans/DONE.md` (implementation status)
+- **Code changes** should be recorded in `CHANGELOG.md` under the `[Unreleased]` section
 - **New public API** should have doc comments and appear in the mdbook guide under `docs/src/`
 - **Edge cases** go in `docs/src/edge-cases.md`
 - **Wire format changes** go in `docs/src/format/wire-format.md`
@@ -128,29 +128,64 @@ cargo doc --workspace --no-deps
 
 If you add a new API surface, add a runnable example in `examples/rust/`. The naming convention is `NN_description.rs` (e.g. `11_new_feature.rs`).
 
+## Code Style
+
+Follow [plans/DESIGN.md](plans/DESIGN.md) principles. When in doubt, read the existing code.
+
+### Principles
+
+1. **Deep modules.** Hide complexity behind an API with a small surface.
+2. **Design errors out of existence.** Idempotent ops, never panic, always return Result/error codes.
+3. **Stateless.** No global state (thread-local error string in FFI is the sole exception).
+4. **Self-contained data objects.** Every data object frame carries all information needed to decode it.
+
+### Rust
+
+- All public functions return `Result<T, TensogramError>` — no `unwrap()` in library code
+- No panics in library code — `panic = "abort"` in both release and dev profiles (FFI safety)
+- Feature-gate optional dependencies (`#[cfg(feature = "...")]`)
+- Prefer `BTreeMap` over `HashMap` for deterministic serialization
+- Derive `Debug` on public types
+
+### C FFI
+
+- All functions prefixed `tgm_`
+- Opaque handle pattern — callers never see internal structs
+- Error codes + `tgm_last_error()` for thread-local error messages
+- Every allocation has a matching `_free()` function
+
+### C++ Wrapper
+
+- RAII with `std::unique_ptr` + custom deleters
+- Move-only semantics (copy suppressed)
+- `[[nodiscard]]` on all accessors
+- Typed exception hierarchy mapping C error codes
+
+### Python
+
+- NumPy arrays as the primary data interface
+- Context manager for file I/O
+- ruff for linting/formatting (E/W/F/I/N/UP/B/SIM/PT/RUF rules)
+
+### Functions
+
+- Prefer short functions (10–50 lines)
+- Decompose complex functions into focused helpers
+
+### Comments
+
+- Explain *why*, not *what*
+- Document non-obvious design decisions inline
+- Doxygen/rustdoc for public API
+
 ## Test Structure
 
-Tests are organised by *shape*, not by fixed count (counts drift every
-release). Rely on `cargo test --workspace` and the language-specific
-runners to tell you the current numbers.
-
-| Shape | Where it lives | Purpose |
-|-------|----------------|---------|
-| Unit | `#[cfg(test)]` modules alongside the code in each crate | Module-level behaviour tests |
-| Integration | `rust/tensogram/tests/integration*.rs` | Full encode/decode round-trips across dtypes and pipelines |
-| Adversarial | `rust/tensogram/tests/adversarial.rs`, `edge_cases.rs` | Corrupted inputs, boundary conditions, error paths |
-| Golden files | `rust/tensogram/tests/golden_files.rs` + `tests/golden/*.tgm` | Byte-for-byte cross-language determinism |
-| Property-based | `rust/tensogram-szip/tests/proptest_roundtrip.rs` | Proptest round-trip for the pure-Rust szip codec |
-| Stress / parity | `rust/tensogram-szip/tests/stress.rs`, `libaec_parity.rs`, `ffi_crosscheck.rs` | Cross-validation against libaec |
-| Remote HTTP | `rust/tensogram/tests/remote_http.rs` | Mock HTTP server exercising the `remote` feature |
-| CLI | `rust/tensogram-cli/src/commands/*.rs` + `rust/benchmarks/tests/smoke.rs` | Subcommand behaviour (needs `--features netcdf,grib` for importer coverage) |
-| Importers | `rust/tensogram-grib/tests/`, `rust/tensogram-netcdf/tests/` | Integration against real GRIB / NetCDF fixtures |
-| WebAssembly | `rust/tensogram-wasm/` + `wasm-bindgen-test` | Browser / Node.js decode paths |
-| Python | `python/tests/` (+ `test_async.py`, `test_validate.py`, `test_remote.py`, `test_convert_netcdf.py`) | Full pytest suite covering the PyO3 bindings |
-| xarray | `python/tensogram-xarray/tests/` | Backend engine, coordinate detection, hypercube stacking |
-| Zarr | `python/tensogram-zarr/tests/` | Zarr v3 store read/write path |
-| C++ wrapper | `cpp/tests/*.cpp` | RAII handle behaviour, exception mapping, cross-language round-trip |
-| Mutation testing | `.cargo/mutants.toml` + `.github/workflows/mutants-weekly.yml` | Measure test depth on critical-path modules — see [Mutation Testing](docs/src/dev/mutation-testing.md) |
+The test suite is organised by *shape*, not by fixed count (counts
+drift every release). Run `cargo test --workspace` plus the
+language-specific runners for the current numbers. For the full map of
+what is tested where — unit, integration, adversarial, golden-file,
+property-based, remote, importer, WASM, Python, xarray, Zarr, C++, and
+mutation testing — see [plans/TEST.md](plans/TEST.md).
 
 Golden binary files in `rust/tensogram/tests/golden/` are checked
 into the repo. If the wire format changes, regenerate them by running

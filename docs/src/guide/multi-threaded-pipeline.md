@@ -218,9 +218,10 @@ always succeeds regardless of the `threads` value used at encode
 time.
 
 Since the hash is folded into the codec output in lockstep (see
-`plans/DONE.md` → *Hash-while-encoding*), turning on `threads` has
-no additional hash-computation cost beyond what threading already
-does to the encoded bytes themselves.
+the *Integrity Hashing* and *Multi-Threaded Pipeline* sections of
+`plans/DESIGN.md`), turning on `threads` has no additional
+hash-computation cost beyond what threading already does to the
+encoded bytes themselves.
 
 ## Environment variable override
 

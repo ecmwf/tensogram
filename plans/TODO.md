@@ -66,8 +66,8 @@ For speculative ideas, see `IDEAS.md`.
     Closed the documented gaps left by the rollup: added
     `examples/cpp/19`–`24` (callback / `std::future` / coroutine
     producer / consumer / remote), `docs/src/guide/cpp-streaming-async.md`,
-    and the `plans/DONE.md` / `CHANGELOG.md` / `README.md` /
-    `plans/ARCHITECTURE.md` entries.  Surfaced `async_file::open_remote`
+    and the `CHANGELOG.md` / `README.md` / `plans/ARCHITECTURE.md`
+    entries.  Surfaced `async_file::open_remote`
     on all three C++ frontends (over the always-linkable
     `tgm_async_file_open_remote`) and added the `TENSOGRAM_ASYNC_REMOTE`
     CMake option — the FFI `async-remote` feature plus object_store's
@@ -323,6 +323,28 @@ For speculative ideas, see `IDEAS.md`.
     chunk-parse fails (bail-to-eager path should stay identical)
 
 ## Code Quality
+
+- [ ] **mutation-testing rollout — ongoing**:
+    `cargo-mutants` (pinned 27.0.0) measures test depth on critical-path
+    Rust modules.  Process reference: `docs/src/dev/mutation-testing.md`;
+    per-mutant exemptions live in `.cargo/mutants.toml`; the test-shape
+    map is `plans/TEST.md`.  Remaining work:
+    - **Weekly sweep triage.** The sharded weekly full sweep
+      (`.github/workflows/mutants-weekly.yml`) opens auto-issues tagged
+      `mutation-testing` for surviving mutants; triage them (~7-day
+      target) — genuine survivors get a test, equivalent/cosmetic ones
+      get an `exclude_re` entry with a one-line rationale (no mass
+      suppression).
+    - **Finish critical-path coverage.** The manual critical-path sweep
+      covered `hash.rs`, `error.rs`, `wire.rs`, `metadata.rs`,
+      `dtype.rs`, `validate/integrity.rs`, `decode.rs`; `framing.rs`
+      (frame ordering, scan recovery, `decode_message`) was deferred to
+      the weekly machinery rather than a manual pass — confirm it reaches
+      zero unexempted survivors there.
+    - **PR-time gate.** The non-blocking `make mutants-diff` CI job can
+      flip to required-for-merge once the config has stabilised; the job
+      is currently constrained by a 30-minute budget under serialised
+      `MUTANTS_JOBS=2`, so bump the timeout or keep feature PRs small.
 
 - [ ] **descriptor ↔ frame-payload consistency checks on decode**:
     - Complementary to the preallocation hardening (already shipped):
