@@ -165,6 +165,37 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
 
 ## Multi-Language Support
 
+  - [ ] **fortran-interface — shallow `iso_c_binding` binding over the C FFI**
+    Let Fortran scientific codes (IFS and friends) read and write
+    Tensogram directly. **The full analysis and the staged roadmap live
+    in [`PLAN_FORTRAN.md`](../PLAN_FORTRAN.md) at the repo root — read it
+    before starting.** Decided shape:
+    - **Path A**: a hand-written `iso_c_binding` Fortran module
+      (`fortran/src/tensogram.f90`) binding straight to the existing
+      `libtensogram` C ABI — no new C or Rust code, no C++ detour. This
+      is the `eccodes_f90` model ECMWF Fortran users already expect.
+    - **Native `real(:,:)` ergonomics** via the F2008 `contiguous`
+      attribute: the compiler gathers non-contiguous slices, so `c_loc`
+      is always valid and the Fortran array descriptor never crosses the
+      boundary. No `CFI_cdesc_t` / Rust work is needed — that stays a
+      later option only if zero-copy *non-contiguous* input is ever
+      required.
+    - **Column-major contract**: a Fortran `a(ni,nj)` is written with the
+      on-wire descriptor shape/strides **reversed** to C order, so
+      Fortran↔Fortran round-trips are bit-identical and a NumPy / C
+      reader sees the transpose. This is the single most consequential
+      decision — document it loudly against the existing readers.
+    - **Synchronous first.** Ship encode/decode + the file API; defer the
+      streaming encoder and the whole async surface (the C async path
+      uses completion callbacks — hardest part, least demand).
+    - **Distribution**: `fpm` plus CMake/pkg-config against the shipped
+      `tensogram.pc`; lands as `fortran/` beside `cpp/`, with
+      `examples/fortran/` and a `docs/src/guide/fortran-api.md` guide.
+    - **Guard the pre-1.0 ABI churn** with a Fortran↔Python round-trip
+      parity test in CI and an error-enum↔`tensogram.h` consistency
+      check; pin the binding to the exact tensogram version and add
+      `fortran/fpm.toml` to the VERSION single-source-of-truth list.
+
   - [ ] **typescript-wrapper (Scope C.3) — distribution & CI maturity**
     Three intertwined tasks that all touch the build, pack, and publish
     pipeline. Best done together so we don't re-open CI config three
