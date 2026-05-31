@@ -712,6 +712,27 @@ fn write_preamble_and_header<W: Write>(
     hashing: bool,
     emit_footer_hash_frame: bool,
 ) -> Result<()> {
+    let (preamble_bytes, frame_bytes) =
+        build_preamble_and_header_bytes(global_meta, hashing, emit_footer_hash_frame)?;
+    writer.write_all(&preamble_bytes)?;
+    *bytes_written += preamble_bytes.len() as u64;
+    writer.write_all(&frame_bytes)?;
+    *bytes_written += frame_bytes.len() as u64;
+    write_padding(writer, bytes_written)?;
+    Ok(())
+}
+
+/// Build the streaming-mode preamble + `HeaderMetadata` frame bytes.
+///
+/// Returns `(preamble_bytes, header_frame_bytes)`.  Shared by the sync
+/// [`StreamingEncoder`] and the async
+/// [`crate::streaming_async::AsyncStreamingEncoder`] so both produce
+/// byte-identical output.
+pub(crate) fn build_preamble_and_header_bytes(
+    global_meta: &GlobalMetadata,
+    hashing: bool,
+    emit_footer_hash_frame: bool,
+) -> Result<(Vec<u8>, Vec<u8>)> {
     let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
 
     // Streaming preamble: total_length=0 signals unknown length at write time.
@@ -738,21 +759,24 @@ fn write_preamble_and_header<W: Write>(
         total_length: 0,
     };
     let preamble_bytes = preamble_to_bytes(&preamble);
-    writer.write_all(&preamble_bytes)?;
-    *bytes_written += PREAMBLE_SIZE as u64;
-
     let frame_bytes = build_frame(FrameType::HeaderMetadata, 1, 0, &meta_cbor, hashing);
-    writer.write_all(&frame_bytes)?;
-    *bytes_written += frame_bytes.len() as u64;
-
-    write_padding(writer, bytes_written)?;
-    Ok(())
+    Ok((preamble_bytes, frame_bytes))
 }
 
 fn preamble_to_bytes(preamble: &Preamble) -> Vec<u8> {
     let mut out = Vec::with_capacity(PREAMBLE_SIZE);
     preamble.write_to(&mut out);
     out
+}
+
+/// Number of zero-padding bytes needed to align `bytes_written` to an
+/// 8-byte boundary.  Used by the async sibling's padding helper; the
+/// sync side here uses [`write_padding`] directly with a static
+/// `ZERO_PAD` slice.  Gated on the async feature so default-feature
+/// clippy doesn't flag it as dead code.
+#[cfg(feature = "async")]
+pub(crate) const fn padding_for(bytes_written: u64) -> usize {
+    (8 - (bytes_written as usize % 8)) % 8
 }
 
 /// Build a non-data-object frame on the wire (v3).
@@ -765,7 +789,7 @@ fn preamble_to_bytes(preamble: &Preamble) -> Vec<u8> {
 /// digest).  When false, the flag bit is clear and the slot is
 /// written as zero by convention; readers must dispatch on the
 /// per-frame flag rather than inspecting the slot value.
-fn build_frame(
+pub(crate) fn build_frame(
     frame_type: FrameType,
     version: u16,
     flags: u16,

@@ -62,7 +62,67 @@ typedef enum {
    * thread-local error.
    */
   TGM_ERROR_MISSING_HASH = 11,
+  /**
+   * Async task exceeded its deadline; the underlying tokio future
+   * was dropped at the next yield point.  See
+   * `plans/PLAN_CPP_ASYNC.md` §7.1.
+   */
+  TGM_ERROR_TIMEOUT = 12,
+  /**
+   * Async task observed its cancellation token fire before the
+   * future resolved.  See `plans/PLAN_CPP_ASYNC.md` §7.2.
+   */
+  TGM_ERROR_CANCELLED = 13,
 } tgm_error;
+
+/**
+ * Status returned by `tgm_async_streaming_encoder_try_object_count`.
+ *
+ * Distinguishes the three states the previous overloaded sentinel
+ * (`usize::MAX`) collapsed: invalid handle, busy with another in-flight
+ * FFI call, encoder already finished, and a valid count.
+ */
+typedef enum {
+  /**
+   * `*out_count` is valid.
+   */
+  TGM_OBJECT_COUNT_STATUS_OK = 0,
+  /**
+   * `enc` was NULL.
+   */
+  TGM_OBJECT_COUNT_STATUS_NULL_HANDLE = 1,
+  /**
+   * The encoder is currently locked by another in-flight async
+   * operation (write/finish).  Try again after that operation
+   * completes.
+   */
+  TGM_OBJECT_COUNT_STATUS_BUSY = 2,
+  /**
+   * `tgm_async_streaming_encoder_finish` has already consumed the
+   * encoder; subsequent calls to other methods will error too.
+   */
+  TGM_OBJECT_COUNT_STATUS_FINISHED = 3,
+} TgmObjectCountStatus;
+
+/**
+ * Async file handle backed by `Arc<TensogramFile>` so the same handle
+ * is safely shareable across multiple in-flight tasks.
+ */
+typedef struct tgm_async_file_t tgm_async_file_t;
+
+/**
+ * Opaque async streaming-encoder handle.  Internally wraps an
+ * `AsyncStreamingEncoder<tokio::fs::File>` behind a `tokio::sync::Mutex`
+ * so concurrent `write_object` calls are serialised (the underlying
+ * AsyncWrite is naturally serial — concurrent calls would interleave
+ * frame bytes).
+ */
+typedef struct tgm_async_streaming_encoder_t tgm_async_streaming_encoder_t;
+
+/**
+ * Opaque task handle exposed to C as `tgm_async_task_t*`.
+ */
+typedef struct tgm_async_task_t tgm_async_task_t;
 
 /**
  * Opaque handle for iterating over messages in a byte buffer.
@@ -70,6 +130,12 @@ typedef enum {
  * The caller's buffer must remain valid for the lifetime of this iterator.
  */
 typedef struct tgm_buffer_iter_t tgm_buffer_iter_t;
+
+/**
+ * Opaque cancellation-token handle exposed to C as
+ * `tgm_cancellation_token_t*`.
+ */
+typedef struct tgm_cancellation_token_t tgm_cancellation_token_t;
 
 /**
  * File handle.
@@ -886,5 +952,465 @@ tgm_error tgm_validate_file(const char *path,
                             const char *level,
                             int32_t check_canonical,
                             tgm_bytes_t *out);
+
+/**
+ * Allocate a fresh cancellation token in the un-cancelled state.
+ *
+ * The returned handle is caller-owned; free it with
+ * `tgm_cancellation_token_free`.  A single token may be passed to
+ * any number of `tgm_async_*` calls; cancelling it propagates to
+ * all in-flight tasks holding a reference.
+ */
+tgm_cancellation_token_t *tgm_cancellation_token_create(void);
+
+/**
+ * Cancel the token.  Idempotent.  Cancelling a NULL handle is a
+ * no-op.  Tasks attached to this token transition to
+ * [`TgmError::Cancelled`] at their next yield point.
+ */
+void tgm_cancellation_token_cancel(tgm_cancellation_token_t *tok);
+
+/**
+ * Returns `true` if the token has been cancelled.  A NULL handle
+ * returns `false`.
+ */
+bool tgm_cancellation_token_is_cancelled(const tgm_cancellation_token_t *tok);
+
+/**
+ * Free a cancellation token.  Safe to call before any in-flight
+ * task completes — each task holds its own internal clone of the
+ * underlying tokio token, so freeing the user-side handle does not
+ * invalidate cancellation for already-spawned tasks.  Freeing a
+ * NULL handle is a no-op.
+ */
+void tgm_cancellation_token_free(tgm_cancellation_token_t *tok);
+
+/**
+ * Register a completion callback on `task`.  Must be called exactly
+ * once per task; subsequent calls return [`TgmError::InvalidArg`]
+ * regardless of whether the task is still pending or already
+ * resolved.
+ *
+ * The callback fires on a **dispatcher pool worker** (a non-tokio
+ * thread owned by `tensogram-ffi`), so a slow or blocking callback
+ * does not stall the runtime.  See `plans/PLAN_CPP_ASYNC.md` §4.1
+ * for the full contract: callbacks must complete quickly, must not
+ * throw, and must not block on locks held by the caller of any
+ * other tgm_* function on this thread.
+ *
+ * If the task has already resolved when this function is called,
+ * the callback is enqueued on the dispatcher pool immediately so
+ * the worker runs the user code on a dispatcher thread.  Under
+ * extreme overload (the dispatcher's bounded queue is full) the
+ * callback may run inline on the caller's thread as a graceful-
+ * degradation path; bump `dispatcher_workers` via
+ * `tgm_runtime_configure` to avoid this.
+ */
+tgm_error tgm_async_task_set_completion(tgm_async_task_t *task, void (*cb)(void*), void *userdata);
+
+/**
+ * Returns `true` if the task has resolved (whether successfully,
+ * by error, by timeout, or by cancellation).  A NULL handle returns
+ * `false`.  Non-blocking; safe to call from any thread.
+ */
+bool tgm_async_task_is_ready(const tgm_async_task_t *task);
+
+/**
+ * Cancel an in-flight task by signalling its internal token.  The
+ * task transitions to [`TgmError::Cancelled`] at the next yield point.
+ * A NULL handle is a no-op.
+ */
+void tgm_async_task_cancel(tgm_async_task_t *task);
+
+/**
+ * Free a task handle.  Must be called exactly once per task to
+ * release the slot's heap allocation.  Safe to call after
+ * [`tgm_async_task_join`]: the join consumes the result but does
+ * not free the handle itself.  Freeing a NULL handle is a no-op.
+ */
+void tgm_async_task_free(tgm_async_task_t *task);
+
+/**
+ * Block the calling thread until the task is ready, then return
+ * its outcome.
+ *
+ * `_join_void` is for tasks whose success is ABI-empty (writes,
+ * finishes, prefetches).  Returns [`TgmError::Ok`] on success.  On
+ * failure, the matching error code is returned and
+ * [`tgm_last_error`] is populated.
+ *
+ * Call [`tgm_async_task_free`] to release the task slot after
+ * joining.  Joining the same task twice returns
+ * [`TgmError::InvalidArg`] (`task result already consumed`).
+ */
+tgm_error tgm_async_task_join_void(tgm_async_task_t *task);
+
+/**
+ * Block the calling thread until the task is ready, then write its
+ * `usize` result to `*out` and return [`TgmError::Ok`].  See
+ * [`tgm_async_task_join_void`] for the joint contract on errors,
+ * type mismatches, and double-join.
+ */
+tgm_error tgm_async_task_join_size(tgm_async_task_t *task, uint64_t *out);
+
+/**
+ * Block until ready, then transfer ownership of the task's byte
+ * buffer to the caller via `*out`.  The caller must release the
+ * buffer with [`tgm_bytes_free`].  See [`tgm_async_task_join_void`]
+ * for the joint contract.
+ */
+tgm_error tgm_async_task_join_bytes(tgm_async_task_t *task, tgm_bytes_t *out);
+
+/**
+ * Block until ready, then transfer ownership of the decoded message
+ * to the caller via `*out`.  The caller must release the message
+ * with [`tgm_message_free`].  See [`tgm_async_task_join_void`] for
+ * the joint contract.
+ */
+tgm_error tgm_async_task_join_message(tgm_async_task_t *task, tgm_message_t **out);
+
+/**
+ * Block until ready, then transfer ownership of the decoded
+ * metadata to the caller via `*out`.  The caller must release it
+ * with [`tgm_metadata_free`].  See [`tgm_async_task_join_void`]
+ * for the joint contract.
+ */
+tgm_error tgm_async_task_join_metadata(tgm_async_task_t *task, tgm_metadata_t **out);
+
+/**
+ * Block until ready, then transfer ownership of the opened async
+ * file handle to the caller via `*out`.  The caller must release it
+ * with [`tgm_async_file_close`].  See [`tgm_async_task_join_void`]
+ * for the joint contract.
+ */
+tgm_error tgm_async_task_join_async_file(tgm_async_task_t *task, tgm_async_file_t **out);
+
+/**
+ * Block until ready, then transfer ownership of an array of byte
+ * buffers (one per requested range) to the caller.  Writes the
+ * array pointer to `*out_array` and the entry count to
+ * `*out_count`.  The caller must release the array via
+ * [`tgm_multi_bytes_free`].  See [`tgm_async_task_join_void`] for
+ * the joint contract.
+ */
+tgm_error tgm_async_task_join_multi_bytes(tgm_async_task_t *task,
+                                          tgm_bytes_t **out_array,
+                                          size_t *out_count);
+
+/**
+ * Free an array of `TgmBytes` returned by `tgm_async_task_join_multi_bytes`.
+ */
+void tgm_multi_bytes_free(tgm_bytes_t *array, size_t count);
+
+/**
+ * Borrowed pointer to the file's path string.  Valid until the
+ * handle is closed.  Returns NULL on a NULL handle.
+ */
+const char *tgm_async_file_path(const tgm_async_file_t *file);
+
+/**
+ * Close an async file handle.  Internally backed by
+ * `Arc<TensogramFile>`, so any task currently using the handle
+ * keeps the underlying file alive until the task completes.
+ * Closing a NULL handle is a no-op.
+ */
+void tgm_async_file_close(tgm_async_file_t *file);
+
+/**
+ * Open a Tensogram file asynchronously.  Returns immediately with a
+ * task handle; join via `tgm_async_task_join_async_file`.
+ */
+tgm_error tgm_async_file_open(const char *path,
+                              tgm_cancellation_token_t *cancel,
+                              uint64_t timeout_ms,
+                              tgm_async_task_t **out_task);
+
+/**
+ * Open a remote `.tgm` (S3 / GCS / Azure / HTTP).  Always exported
+ * at the C ABI level so consumers linking the cdylib never see an
+ * undefined symbol; when the `async-remote` Cargo feature is off
+ * the function returns [`TgmError::Remote`] with a clear
+ * `tgm_last_error()` message instead of dispatching.
+ */
+tgm_error tgm_async_file_open_remote(const char *url,
+                                     const char *const *storage_keys,
+                                     const char *const *storage_values,
+                                     size_t nopts,
+                                     bool bidirectional,
+                                     tgm_cancellation_token_t *cancel,
+                                     uint64_t timeout_ms,
+                                     tgm_async_task_t **out_task);
+
+/**
+ * Async equivalent of [`tgm_file_message_count`].  Returns
+ * immediately with a task handle that resolves to the message count
+ * (joinable via [`tgm_async_task_join_size`]).  See the type
+ * docstrings for the cancellation/timeout/null-handle contract
+ * shared by every `tgm_async_file_*` entry point.
+ */
+tgm_error tgm_async_file_message_count(tgm_async_file_t *file,
+                                       tgm_cancellation_token_t *cancel,
+                                       uint64_t timeout_ms,
+                                       tgm_async_task_t **out_task);
+
+/**
+ * Async equivalent of [`tgm_file_read_message`].  Resolves to the
+ * raw message bytes (joinable via [`tgm_async_task_join_bytes`]).
+ * See the type docstrings for the shared cancellation/timeout
+ * contract.
+ */
+tgm_error tgm_async_file_read_message(tgm_async_file_t *file,
+                                      size_t index,
+                                      tgm_cancellation_token_t *cancel,
+                                      uint64_t timeout_ms,
+                                      tgm_async_task_t **out_task);
+
+/**
+ * Async equivalent of [`tgm_file_decode_message`].  Resolves to a
+ * fully decoded [`TgmMessage`] (joinable via
+ * [`tgm_async_task_join_message`]).  `threads = 0` selects the
+ * `tensogram::DecodeOptions` default.  See the type docstrings for
+ * the shared cancellation/timeout contract.
+ */
+tgm_error tgm_async_file_decode_message(tgm_async_file_t *file,
+                                        size_t index,
+                                        bool native_byte_order,
+                                        uint32_t threads,
+                                        bool restore_non_finite,
+                                        bool verify_hash,
+                                        tgm_cancellation_token_t *cancel,
+                                        uint64_t timeout_ms,
+                                        tgm_async_task_t **out_task);
+
+/**
+ * Async equivalent of [`tgm_file_decode_metadata`].  Resolves to a
+ * [`TgmMetadata`] handle (joinable via
+ * [`tgm_async_task_join_metadata`]) without materialising tensor
+ * payloads.  See the type docstrings for the shared
+ * cancellation/timeout contract.
+ */
+tgm_error tgm_async_file_decode_metadata(tgm_async_file_t *file,
+                                         size_t index,
+                                         tgm_cancellation_token_t *cancel,
+                                         uint64_t timeout_ms,
+                                         tgm_async_task_t **out_task);
+
+/**
+ * Async equivalent of [`tgm_file_decode_object`].  Resolves to a
+ * single-object [`TgmMessage`] (joinable via
+ * [`tgm_async_task_join_message`]) so the existing `tgm_object_*`
+ * and `tgm_message_*` accessors work uniformly.  See the type
+ * docstrings for the shared cancellation/timeout contract.
+ */
+tgm_error tgm_async_file_decode_object(tgm_async_file_t *file,
+                                       size_t msg_index,
+                                       size_t obj_index,
+                                       bool native_byte_order,
+                                       uint32_t threads,
+                                       bool restore_non_finite,
+                                       bool verify_hash,
+                                       tgm_cancellation_token_t *cancel,
+                                       uint64_t timeout_ms,
+                                       tgm_async_task_t **out_task);
+
+/**
+ * Async equivalent of [`tgm_file_decode_range`].  Each `(offset,
+ * count)` pair in `offsets[]` / `counts[]` (length `n_ranges`)
+ * describes a sub-range of the object's logical element stream.
+ * Resolves to a vector of byte buffers, one per range, joinable via
+ * [`tgm_async_task_join_multi_bytes`].  See the type docstrings for
+ * the shared cancellation/timeout contract.
+ */
+tgm_error tgm_async_file_decode_range(tgm_async_file_t *file,
+                                      size_t msg_index,
+                                      size_t obj_index,
+                                      const uint64_t *offsets,
+                                      const uint64_t *counts,
+                                      size_t n_ranges,
+                                      bool native_byte_order,
+                                      uint32_t threads,
+                                      tgm_cancellation_token_t *cancel,
+                                      uint64_t timeout_ms,
+                                      tgm_async_task_t **out_task);
+
+/**
+ * Configure the FFI tokio runtime.  Must be called before any other
+ * `tgm_async_*` call; subsequent calls return [`TgmError::InvalidArg`].
+ *
+ * Pass `0` to use the default for any field.
+ */
+tgm_error tgm_runtime_configure(uint32_t workers,
+                                uint32_t dispatcher_workers,
+                                uint64_t multipart_part_size_bytes);
+
+/**
+ * Reserved ABI for graceful shutdown.  Currently a no-op that
+ * always returns `0`.
+ *
+ * **Status (v1):** the shared runtime lives behind a `OnceLock` and
+ * cannot be torn down without leaking the slot.  Process exit is
+ * abrupt by design (see `plans/PLAN_CPP_ASYNC.md` §6); in-flight
+ * tasks are dropped by tokio at process teardown.
+ *
+ * The signature is reserved here so a future implementation can
+ * switch the singleton to an owning container, drain tasks
+ * cooperatively, and return the count that did not finish within
+ * `timeout_ms` — without breaking the C ABI.  The argument is
+ * accepted but ignored today.
+ */
+uint64_t tgm_runtime_shutdown_blocking(uint64_t timeout_ms);
+
+/**
+ * Borrowed pointer to the encoder's path string.  Valid for the
+ * lifetime of the handle.  Returns NULL on a NULL handle.
+ */
+const char *tgm_async_streaming_encoder_path(const tgm_async_streaming_encoder_t *enc);
+
+/**
+ * Free the encoder handle.
+ *
+ * **Drop semantics:** the underlying encoder is held behind an
+ * `Arc<Mutex<Option<...>>>`.  If a task is mid-flight (e.g. a
+ * `write_object` whose returned `tgm_async_task_t*` has not been
+ * joined and freed yet), the task holds its own `Arc` clone of the
+ * inner state.  Calling `tgm_async_streaming_encoder_free` while a
+ * task is in flight is therefore memory-safe: the inner encoder
+ * stays alive until the last `Arc` (the task's) drops.
+ *
+ * However: if the encoder is dropped without
+ * `tgm_async_streaming_encoder_finish` having completed, the on-disk
+ * file is **structurally invalid** (no footer frames, no postamble,
+ * `total_length = 0`).  Validating readers will reject the file.
+ * This matches the cancellation-mid-stream contract documented in
+ * `plans/PLAN_CPP_ASYNC.md` §5.4: operational systems do not trust
+ * truncated `.tgm` files.  Callers who care about a clean file must
+ * drive a successful `finish` task before freeing the encoder.
+ */
+void tgm_async_streaming_encoder_free(tgm_async_streaming_encoder_t *enc);
+
+/**
+ * Create an async streaming encoder writing to a local file.
+ *
+ * Returns a task that resolves to a `tgm_async_streaming_encoder_t*`
+ * (joinable via `tgm_async_task_join_async_streaming_encoder`).
+ *
+ * `metadata_json` follows the same schema as the sync streaming
+ * encoder (see `tgm_streaming_encoder_create`).  The async encoder
+ * writes the preamble + header metadata frame to the sink before
+ * the task resolves.
+ */
+tgm_error tgm_async_streaming_encoder_create(const char *path,
+                                             const char *metadata_json,
+                                             const char *hash_algo,
+                                             uint32_t threads,
+                                             tgm_cancellation_token_t *cancel,
+                                             uint64_t timeout_ms,
+                                             tgm_async_task_t **out_task);
+
+/**
+ * Encode and append one data object to the stream.
+ *
+ * `descriptor_json` is a JSON-serialised `DataObjectDescriptor`
+ * matching the sync `tgm_streaming_encoder_write_object` schema.
+ * `data` / `len` describe the raw element buffer; the encoder runs
+ * the configured filter / compression / encoding pipeline on it.
+ *
+ * The C caller's `data` buffer is **copied** before this function
+ * returns, so the buffer may be reused immediately.  The returned
+ * task resolves to `void` (joinable via
+ * [`tgm_async_task_join_void`]).
+ *
+ * Concurrent `write_*` calls on the same encoder are serialised
+ * via an internal `tokio::sync::Mutex`; the underlying AsyncWrite
+ * is naturally serial.
+ */
+tgm_error tgm_async_streaming_encoder_write_object(tgm_async_streaming_encoder_t *enc,
+                                                   const char *descriptor_json,
+                                                   const uint8_t *data,
+                                                   size_t len,
+                                                   tgm_cancellation_token_t *cancel,
+                                                   uint64_t timeout_ms,
+                                                   tgm_async_task_t **out_task);
+
+/**
+ * Append one already-encoded data object to the stream, bypassing
+ * the encoder's filter / compression / encoding pipeline.  `data`
+ * is treated as the final on-disk payload bytes; `descriptor_json`
+ * must describe the post-pipeline frame.
+ *
+ * Useful for relaying frames between encoders without redundant
+ * transcoding.  Other semantics (data copy, serialisation,
+ * cancellation, void result) match
+ * [`tgm_async_streaming_encoder_write_object`].
+ */
+tgm_error tgm_async_streaming_encoder_write_pre_encoded(tgm_async_streaming_encoder_t *enc,
+                                                        const char *descriptor_json,
+                                                        const uint8_t *data,
+                                                        size_t len,
+                                                        tgm_cancellation_token_t *cancel,
+                                                        uint64_t timeout_ms,
+                                                        tgm_async_task_t **out_task);
+
+/**
+ * Append a per-message preceder metadata frame.  `metadata_json`
+ * is a flat JSON object (one level of nesting); keys become CBOR
+ * map keys, values are converted to CBOR primitives.
+ *
+ * Resolves to `void` (joinable via [`tgm_async_task_join_void`]).
+ * Serialised against `write_*` via the same internal mutex.
+ */
+tgm_error tgm_async_streaming_encoder_write_preceder(tgm_async_streaming_encoder_t *enc,
+                                                     const char *metadata_json,
+                                                     tgm_cancellation_token_t *cancel,
+                                                     uint64_t timeout_ms,
+                                                     tgm_async_task_t **out_task);
+
+/**
+ * Finalise the stream: flush pending frames, write the footer,
+ * and (if `backfill = true`) seek back to update the preamble's
+ * `total_length`.
+ *
+ * Consumes the encoder's inner state — subsequent `write_*` /
+ * `finish` calls on the same handle return
+ * [`TensogramError::Framing`] (`encoder already finished`).  The
+ * handle itself must still be released with
+ * [`tgm_async_streaming_encoder_free`].
+ *
+ * `backfill` requires that the underlying `tokio::fs::File`
+ * supports seeks (true for local files, may not be true for
+ * future remote sinks).  If a clean file is required and the
+ * task is cancelled mid-finish, the on-disk file is structurally
+ * invalid (see free's drop semantics).
+ */
+tgm_error tgm_async_streaming_encoder_finish(tgm_async_streaming_encoder_t *enc,
+                                             bool backfill,
+                                             tgm_cancellation_token_t *cancel,
+                                             uint64_t timeout_ms,
+                                             tgm_async_task_t **out_task);
+
+/**
+ * Snapshot the encoder's object count without blocking.  Returns a
+ * status describing whether `*out_count` is valid.
+ *
+ * Use this in preference to the convenience accessor when you need
+ * to distinguish "0 objects written so far" from "handle invalid"
+ * or "encoder already finished".
+ */
+TgmObjectCountStatus tgm_async_streaming_encoder_try_object_count(const tgm_async_streaming_encoder_t *enc,
+                                                                  size_t *out_count);
+
+/**
+ * Convenience: object count as a single number, with the historical
+ * `usize::MAX` sentinel covering all "not OK" outcomes (null handle,
+ * busy, finished).  Callers that need to discriminate should use
+ * [`tgm_async_streaming_encoder_try_object_count`] instead.
+ */
+size_t tgm_async_streaming_encoder_object_count(const tgm_async_streaming_encoder_t *enc);
+
+/**
+ * Typed join for tasks returning a streaming-encoder handle.
+ */
+tgm_error tgm_async_task_join_async_streaming_encoder(tgm_async_task_t *task,
+                                                      tgm_async_streaming_encoder_t **out);
 
 #endif  /* TENSOGRAM_H */

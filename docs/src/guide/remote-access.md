@@ -167,6 +167,7 @@ ds = xr.open_dataset(
 | `s3://`, `s3a://` | Amazon S3 | Env-based or explicit credentials |
 | `gs://` | Google Cloud Storage | Service account or env |
 | `az://`, `azure://` | Azure Blob Storage | MSI or env |
+| `file://` | Local filesystem | Via `open_remote`; for ordinary local files prefer a plain path or `open()` (`open_source` does not auto-route `file://`) |
 
 All backends are provided by the [`object_store`](https://crates.io/crates/object_store) crate.
 

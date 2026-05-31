@@ -29,6 +29,8 @@ pub mod remote_scan_parse;
 pub(crate) mod restore;
 pub mod scan_opts;
 pub mod streaming;
+#[cfg(feature = "async")]
+pub mod streaming_async;
 pub(crate) mod substitute_and_mask;
 pub mod types;
 pub mod validate;
@@ -58,6 +60,8 @@ pub use remote_scan_parse::{
 };
 pub use scan_opts::RemoteScanOptions;
 pub use streaming::StreamingEncoder;
+#[cfg(feature = "async")]
+pub use streaming_async::AsyncStreamingEncoder;
 pub use tensogram_encodings::bitmask::MaskMethod;
 pub use tensogram_encodings::pipeline::CompressionBackend;
 pub use types::{

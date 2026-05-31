@@ -50,6 +50,56 @@ behaviour-preserving: verified by the full existing test suite.
 
 ---
 
+## Asynchronous C++ API (callback / std::future / coroutine frontends)
+
+A true asynchronous read/write surface for the C++ wrapper, built for
+the HPC producer/consumer scenario: two independent cluster jobs pipe
+data through a `.tgm` artefact, and neither should stall on the other.
+It shares Tensogram's internal tokio runtime with no tokio types in the
+public C/C++ API. Three layers: header-only C++ frontends → a
+callback-based FFI core → the Rust async core plus a shared runtime.
+
+| Component | What it does |
+|-----------|--------------|
+| `rust/tensogram/src/streaming_async.rs` | `AsyncStreamingEncoder<W: AsyncWrite + Unpin>`. Shares its frame-emission logic with the sync `StreamingEncoder`, so async output is byte-identical to sync for the same sequence of writes. |
+| `rust/tensogram-ffi/src/async_core.rs` | Opaque `tgm_async_task_t` handles, `tgm_cancellation_token_t`, completion callbacks, typed join functions, a shared multi-thread tokio runtime behind a `OnceLock`, `tgm_runtime_configure`, and the read-path file API (`tgm_async_file_*`) including the always-exported `tgm_async_file_open_remote`. |
+| `rust/tensogram-ffi/src/async_streaming.rs` | Write-path FFI: the `tgm_async_streaming_encoder_*` family over a local `tokio::fs::File`. |
+| `cpp/include/tensogram/async/callback.hpp` | C++17 callback frontend: `result<T>`, `cancellation_token`, `async_file`, `async_streaming_encoder`. The minimal surface the other two frontends layer on. |
+| `cpp/include/tensogram/async/std_future.hpp` | C++17 `std::future<T>` adapter. |
+| `cpp/include/tensogram/async/coro.hpp` | C++20 `task<T>` / `awaiter<T>`, `block_on`, and the `async_for_each(file, fn)` message walker. |
+
+Key decisions:
+
+- **Header-only frontends.** Every `async/*.hpp` definition is `inline`;
+  the only ABI surface is the C FFI. Adding or changing a frontend
+  never alters the shared-library ABI.
+- **Contained runtime.** One shared tokio runtime (default workers
+  `min(num_cpus, 8)`), built lazily behind a `OnceLock`; no tokio type
+  crosses the FFI. A separate dispatcher pool runs user completion
+  callbacks, so a slow callback cannot starve tokio's I/O workers.
+- **Cancellation + timeouts.** Every launch accepts an optional
+  cancellation token and a millisecond deadline, surfacing
+  `TGM_ERROR_CANCELLED` / `TGM_ERROR_TIMEOUT`.
+- **Remote reads.** `open_remote` is exposed on all three frontends and
+  maps to the always-linkable `tgm_async_file_open_remote`. The
+  object-store backend — `s3://`, `gs://`, `az://`, `https://` and
+  `file://` — is gated behind the FFI `async-remote` Cargo feature
+  (the `TENSOGRAM_ASYNC_REMOTE` CMake option, which also adds
+  object_store's `fs` feature for `file://`). Streaming *writes* remain
+  local-file only.
+- **Wire-format parity.** The async streaming encoder emits
+  byte-identical output to the sync encoder, so async-written files are
+  readable by every binding.
+
+Build wiring: the `cpp` CMake build gains `TENSOGRAM_ASYNC` (on by
+default; adds `--features=async`) and `TENSOGRAM_ASYNC_REMOTE` (adds
+`--features=async-remote`). Caller examples live at `examples/cpp/19`–
+`24` (callback / `std::future` on C++17, coroutine producer / consumer /
+remote on C++20). User guides: `docs/src/guide/cpp-async.md` (reference)
+and `docs/src/guide/cpp-streaming-async.md` (producer/consumer recipe).
+
+---
+
 ## Remote bidirectional walker — pipelined and on by default
 
 The remote backend now uses a pipelined bidirectional walker out of

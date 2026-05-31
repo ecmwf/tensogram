@@ -6,6 +6,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ---------------------------------------------------------------------------
+# Async surface
+# ---------------------------------------------------------------------------
+# TENSOGRAM_ASYNC enables the header-only C++ async frontends and builds the
+# FFI with --features=async.  TENSOGRAM_ASYNC_REMOTE additionally enables the
+# object-store backend (s3://, gs://, az://, https:// and file://) by building
+# the FFI with --features=async-remote; it implies TENSOGRAM_ASYNC.
+option(TENSOGRAM_ASYNC "Build the async FFI surface and C++ frontends" ON)
+option(TENSOGRAM_ASYNC_REMOTE
+    "Build the async object-store backend (implies TENSOGRAM_ASYNC)" OFF)
+if(TENSOGRAM_ASYNC_REMOTE AND NOT TENSOGRAM_ASYNC)
+    message(STATUS "TENSOGRAM_ASYNC_REMOTE=ON -> forcing TENSOGRAM_ASYNC=ON")
+    set(TENSOGRAM_ASYNC ON)
+endif()
+if(TENSOGRAM_ASYNC_REMOTE)
+    set(CARGO_FEATURES "--features=async-remote")
+elseif(TENSOGRAM_ASYNC)
+    set(CARGO_FEATURES "--features=async")
+else()
+    set(CARGO_FEATURES "")
+endif()
+
+# ---------------------------------------------------------------------------
 # Build the Rust static library via cargo
 # ---------------------------------------------------------------------------
 set(CARGO_TARGET_DIR "${CMAKE_SOURCE_DIR}/../target")
@@ -28,7 +50,7 @@ set(RUST_LIB "${CARGO_TARGET_DIR}/release/libtensogram_ffi.a")
 add_custom_target(rust_lib ALL
     BYPRODUCTS "${RUST_LIB}"
     COMMAND ${CMAKE_COMMAND} -E env "CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
-            cargo build --release -p tensogram-ffi
+            cargo build --release -p tensogram-ffi ${CARGO_FEATURES}
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/.."
     COMMENT "Invoking cargo build -p tensogram-ffi (cargo decides freshness)"
 )
@@ -50,6 +72,14 @@ target_include_directories(tensogram INTERFACE
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/../rust/tensogram-ffi")
 target_link_libraries(tensogram INTERFACE tensogram_ffi)
+if(TENSOGRAM_ASYNC)
+    target_compile_definitions(tensogram INTERFACE TENSOGRAM_ASYNC=1)
+    find_package(Threads REQUIRED)
+    target_link_libraries(tensogram INTERFACE Threads::Threads)
+endif()
+if(TENSOGRAM_ASYNC_REMOTE)
+    target_compile_definitions(tensogram INTERFACE TENSOGRAM_ASYNC_REMOTE=1)
+endif()
 
 # Platform-specific system libraries required by the Rust static library
 if(APPLE)

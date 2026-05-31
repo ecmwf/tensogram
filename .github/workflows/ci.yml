@@ -82,6 +82,12 @@ jobs:
           cargo test --workspace
           cargo test -p tensogram --features remote
           cargo test -p tensogram --features "remote,async"
+          # The FFI's async tests file is `cfg(feature = "async")`, so
+          # `cargo test --workspace` (default features) compiles it to
+          # nothing.  Add an explicit pass with the async features so
+          # the dispatcher pool, streaming-encoder, and null-arg
+          # validation tests actually run in CI.
+          cargo test -p tensogram-ffi --features "async,async-remote"
 
       - name: sccache stats
         if: always()
@@ -335,6 +341,11 @@ jobs:
 
       - name: Test (remote + async features)
         run: cargo test -p tensogram --features "remote,async"
+
+      - name: Test (FFI async)
+        # FFI's async tests file is `cfg(feature = "async")`; default
+        # `cargo test --workspace` compiles it to nothing.
+        run: cargo test -p tensogram-ffi --features "async,async-remote"
 
       - name: Test (GRIB)
         run: |
@@ -694,6 +705,15 @@ jobs:
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
     if: github.event_name == 'pull_request'
     timeout-minutes: 30
+    # Override the workflow-wide TMPDIR (which sits inside the workspace
+    # at $GITHUB_WORKSPACE/.tmp) for this job only.  cargo-mutants copies
+    # the workspace into a tempdir under TMPDIR; if TMPDIR is inside the
+    # workspace, the copy walks its own freshly-created tempdir and
+    # recurses until macOS / Linux PATH_MAX kicks in with
+    # "File name too long".  /tmp is outside the workspace and free of
+    # this trap.
+    env:
+      TMPDIR: /tmp
     steps:
       - uses: actions/checkout@v4
         with:

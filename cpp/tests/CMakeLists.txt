@@ -6,8 +6,7 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# Test executable
-add_executable(tensogram_tests
+set(TENSOGRAM_TEST_SOURCES
     test_encode_decode.cpp
     test_metadata.cpp
     test_descriptor.cpp
@@ -23,6 +22,15 @@ add_executable(tensogram_tests
     test_allow_nan_inf.cpp
     test_decode_verify_hash.cpp
 )
+
+if(TENSOGRAM_ASYNC)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_callback.cpp)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_stdfuture.cpp)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_producer_consumer.cpp)
+endif()
+
+# Test executable
+add_executable(tensogram_tests ${TENSOGRAM_TEST_SOURCES})
 
 target_include_directories(tensogram_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -40,3 +48,20 @@ target_link_libraries(tensogram_tests PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(tensogram_tests)
+
+# Optional C++20 coroutine test executable.  Compiled separately because
+# the rest of the suite is C++17.  Set TENSOGRAM_ASYNC_CORO_TESTS=OFF to
+# skip if your compiler doesn't support C++20 coroutines.
+option(TENSOGRAM_ASYNC_CORO_TESTS "Build the C++20 coroutine async tests" ON)
+if(TENSOGRAM_ASYNC AND TENSOGRAM_ASYNC_CORO_TESTS)
+    add_executable(tensogram_async_coro_tests test_async_coro.cpp)
+    set_target_properties(tensogram_async_coro_tests PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+    target_compile_options(tensogram_async_coro_tests PRIVATE
+        -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+    target_link_libraries(tensogram_async_coro_tests PRIVATE
+        tensogram GTest::gtest GTest::gtest_main)
+    gtest_discover_tests(tensogram_async_coro_tests)
+endif()

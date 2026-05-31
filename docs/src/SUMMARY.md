@@ -37,6 +37,8 @@
 - [Python API](guide/python-api.md)
 - [C API](guide/c-api.md)
 - [C++ API](guide/cpp-api.md)
+- [C++ Async API](guide/cpp-async.md)
+- [C++ Async Streaming (Producer / Consumer)](guide/cpp-streaming-async.md)
 - [TypeScript API](guide/typescript-api.md)
 - [Tensoscope (Web Viewer)](guide/tensoscope.md)
 - [xarray Integration](guide/xarray-integration.md)

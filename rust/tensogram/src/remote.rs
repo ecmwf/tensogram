@@ -4527,4 +4527,125 @@ mod bidir_http_tests {
             "corrupt footer must not abort layout commit: all 3 messages still discovered",
         );
     }
+
+    /// Exercise the synchronous remote read API over HTTP on a
+    /// non-indexed single-object message: message / metadata / descriptor
+    /// reads plus the object- and range-decode paths.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_sync_read_api_roundtrip() {
+        let buf = make_message(vec![4], 0x42);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions::default(),
+        )
+        .expect("open");
+
+        assert_eq!(backend.message_count().expect("count"), 1);
+        assert_eq!(backend.message_layouts().expect("layouts").len(), 1);
+
+        assert!(!backend.read_message(0).expect("read_message").is_empty());
+        let _meta = backend.read_metadata(0).expect("read_metadata");
+
+        let (_m, descs) = backend.read_descriptors(0).expect("read_descriptors");
+        assert_eq!(descs.len(), 1);
+        assert_eq!(descs[0].dtype, Dtype::Float32);
+
+        let opts = crate::DecodeOptions::default();
+        let (_m, desc, decoded) = backend.read_object(0, 0, &opts).expect("read_object");
+        assert_eq!(desc.shape, vec![4]);
+        assert_eq!(decoded.len(), 4 * 4); // 4 × float32
+
+        let (_d, parts) = backend
+            .read_range(0, 0, &[(0, 4)], &opts)
+            .expect("read_range");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), 4 * 4);
+
+        // The encoded message carries an index frame, so the indexed
+        // batch fast-paths return one result per requested message.
+        let obj_batch = backend
+            .read_object_batch(&[0], 0, &opts)
+            .expect("read_object_batch");
+        assert_eq!(obj_batch.len(), 1);
+        assert_eq!(obj_batch[0].2.len(), 4 * 4);
+        let range_batch = backend
+            .read_range_batch(&[0], 0, &[(0, 4)], &opts)
+            .expect("read_range_batch");
+        assert_eq!(range_batch.len(), 1);
+        assert_eq!(range_batch[0].1[0].len(), 4 * 4);
+    }
+
+    /// Async mirror of the remote read API over HTTP on a non-indexed
+    /// single-object message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_async_read_api_roundtrip() {
+        let buf = make_message(vec![4], 0x07);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions::default(),
+        )
+        .expect("open");
+
+        assert_eq!(backend.message_count_async().await.expect("count"), 1);
+        assert_eq!(
+            backend
+                .message_layouts_async()
+                .await
+                .expect("layouts")
+                .len(),
+            1
+        );
+        let _meta = backend
+            .read_metadata_async(0)
+            .await
+            .expect("read_metadata_async");
+        let (_m, descs) = backend
+            .read_descriptors_async(0)
+            .await
+            .expect("read_descriptors_async");
+        assert_eq!(descs.len(), 1);
+
+        let opts = crate::DecodeOptions::default();
+        let (_m, _d, decoded) = backend
+            .read_object_async(0, 0, &opts)
+            .await
+            .expect("read_object_async");
+        assert_eq!(decoded.len(), 4 * 4);
+
+        let (_d, parts) = backend
+            .read_range_async(0, 0, &[(0, 4)], &opts)
+            .await
+            .expect("read_range_async");
+        assert_eq!(parts[0].len(), 4 * 4);
+
+        let obj_batch = backend
+            .read_object_batch_async(&[0], 0, &opts)
+            .await
+            .expect("read_object_batch_async");
+        assert_eq!(obj_batch.len(), 1);
+        assert_eq!(obj_batch[0].2.len(), 4 * 4);
+        let range_batch = backend
+            .read_range_batch_async(&[0], 0, &[(0, 4)], &opts)
+            .await
+            .expect("read_range_batch_async");
+        assert_eq!(range_batch.len(), 1);
+        assert_eq!(range_batch[0].1[0].len(), 4 * 4);
+    }
+
+    /// A remote file smaller than the minimum message size is rejected
+    /// up-front by the file-size guard, before any scan runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_open_too_small_file_errors() {
+        let server = MockObjectStore::start(vec![0u8; 8]).await.expect("start");
+        let result = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions::default(),
+        );
+        assert!(result.is_err(), "tiny remote file must be rejected");
+    }
 }

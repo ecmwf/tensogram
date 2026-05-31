@@ -57,7 +57,6 @@ pub enum IssueCode {
     DanglingPreceder,
     CborOffsetInvalid,
     CborBeforeBoundaryUnknown,
-    DataObjectTooSmall,
     NonZeroPadding,
     FlagMismatch,
     NoMetadataFrame,
