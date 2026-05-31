@@ -20,6 +20,7 @@ Repo: ecmwf/tensogram
 | `tensogram-cli` | `src/**/*.rs` unit (per-subcommand) | CLI argument parsing + subcommand behaviour, incl. `--features netcdf,grib` for converter coverage |
 | `tensogram-ffi` | `src/lib.rs` unit (indirect via C++ wrapper) | FFI handle behaviour, null-pointer safety, error-code mapping |
 | C++ wrapper | `cpp/tests/*.cpp` (GoogleTest) | RAII handle behaviour, typed exception mapping, cross-language round-trip |
+| Fortran binding | `fortran/test/*.f90` + cross-lang drivers (`xlang_c.cpp`, `parity_*.py`), run via CTest | Generic dtype/rank round-trip, file API, metadata + lossless compression, non-copyable guard (negative), error-enum↔header consistency, **bidirectional** Fortran↔C/C++ parity, Fortran→Python parity |
 | `tensogram-python` | `python/tests/test_*.py` (pytest) | PyO3 bindings, NumPy round-trip, async, validation, remote, free-threaded |
 | `tensogram-grib` | `tests/integration.rs` | Real ECMWF opendata GRIB fixtures |
 | `tensogram-netcdf` | `tests/integration.rs` (+ Python e2e via `subprocess` in `python/tests/test_convert_netcdf.py`) | NetCDF-3 + NetCDF-4 round-trips, split modes, CF lifting |

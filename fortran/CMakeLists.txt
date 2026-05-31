@@ -129,4 +129,16 @@ if(TENSOGRAM_FORTRAN_TESTS)
   else()
     message(STATUS "No C++ compiler; skipping Fortran<->C++ cross-language tests")
   endif()
+
+  # Single-source-of-truth guard: the Fortran TGM_ERROR_* parameter mirror
+  # must match the C `tgm_error` enum in the in-tree tensogram.h (AGENTS.md).
+  # Skipped when the in-tree header is not reachable (standalone checkout) or
+  # bash is unavailable.
+  set(_tgm_header ${CMAKE_CURRENT_SOURCE_DIR}/../rust/tensogram-ffi/tensogram.h)
+  find_program(BASH_PROGRAM bash)
+  if(EXISTS ${_tgm_header} AND BASH_PROGRAM)
+    add_test(NAME error_enum_consistency
+      COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_error_enum.sh
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/tensogram.f90 ${_tgm_header})
+  endif()
 endif()
