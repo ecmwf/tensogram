@@ -1,0 +1,34 @@
+# Fortran Package Manager manifest for the Tensogram Fortran binding.
+#
+# CMake is the system of record (see fortran/CMakeLists.txt and
+# PLAN_FORTRAN.md §5.6); fpm is retained as a Fortran-native devloop that
+# builds the `tensogram` library from fortran/src/.
+#
+# fpm has no native pkg-config integration, so the external `libtensogram`
+# (the cargo-c / tarball install that ships tensogram.pc) is wired in by
+# injecting flags at invocation:
+#
+#   cd fortran
+#   fpm build \
+#       --flag      "$(pkg-config --cflags tensogram)" \
+#       --link-flag "$(pkg-config --libs   tensogram)"
+#
+# The tests and the negative copy-guard test (which must abort) are run
+# through CMake/CTest, which handles the WILL_FAIL semantics; fpm here builds
+# the library so downstream fpm packages can depend on it. `version` MUST
+# match the repo VERSION file (PLAN_FORTRAN.md §9).
+
+name = "tensogram"
+version = "0.21.0"
+license = "Apache-2.0"
+author = "ECMWF"
+maintainer = "software.support@ecmwf.int"
+
+[build]
+auto-executables = false
+auto-examples = false
+auto-tests = false
+link = ["tensogram"]          # -ltensogram (paths via the pkg-config flags above)
+
+[library]
+source-dir = "src"

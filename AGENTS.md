@@ -197,6 +197,8 @@ Serves at http://localhost:8000/ (set BASE_PATH env var to deploy under a subpat
       `find . -name package.json -not -path './**/node_modules/*' -not -path './target/*'`
       (currently `typescript/` and `examples/typescript/`; the list grows if
       new JS packages land).
+    - `fortran/fpm.toml` `version` and the `project(... VERSION ...)` line in
+      `fortran/CMakeLists.txt` (the Fortran binding).
     - `CHANGELOG.md` (new release entry header).
   The provenance encoder in `rust/tensogram/src/encode.rs` reads the version via
   `env!("CARGO_PKG_VERSION")` which comes from Cargo.toml — so keeping Cargo.toml in sync

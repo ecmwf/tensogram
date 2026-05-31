@@ -14,6 +14,7 @@
         python-build python-dist python-dist-extras python-test python-lint python-fmt \
         earthkit-install earthkit-test earthkit-lint \
         cpp-build cpp-test \
+        fortran-build fortran-test fortran-fpm-test \
         cargo-c-build cargo-c-install cargo-c-smoke \
         mutants-install mutants mutants-diff mutants-shard \
         wasm-test docs-build \
@@ -128,6 +129,26 @@ cpp-build: ## Build C++ tests via CMake
 
 cpp-test: cpp-build ## Run C++ tests
 	cd build && ctest --output-on-failure
+
+# ── Fortran ───────────────────────────────────────────────────────────────
+#
+# The Fortran binding (fortran/) links the system libtensogram discovered via
+# pkg-config (the cargo-c / release-tarball install that ships tensogram.pc).
+# CMake is the system of record; fpm is retained as a devloop. Not folded into
+# the default `make test` because it needs a Fortran compiler and an installed
+# tensogram.pc.
+
+fortran-build: ## Build the Fortran binding + examples + tests via CMake
+	cmake -S fortran -B build/fortran -DCMAKE_BUILD_TYPE=Debug
+	cmake --build build/fortran
+
+fortran-test: fortran-build ## Run Fortran tests (incl. Fortran<->Python parity when available)
+	ctest --test-dir build/fortran --output-on-failure
+
+fortran-fpm-test: ## Build the Fortran library via fpm (injects pkg-config flags)
+	cd fortran && fpm build \
+		--flag      "$$(pkg-config --cflags tensogram)" \
+		--link-flag "$$(pkg-config --libs   tensogram)"
 
 # ── cargo-c (C API distribution) ──────────────────────────────────────────
 

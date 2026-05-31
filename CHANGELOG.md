@@ -5,6 +5,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Fortran interface (synchronous core)
+
+A Fortran 2008/2018 binding (`fortran/`) over the existing `libtensogram`
+C ABI — no new C or Rust code. The first synchronous slice encodes a
+native `real(:,:)` field, decodes it back, and inspects object metadata,
+through idiomatic `tensogram_*` procedures, RAII handle types
+(`tensogram_buffer` / `tensogram_message`), and a non-copyable handle
+guard that `error stop`s on an accidental `b = a` rather than aliasing
+and double-freeing.
+
+Native array ergonomics come from the Fortran 2008 `contiguous`
+attribute, so the array descriptor never crosses the FFI boundary. A
+Fortran `a(ni,nj)` is written with the on-wire shape/strides reversed to
+C order: Fortran↔Fortran round-trips are bit-identical, while a NumPy / C
+reader sees the transpose `(nj, ni)`. A Fortran→Python parity test
+verifies this contract.
+
+CMake is the build system of record (pkg-config discovery of
+`tensogram.pc`); an `fpm` manifest is retained as a Fortran-native
+devloop. New `examples/fortran/encode_decode.f90`, the user guide
+`docs/src/guide/fortran-api.md`, and `make fortran-build` /
+`fortran-test` targets. The full staged roadmap lives in
+`PLAN_FORTRAN.md`.
+
 ### Added — Asynchronous C++ API
 
 A header-only asynchronous read/write surface for the C++ wrapper,

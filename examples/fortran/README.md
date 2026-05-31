@@ -1,0 +1,36 @@
+# Fortran examples
+
+Runnable examples for the Tensogram Fortran binding (`fortran/`). They link
+the system `libtensogram` discovered via pkg-config (`tensogram.pc`, shipped
+by `cargo cinstall -p tensogram-ffi` or the release tarballs).
+
+| Example | Shows |
+|---------|-------|
+| `encode_decode.f90` | Encode a `real(:,:)` field, decode it back, and assert the round-trip is bit-identical |
+
+## Build & run
+
+The simplest path is through the binding's CMake project, which builds the
+examples alongside the library and tests:
+
+```bash
+cmake -S fortran -B build/fortran
+cmake --build build/fortran
+./build/fortran/fortran_encode_decode
+```
+
+Or compile a single example directly against an installed `tensogram.pc`:
+
+```bash
+gfortran -std=f2018 \
+    fortran/src/tensogram.f90 examples/fortran/encode_decode.f90 \
+    $(pkg-config --cflags --libs tensogram) -o encode_decode
+./encode_decode
+```
+
+## Note on array order
+
+A Fortran `a(ni, nj)` round-trips Fortran↔Fortran bit-identically, but a
+NumPy / C reader sees the **transpose** `(nj, ni)`. See the
+[Fortran API guide](../../docs/src/guide/fortran-api.md) for the full
+column-major contract.
