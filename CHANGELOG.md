@@ -37,8 +37,8 @@ zero-dependency `tensogram_meta` builder (`add_string` / `add_int` /
 both directions against a C/C++ reader/writer — a Fortran-encoded
 `a(ni,nj)` decodes in C/C++ as the transpose `[nj,ni]`, and a C/C++-encoded
 `[nj,ni]` tensor decodes in Fortran as `out(ni,nj)` — bit-identically and
-through a lossless (zstd) pipeline, alongside the existing Fortran→Python
-parity test.
+through a lossless (zstd) pipeline. The same is checked **both ways**
+against Python/NumPy (Fortran→Python and Python→Fortran).
 
 Native array ergonomics come from the Fortran 2008 `contiguous`
 attribute, so the array descriptor never crosses the FFI boundary. A

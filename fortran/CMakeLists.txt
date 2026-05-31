@@ -80,38 +80,44 @@ if(TENSOGRAM_FORTRAN_TESTS)
   add_test(NAME test_copy_guard COMMAND test_copy_guard)
   set_tests_properties(test_copy_guard PROPERTIES WILL_FAIL TRUE)
 
-  # Cross-language parity (optional): Fortran encodes, Python decodes and
-  # asserts the column-major contract. Skipped unless a Python with the
-  # `tensogram` and `numpy` packages is discoverable. PLAN_FORTRAN.md §8.
+  # Canonical Fortran side of the cross-language parity harness
+  # (`xlang_fortran fwrite` / `fread`). Pure Fortran, so it is built whether
+  # or not a C++ compiler is present, and is reused by both the Python and
+  # C/C++ parity directions below. The shared driver run_xlang.cmake runs a
+  # writer then a reader; both agree on F(i,j)=i*1000+j and a lossless (zstd)
+  # pipeline. PLAN_FORTRAN.md §8.
+  add_executable(xlang_fortran test/xlang_fortran.f90)
+  target_link_libraries(xlang_fortran PRIVATE tensogram_f)
+
+  # Cross-language parity with Python (NumPy, row-major), BOTH directions.
+  # Skipped unless a Python with `tensogram` + `numpy` is discoverable.
   find_program(TENSOGRAM_PYTHON NAMES python3 python)
   if(TENSOGRAM_PYTHON)
     execute_process(
       COMMAND ${TENSOGRAM_PYTHON} -c "import tensogram, numpy"
       RESULT_VARIABLE _tgm_py_ok OUTPUT_QUIET ERROR_QUIET)
     if(_tgm_py_ok EQUAL 0)
-      add_executable(parity_write test/parity_write.f90)
-      target_link_libraries(parity_write PRIVATE tensogram_f)
       add_test(NAME parity_fortran_to_python COMMAND ${CMAKE_COMMAND}
-        -DWRITER=$<TARGET_FILE:parity_write>
-        -DPY=${TENSOGRAM_PYTHON}
-        -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/test/parity_check.py
-        -DTGM=${CMAKE_CURRENT_BINARY_DIR}/parity.tgm
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/test/run_parity.cmake)
+        -DWRITER=$<TARGET_FILE:xlang_fortran> -DWMODE=fwrite
+        -DREADER=${TENSOGRAM_PYTHON} -DRMODE=${CMAKE_CURRENT_SOURCE_DIR}/test/parity_check.py
+        -DTGM=${CMAKE_CURRENT_BINARY_DIR}/parity_f2p.tgm
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/test/run_xlang.cmake)
+      add_test(NAME parity_python_to_fortran COMMAND ${CMAKE_COMMAND}
+        -DWRITER=${TENSOGRAM_PYTHON} -DWMODE=${CMAKE_CURRENT_SOURCE_DIR}/test/parity_py_write.py
+        -DREADER=$<TARGET_FILE:xlang_fortran> -DRMODE=fread
+        -DTGM=${CMAKE_CURRENT_BINARY_DIR}/parity_p2f.tgm
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/test/run_xlang.cmake)
     else()
-      message(STATUS "tensogram Python package not importable; skipping Fortran<->Python parity test")
+      message(STATUS "tensogram Python package not importable; skipping Fortran<->Python parity tests")
     endif()
   endif()
 
-  # Cross-language parity with C/C++ (row-major). Fortran encodes / C++ decodes
-  # and vice versa, asserting the column-major contract and lossless (zstd)
-  # bit-identity in BOTH directions. Skipped if no C++ compiler is available.
-  # PLAN_FORTRAN.md §8.
+  # Cross-language parity with C/C++ (row-major), BOTH directions. Skipped if
+  # no C++ compiler is available.
   include(CheckLanguage)
   check_language(CXX)
   if(CMAKE_CXX_COMPILER)
     enable_language(CXX)
-    add_executable(xlang_fortran test/xlang_fortran.f90)
-    target_link_libraries(xlang_fortran PRIVATE tensogram_f)
     add_executable(xlang_c test/xlang_c.cpp)
     target_link_libraries(xlang_c PRIVATE PkgConfig::TENSOGRAM)
 

@@ -281,8 +281,8 @@ The test suite covers bit-identical round-trips across dtypes and ranks,
 the file API, application metadata, lossless-compression round-trips, the
 error path, and the non-copyable guard (a negative test). Cross-language
 parity tests assert the column-major contract in **both directions**
-against a C/C++ reader/writer (and against Python when a Python with the
-`tensogram` package is present).
+against a C/C++ reader/writer, and **both directions** against Python /
+NumPy (when a Python with the `tensogram` package is present).
 
 ## See also
 
