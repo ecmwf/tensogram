@@ -60,13 +60,17 @@ if(TENSOGRAM_FORTRAN_EXAMPLES)
   add_executable(fortran_file_api
     ${CMAKE_CURRENT_SOURCE_DIR}/../examples/fortran/file_api.f90)
   target_link_libraries(fortran_file_api PRIVATE tensogram_f)
+
+  add_executable(fortran_streaming
+    ${CMAKE_CURRENT_SOURCE_DIR}/../examples/fortran/streaming.f90)
+  target_link_libraries(fortran_streaming PRIVATE tensogram_f)
 endif()
 
 if(TENSOGRAM_FORTRAN_TESTS)
   enable_testing()
 
   # Positive tests: succeed (exit 0).
-  foreach(t test_roundtrip test_dtype_rank test_file_api test_metadata test_errors)
+  foreach(t test_roundtrip test_dtype_rank test_file_api test_metadata test_streaming test_errors)
     add_executable(${t} test/${t}.f90)
     target_link_libraries(${t} PRIVATE tensogram_f)
     add_test(NAME ${t} COMMAND ${t})

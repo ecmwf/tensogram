@@ -33,6 +33,14 @@ zero-dependency `tensogram_meta` builder (`add_string` / `add_int` /
 `tensogram_message_metadata` + the dot-notation getters
 `tensogram_metadata_get_string` / `_int` / `_float`.
 
+**Streaming encoder.** `tensogram_streaming_encoder` writes a single
+multi-object message to a file progressively — preamble + header metadata
+on `_create`, one data-object frame per `_write` (generic over dtype and
+rank, with optional compression), footer + postamble on `_finish` —
+without buffering the whole message. Non-copyable RAII handle;
+`tensogram_streaming_encoder_count` reports progress. New
+`examples/fortran/streaming.f90`.
+
 **Cross-language parity.** New tests assert the column-major contract in
 both directions against a C/C++ reader/writer — a Fortran-encoded
 `a(ni,nj)` decodes in C/C++ as the transpose `[nj,ni]`, and a C/C++-encoded

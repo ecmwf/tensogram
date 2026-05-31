@@ -52,6 +52,9 @@ module tensogram
    public :: tensogram_metadata, tensogram_message_metadata
    public :: tensogram_metadata_get_string, tensogram_metadata_get_int
    public :: tensogram_metadata_get_float
+   public :: tensogram_streaming_encoder
+   public :: tensogram_streaming_encoder_create, tensogram_streaming_encoder_write
+   public :: tensogram_streaming_encoder_finish, tensogram_streaming_encoder_count
    public :: tensogram_num_objects, tensogram_object_ndim
    public :: tensogram_object_shape, tensogram_object_dtype
    public :: tensogram_strerror, tensogram_last_error, tensogram_check
@@ -137,6 +140,21 @@ module tensogram
       final     :: metadata_final
    end type tensogram_metadata
 
+   ! ---- Owned streaming encoder (RAII over tgm_streaming_encoder_t*) -------
+   !  Writes a single multi-object message to a file progressively: the
+   !  preamble + header metadata on create, one data-object frame per write,
+   !  and the footer + postamble on finish. The handle is freed via `free`
+   !  (which ABANDONS an unfinished stream — call finish first for a valid
+   !  file); the finalizer only releases the handle, it does not finish.
+   type :: tensogram_streaming_encoder
+      type(c_ptr), private :: ptr = c_null_ptr
+   contains
+      procedure :: free => stream_enc_free
+      procedure, private :: stream_enc_assign
+      generic, public :: assignment(=) => stream_enc_assign
+      final     :: stream_enc_final
+   end type tensogram_streaming_encoder
+
    ! ---- Generic encode / decode / append over dtype ------------------------
    interface tensogram_encode
       module procedure encode_f32, encode_f64, encode_i32, encode_i64
@@ -149,6 +167,10 @@ module tensogram
    interface tensogram_file_append
       module procedure append_f32, append_f64, append_i32, append_i64
    end interface tensogram_file_append
+
+   interface tensogram_streaming_encoder_write
+      module procedure stream_write_f32, stream_write_f64, stream_write_i32, stream_write_i64
+   end interface tensogram_streaming_encoder_write
 
    ! =========================================================================
    !  Raw C ABI — synchronous subset of tensogram.h.
@@ -342,6 +364,47 @@ module tensogram
          import :: c_ptr
          type(c_ptr), value :: meta
       end subroutine
+
+      function c_tgm_streaming_encoder_create(path, meta, hash, threads, out) &
+            bind(C, name="tgm_streaming_encoder_create") result(err)
+         import :: c_ptr, c_int32_t, c_int
+         type(c_ptr),        value       :: path
+         type(c_ptr),        value       :: meta
+         type(c_ptr),        value       :: hash
+         integer(c_int32_t), value       :: threads
+         type(c_ptr),        intent(out) :: out
+         integer(c_int)                  :: err
+      end function
+
+      function c_tgm_streaming_encoder_write(enc, descriptor_json, data, data_len) &
+            bind(C, name="tgm_streaming_encoder_write") result(err)
+         import :: c_ptr, c_size_t, c_int
+         type(c_ptr),       value :: enc
+         type(c_ptr),       value :: descriptor_json
+         type(c_ptr),       value :: data
+         integer(c_size_t), value :: data_len
+         integer(c_int)           :: err
+      end function
+
+      function c_tgm_streaming_encoder_count(enc) &
+            bind(C, name="tgm_streaming_encoder_count") result(n)
+         import :: c_ptr, c_size_t
+         type(c_ptr), value :: enc
+         integer(c_size_t)  :: n
+      end function
+
+      function c_tgm_streaming_encoder_finish(enc) &
+            bind(C, name="tgm_streaming_encoder_finish") result(err)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: enc
+         integer(c_int)     :: err
+      end function
+
+      subroutine c_tgm_streaming_encoder_free(enc) &
+            bind(C, name="tgm_streaming_encoder_free")
+         import :: c_ptr
+         type(c_ptr), value :: enc
+      end subroutine
    end interface
 
 contains
@@ -415,10 +478,13 @@ contains
    !> (column-major) extents; the on-wire shape and C-contiguous strides are
    !> the REVERSE (PLAN_FORTRAN.md §5.1). `extra`, if present, is raw JSON of
    !> additional top-level keys appended verbatim.
-   function descriptor_json(fshape, dtype, extra, encoding, filter, compression) result(js)
+   !> Build a single DataObjectDescriptor object `{...}` with the on-wire
+   !> shape and C-contiguous strides REVERSED from the Fortran extents
+   !> (column-major contract). Used directly by the streaming encoder; wrapped
+   !> in `{"descriptors":[...]}` by descriptor_json for the buffer/file path.
+   function descriptor_object_json(fshape, dtype, encoding, filter, compression) result(js)
       integer(c_int64_t), intent(in)           :: fshape(:)
       character(len=*),   intent(in)           :: dtype
-      character(len=*),   intent(in), optional :: extra
       character(len=*),   intent(in), optional :: encoding, filter, compression
       character(len=:), allocatable :: js, enc_s, flt_s, cmp_s
       integer(c_int64_t), allocatable :: wshape(:), wstrides(:)
@@ -437,12 +503,24 @@ contains
       enc_s = 'none'; if (present(encoding))    enc_s = trim(encoding)
       flt_s = 'none'; if (present(filter))      flt_s = trim(filter)
       cmp_s = 'none'; if (present(compression)) cmp_s = trim(compression)
-      js = '{"descriptors":[{"type":"ntensor","ndim":' // itoa(int(nd, c_int64_t)) // &
-           ',"shape":['   // i64list(wshape)   // ']' //                              &
-           ',"strides":[' // i64list(wstrides) // ']' //                              &
+      js = '{"type":"ntensor","ndim":' // itoa(int(nd, c_int64_t)) // &
+           ',"shape":['   // i64list(wshape)   // ']' //                   &
+           ',"strides":[' // i64list(wstrides) // ']' //                   &
            ',"dtype":"' // trim(dtype) // '","byte_order":"' // host_byte_order() // '"' // &
            ',"encoding":"' // enc_s // '","filter":"' // flt_s // &
-           '","compression":"' // cmp_s // '"}]'
+           '","compression":"' // cmp_s // '"}'
+   end function descriptor_object_json
+
+   !> Wrap one descriptor in the `{"descriptors":[...], <extra>}` envelope the
+   !> buffer/file encode entry points expect. `extra` is raw top-level JSON.
+   function descriptor_json(fshape, dtype, extra, encoding, filter, compression) result(js)
+      integer(c_int64_t), intent(in)           :: fshape(:)
+      character(len=*),   intent(in)           :: dtype
+      character(len=*),   intent(in), optional :: extra
+      character(len=*),   intent(in), optional :: encoding, filter, compression
+      character(len=:), allocatable :: js
+      js = '{"descriptors":[' // &
+           descriptor_object_json(fshape, dtype, encoding, filter, compression) // ']'
       if (present(extra)) then
          if (len_trim(extra) > 0) js = js // ',' // trim(extra)
       end if
@@ -1181,5 +1259,135 @@ contains
       call f_to_cstr(key, key_c)
       v = c_tgm_metadata_get_float(meta%ptr, c_loc(key_c), default_val)
    end function tensogram_metadata_get_float
+
+   ! =========================================================================
+   !  Streaming encoder
+   ! =========================================================================
+
+   subroutine stream_enc_free(self)
+      class(tensogram_streaming_encoder), intent(inout) :: self
+      if (c_associated(self%ptr)) then
+         call c_tgm_streaming_encoder_free(self%ptr)
+         self%ptr = c_null_ptr
+      end if
+   end subroutine stream_enc_free
+
+   subroutine stream_enc_final(self)
+      type(tensogram_streaming_encoder), intent(inout) :: self
+      call self%free()
+   end subroutine stream_enc_final
+
+   subroutine stream_enc_assign(lhs, rhs)
+      class(tensogram_streaming_encoder), intent(out) :: lhs
+      type(tensogram_streaming_encoder),  intent(in)  :: rhs
+      if (c_associated(rhs%ptr)) then
+         error stop "tensogram_streaming_encoder is non-copyable (live handle); pass by reference"
+      else
+         error stop "tensogram_streaming_encoder is non-copyable; pass by reference"
+      end if
+   end subroutine stream_enc_assign
+
+   !> Open a streaming encoder writing a single multi-object message to `path`.
+   !> `metadata_json` is free-form message-level GlobalMetadata (NOT a
+   !> descriptors map; objects are supplied via _write); defaults to `{}`.
+   subroutine tensogram_streaming_encoder_create(path, enc, err, metadata_json, hash)
+      character(len=*),                  intent(in)  :: path
+      type(tensogram_streaming_encoder), intent(out) :: enc
+      integer(c_int),                    intent(out) :: err
+      character(len=*), intent(in), optional :: metadata_json, hash
+      character(kind=c_char), allocatable, target :: path_c(:), meta_c(:), hash_c(:)
+      character(len=:),       allocatable         :: meta_s, hash_s
+      type(c_ptr) :: hash_ptr, out
+      call f_to_cstr(path, path_c)
+      if (present(metadata_json)) then
+         meta_s = metadata_json
+      else
+         meta_s = '{}'
+      end if
+      call f_to_cstr(meta_s, meta_c)
+      if (present(hash)) then
+         hash_s = hash
+      else
+         hash_s = 'xxh3'
+      end if
+      if (len(hash_s) == 0) then
+         hash_ptr = c_null_ptr
+      else
+         call f_to_cstr(hash_s, hash_c)
+         hash_ptr = c_loc(hash_c)
+      end if
+      err = c_tgm_streaming_encoder_create(c_loc(path_c), c_loc(meta_c), hash_ptr, &
+                                           0_c_int32_t, out)
+      if (err == TGM_ERROR_OK) enc%ptr = out
+   end subroutine tensogram_streaming_encoder_create
+
+   !> Finalise the stream: write the footer index/hash + postamble and close
+   !> the file. The handle remains valid (release it with `enc%free()`).
+   subroutine tensogram_streaming_encoder_finish(enc, err)
+      type(tensogram_streaming_encoder), intent(inout) :: enc
+      integer(c_int),                    intent(out)   :: err
+      err = c_tgm_streaming_encoder_finish(enc%ptr)
+   end subroutine tensogram_streaming_encoder_finish
+
+   !> Number of data objects written so far.
+   function tensogram_streaming_encoder_count(enc) result(n)
+      type(tensogram_streaming_encoder), intent(in) :: enc
+      integer :: n
+      n = int(c_tgm_streaming_encoder_count(enc%ptr))
+   end function tensogram_streaming_encoder_count
+
+   !> Encode one tensor (described by `ptr` + `nbytes` + Fortran `fshape` +
+   !> `dtype`) and append it to the open stream as a data-object frame.
+   subroutine stream_write_core(enc_ptr, ptr, nbytes, fshape, dtype, err, &
+                                encoding, filter, compression)
+      type(c_ptr),        intent(in)  :: enc_ptr
+      type(c_ptr),        intent(in)  :: ptr
+      integer(c_size_t),  intent(in)  :: nbytes
+      integer(c_int64_t), intent(in)  :: fshape(:)
+      character(len=*),   intent(in)  :: dtype
+      integer(c_int),     intent(out) :: err
+      character(len=*), intent(in), optional :: encoding, filter, compression
+      character(kind=c_char), allocatable, target :: desc_c(:)
+      character(len=:),       allocatable         :: desc_s
+      desc_s = descriptor_object_json(fshape, dtype, encoding, filter, compression)
+      call f_to_cstr(desc_s, desc_c)
+      err = c_tgm_streaming_encoder_write(enc_ptr, c_loc(desc_c), ptr, nbytes)
+   end subroutine stream_write_core
+
+   subroutine stream_write_f32(enc, a, err, encoding, filter, compression)
+      type(tensogram_streaming_encoder), intent(inout) :: enc
+      real(c_float), target, contiguous, intent(in) :: a(..)
+      integer(c_int),                    intent(out) :: err
+      character(len=*), intent(in), optional :: encoding, filter, compression
+      call stream_write_core(enc%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+                             int(shape(a), c_int64_t), 'float32', err, encoding, filter, compression)
+   end subroutine stream_write_f32
+
+   subroutine stream_write_f64(enc, a, err, encoding, filter, compression)
+      type(tensogram_streaming_encoder), intent(inout) :: enc
+      real(c_double), target, contiguous, intent(in) :: a(..)
+      integer(c_int),                     intent(out) :: err
+      character(len=*), intent(in), optional :: encoding, filter, compression
+      call stream_write_core(enc%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+                             int(shape(a), c_int64_t), 'float64', err, encoding, filter, compression)
+   end subroutine stream_write_f64
+
+   subroutine stream_write_i32(enc, a, err, encoding, filter, compression)
+      type(tensogram_streaming_encoder), intent(inout) :: enc
+      integer(c_int32_t), target, contiguous, intent(in) :: a(..)
+      integer(c_int),                         intent(out) :: err
+      character(len=*), intent(in), optional :: encoding, filter, compression
+      call stream_write_core(enc%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+                             int(shape(a), c_int64_t), 'int32', err, encoding, filter, compression)
+   end subroutine stream_write_i32
+
+   subroutine stream_write_i64(enc, a, err, encoding, filter, compression)
+      type(tensogram_streaming_encoder), intent(inout) :: enc
+      integer(c_int64_t), target, contiguous, intent(in) :: a(..)
+      integer(c_int),                         intent(out) :: err
+      character(len=*), intent(in), optional :: encoding, filter, compression
+      call stream_write_core(enc%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+                             int(shape(a), c_int64_t), 'int64', err, encoding, filter, compression)
+   end subroutine stream_write_i64
 
 end module tensogram

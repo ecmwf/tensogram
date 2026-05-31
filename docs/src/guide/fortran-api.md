@@ -5,9 +5,10 @@ the [C ABI](c-api.md). It is a thin `iso_c_binding` layer that links the
 same `libtensogram` the C and C++ wrappers use — no new C or Rust code —
 following the `eccodes_f90` model ECMWF Fortran codes already expect.
 
-> **Status.** Emerging. Synchronous encode/decode (generic over dtype and
-> rank) and the multi-message file API are in place. Structured metadata
-> builders, streaming, and async are planned; see
+> **Status.** Emerging. The synchronous surface is complete: generic
+> encode/decode, the multi-message file API, application metadata, the
+> encoding pipeline, and the streaming encoder. Only the async surface is
+> deferred; see
 > [`PLAN_FORTRAN.md`](https://github.com/ecmwf/tensogram/blob/main/PLAN_FORTRAN.md)
 > for the staged roadmap.
 
@@ -190,13 +191,16 @@ end if
 | `tensogram_meta` + `%add_string` / `%add_int` / `%add_real` / `%base_json` | Build per-object application metadata (JSON-escaped) |
 | `tensogram_message_metadata(msg, meta, err)` | Extract a metadata handle from a decoded message |
 | `tensogram_metadata_get_string/int/float(meta, key [, default])` | Look up metadata by dot-notation key |
+| `tensogram_streaming_encoder_create(path, enc, err [, metadata_json, hash])` | Open a streaming encoder (writes a message progressively to a file) |
+| `tensogram_streaming_encoder_write(enc, a, err [, encoding, filter, compression])` | Append one object to the stream — **generic** over dtype and rank |
+| `tensogram_streaming_encoder_count(enc)` / `_finish(enc, err)` / `enc%free()` | Objects written so far / finalise (footer + close) / release |
 | `buf%as_array(out)` / `buf%size()` / `buf%free()` | Buffer access and release |
 | `file%close()` | Close a file handle (also automatic at scope exit) |
 | `tensogram_check` / `tensogram_last_error` / `tensogram_strerror` | Error helpers |
 
-`tensogram_encode`, `tensogram_to_array`, and `tensogram_file_append` are
-generic interfaces over **dtype** (`real32`, `real64`, `int32`, `int64`)
-and **rank** (`0`–`7`). `a` / `out` are assumed-rank; the dtype is
+`tensogram_encode`, `tensogram_to_array`, `tensogram_file_append`, and
+`tensogram_streaming_encoder_write` are generic interfaces over **dtype**
+(`real32`, `real64`, `int32`, `int64`) and **rank** (`0`–`7`). `a` / `out` are assumed-rank; the dtype is
 resolved from the array's type/kind, the rank from the array itself. A
 dtype mismatch on decode returns `TGM_ERROR_OBJECT`.
 (`int8`/`int16`/`complex`/`float16` are follow-ups — Fortran has no
@@ -268,7 +272,35 @@ print *, tensogram_metadata_get_int(meta, 'level', -1_c_int64_t)  ! 850
 The library remains vocabulary-agnostic: `tensogram_meta` just builds the
 `base` JSON; the meaning of the keys is the application's concern.
 
-Planned next (see `PLAN_FORTRAN.md`): the streaming encoder.
+## Streaming encoder
+
+For producers that emit objects incrementally, `tensogram_streaming_encoder`
+writes a single multi-object message to a file **progressively** — the
+preamble and header metadata on create, one data-object frame per
+`_write`, and the footer + postamble on `_finish` — without buffering the
+whole message. The handle is non-copyable; `enc%free()` (and the
+finalizer) only release the handle, so **call `_finish` for a valid
+file** before freeing.
+
+```fortran
+type(tensogram_streaming_encoder) :: enc
+integer(c_int) :: err, obj
+
+call tensogram_streaming_encoder_create('out.tgm', enc, err)
+do obj = 1, nobj
+   ! ... fill field ...
+   call tensogram_streaming_encoder_write(enc, field, err, compression='zstd')
+end do
+call tensogram_streaming_encoder_finish(enc, err)   ! footer + close
+call enc%free()
+```
+
+The result is one message with `nobj` objects; reopen it with
+`tensogram_file_open` + `tensogram_file_decode_message` and pull each
+object out with `tensogram_to_array`. See
+[`examples/fortran/streaming.f90`](https://github.com/ecmwf/tensogram/blob/main/examples/fortran/streaming.f90).
+
+Planned next (see `PLAN_FORTRAN.md`): the async surface (deferred).
 
 ## Build and test
 
@@ -279,7 +311,8 @@ make fortran-test       # ctest
 
 The test suite covers bit-identical round-trips across dtypes and ranks,
 the file API, application metadata, lossless-compression round-trips, the
-error path, and the non-copyable guard (a negative test). Cross-language
+streaming encoder, the error path, and the non-copyable guard (a negative
+test). Cross-language
 parity tests assert the column-major contract in **both directions**
 against a C/C++ reader/writer, and **both directions** against Python /
 NumPy (when a Python with the `tensogram` package is present).
