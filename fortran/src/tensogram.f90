@@ -48,6 +48,10 @@ module tensogram
    public :: tensogram_file_message_count
    public :: tensogram_file_append   !> generic: real32/64, int32/64, rank 0..7
    public :: tensogram_file_decode_message, tensogram_file_read_message
+   public :: tensogram_meta            !> build per-object application metadata
+   public :: tensogram_metadata, tensogram_message_metadata
+   public :: tensogram_metadata_get_string, tensogram_metadata_get_int
+   public :: tensogram_metadata_get_float
    public :: tensogram_num_objects, tensogram_object_ndim
    public :: tensogram_object_shape, tensogram_object_dtype
    public :: tensogram_strerror, tensogram_last_error, tensogram_check
@@ -110,6 +114,28 @@ module tensogram
       generic, public :: assignment(=) => file_assign
       final     :: file_final
    end type tensogram_file
+
+   ! ---- Application-metadata builder (one object's `base[i]` entry) ---------
+   !  Accumulate key/value pairs (zero-dependency, JSON-escaped) and emit a
+   !  `"base":[{...}]` fragment to pass as `metadata_json` on encode/append.
+   type :: tensogram_meta
+      character(len=:), allocatable, private :: body
+   contains
+      procedure :: add_string => meta_add_string
+      procedure :: add_int    => meta_add_int
+      procedure :: add_real   => meta_add_real
+      procedure :: base_json  => meta_base_json
+   end type tensogram_meta
+
+   ! ---- Owned metadata handle (RAII over tgm_metadata_t*) ------------------
+   type :: tensogram_metadata
+      type(c_ptr), private :: ptr = c_null_ptr
+   contains
+      procedure :: free => metadata_free
+      procedure, private :: metadata_assign
+      generic, public :: assignment(=) => metadata_assign
+      final     :: metadata_final
+   end type tensogram_metadata
 
    ! ---- Generic encode / decode / append over dtype ------------------------
    interface tensogram_encode
@@ -277,6 +303,45 @@ module tensogram
          import :: c_ptr
          type(c_ptr), value :: file
       end subroutine
+
+      function c_tgm_message_metadata(msg, out) &
+            bind(C, name="tgm_message_metadata") result(err)
+         import :: c_ptr, c_int
+         type(c_ptr), value       :: msg
+         type(c_ptr), intent(out) :: out
+         integer(c_int)           :: err
+      end function
+
+      function c_tgm_metadata_get_string(meta, key) &
+            bind(C, name="tgm_metadata_get_string") result(p)
+         import :: c_ptr
+         type(c_ptr), value :: meta
+         type(c_ptr), value :: key
+         type(c_ptr)        :: p
+      end function
+
+      function c_tgm_metadata_get_int(meta, key, default_val) &
+            bind(C, name="tgm_metadata_get_int") result(v)
+         import :: c_ptr, c_int64_t
+         type(c_ptr),        value :: meta
+         type(c_ptr),        value :: key
+         integer(c_int64_t), value :: default_val
+         integer(c_int64_t)        :: v
+      end function
+
+      function c_tgm_metadata_get_float(meta, key, default_val) &
+            bind(C, name="tgm_metadata_get_float") result(v)
+         import :: c_ptr, c_double
+         type(c_ptr),    value :: meta
+         type(c_ptr),    value :: key
+         real(c_double), value :: default_val
+         real(c_double)        :: v
+      end function
+
+      subroutine c_tgm_metadata_free(meta) bind(C, name="tgm_metadata_free")
+         import :: c_ptr
+         type(c_ptr), value :: meta
+      end subroutine
    end interface
 
 contains
@@ -350,11 +415,12 @@ contains
    !> (column-major) extents; the on-wire shape and C-contiguous strides are
    !> the REVERSE (PLAN_FORTRAN.md §5.1). `extra`, if present, is raw JSON of
    !> additional top-level keys appended verbatim.
-   function descriptor_json(fshape, dtype, extra) result(js)
-      integer(c_int64_t), intent(in)         :: fshape(:)
-      character(len=*),   intent(in)         :: dtype
+   function descriptor_json(fshape, dtype, extra, encoding, filter, compression) result(js)
+      integer(c_int64_t), intent(in)           :: fshape(:)
+      character(len=*),   intent(in)           :: dtype
       character(len=*),   intent(in), optional :: extra
-      character(len=:), allocatable :: js
+      character(len=*),   intent(in), optional :: encoding, filter, compression
+      character(len=:), allocatable :: js, enc_s, flt_s, cmp_s
       integer(c_int64_t), allocatable :: wshape(:), wstrides(:)
       integer :: nd, k
       nd = size(fshape)
@@ -368,11 +434,15 @@ contains
             wstrides(k) = wstrides(k + 1) * wshape(k + 1)
          end do
       end if
+      enc_s = 'none'; if (present(encoding))    enc_s = trim(encoding)
+      flt_s = 'none'; if (present(filter))      flt_s = trim(filter)
+      cmp_s = 'none'; if (present(compression)) cmp_s = trim(compression)
       js = '{"descriptors":[{"type":"ntensor","ndim":' // itoa(int(nd, c_int64_t)) // &
            ',"shape":['   // i64list(wshape)   // ']' //                              &
            ',"strides":[' // i64list(wstrides) // ']' //                              &
            ',"dtype":"' // trim(dtype) // '","byte_order":"' // host_byte_order() // '"' // &
-           ',"encoding":"none","filter":"none","compression":"none"}]'
+           ',"encoding":"' // enc_s // '","filter":"' // flt_s // &
+           '","compression":"' // cmp_s // '"}]'
       if (present(extra)) then
          if (len_trim(extra) > 0) js = js // ',' // trim(extra)
       end if
@@ -490,7 +560,8 @@ contains
    !> Encode one tensor (described by `ptr` + `nbytes` + Fortran `fshape` +
    !> `dtype`) into `buf`. `ptr` must reference `nbytes` contiguous bytes that
    !> stay valid for the duration of this call.
-   subroutine encode_core(ptr, nbytes, fshape, dtype, buf, err, metadata_json, hash)
+   subroutine encode_core(ptr, nbytes, fshape, dtype, buf, err, &
+                          metadata_json, hash, encoding, filter, compression)
       type(c_ptr),        intent(in)  :: ptr
       integer(c_size_t),  intent(in)  :: nbytes
       integer(c_int64_t), intent(in)  :: fshape(:)
@@ -498,6 +569,7 @@ contains
       type(tensogram_buffer), intent(out) :: buf
       integer(c_int),     intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
 
       character(kind=c_char), allocatable, target :: meta_c(:), hash_c(:)
       character(len=:),       allocatable         :: meta_s, hash_s
@@ -505,7 +577,7 @@ contains
       integer(c_size_t), target :: lens(1)
       type(c_ptr)               :: hash_ptr
 
-      meta_s = descriptor_json(fshape, dtype, metadata_json)
+      meta_s = descriptor_json(fshape, dtype, metadata_json, encoding, filter, compression)
       call f_to_cstr(meta_s, meta_c)
 
       if (present(hash)) then
@@ -530,40 +602,48 @@ contains
    !  Generic encode overloads (assumed-rank; c_loc/shape/size work directly)
    ! =========================================================================
 
-   subroutine encode_f32(a, buf, err, metadata_json, hash)
+   subroutine encode_f32(a, buf, err, metadata_json, hash, encoding, filter, compression)
       real(c_float), target, contiguous, intent(in) :: a(..)
       type(tensogram_buffer), intent(out) :: buf
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       call encode_core(c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
-                       int(shape(a), c_int64_t), 'float32', buf, err, metadata_json, hash)
+                       int(shape(a), c_int64_t), 'float32', buf, err, &
+                       metadata_json, hash, encoding, filter, compression)
    end subroutine encode_f32
 
-   subroutine encode_f64(a, buf, err, metadata_json, hash)
+   subroutine encode_f64(a, buf, err, metadata_json, hash, encoding, filter, compression)
       real(c_double), target, contiguous, intent(in) :: a(..)
       type(tensogram_buffer), intent(out) :: buf
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       call encode_core(c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
-                       int(shape(a), c_int64_t), 'float64', buf, err, metadata_json, hash)
+                       int(shape(a), c_int64_t), 'float64', buf, err, &
+                       metadata_json, hash, encoding, filter, compression)
    end subroutine encode_f64
 
-   subroutine encode_i32(a, buf, err, metadata_json, hash)
+   subroutine encode_i32(a, buf, err, metadata_json, hash, encoding, filter, compression)
       integer(c_int32_t), target, contiguous, intent(in) :: a(..)
       type(tensogram_buffer), intent(out) :: buf
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       call encode_core(c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
-                       int(shape(a), c_int64_t), 'int32', buf, err, metadata_json, hash)
+                       int(shape(a), c_int64_t), 'int32', buf, err, &
+                       metadata_json, hash, encoding, filter, compression)
    end subroutine encode_i32
 
-   subroutine encode_i64(a, buf, err, metadata_json, hash)
+   subroutine encode_i64(a, buf, err, metadata_json, hash, encoding, filter, compression)
       integer(c_int64_t), target, contiguous, intent(in) :: a(..)
       type(tensogram_buffer), intent(out) :: buf
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       call encode_core(c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
-                       int(shape(a), c_int64_t), 'int64', buf, err, metadata_json, hash)
+                       int(shape(a), c_int64_t), 'int64', buf, err, &
+                       metadata_json, hash, encoding, filter, compression)
    end subroutine encode_i64
 
    ! =========================================================================
@@ -874,7 +954,8 @@ contains
 
    !> Encode one tensor and append it to `file_ptr` as a new message. Mirrors
    !> encode_core but targets the file-append entry point (no buffer returned).
-   subroutine append_core(file_ptr, ptr, nbytes, fshape, dtype, err, metadata_json, hash)
+   subroutine append_core(file_ptr, ptr, nbytes, fshape, dtype, err, &
+                          metadata_json, hash, encoding, filter, compression)
       type(c_ptr),        intent(in)  :: file_ptr
       type(c_ptr),        intent(in)  :: ptr
       integer(c_size_t),  intent(in)  :: nbytes
@@ -882,12 +963,13 @@ contains
       character(len=*),   intent(in)  :: dtype
       integer(c_int),     intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       character(kind=c_char), allocatable, target :: meta_c(:), hash_c(:)
       character(len=:),       allocatable         :: meta_s, hash_s
       type(c_ptr),       target :: ptrs(1)
       integer(c_size_t), target :: lens(1)
       type(c_ptr)               :: hash_ptr
-      meta_s = descriptor_json(fshape, dtype, metadata_json)
+      meta_s = descriptor_json(fshape, dtype, metadata_json, encoding, filter, compression)
       call f_to_cstr(meta_s, meta_c)
       if (present(hash)) then
          hash_s = hash
@@ -906,40 +988,198 @@ contains
                               1_c_size_t, hash_ptr, 0_c_int32_t)
    end subroutine append_core
 
-   subroutine append_f32(file, a, err, metadata_json, hash)
+   subroutine append_f32(file, a, err, metadata_json, hash, encoding, filter, compression)
       type(tensogram_file),  intent(inout) :: file
       real(c_float), target, contiguous, intent(in) :: a(..)
       integer(c_int),        intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
-                       int(shape(a), c_int64_t), 'float32', err, metadata_json, hash)
+                       int(shape(a), c_int64_t), 'float32', err, &
+                       metadata_json, hash, encoding, filter, compression)
    end subroutine append_f32
 
-   subroutine append_f64(file, a, err, metadata_json, hash)
+   subroutine append_f64(file, a, err, metadata_json, hash, encoding, filter, compression)
       type(tensogram_file),   intent(inout) :: file
       real(c_double), target, contiguous, intent(in) :: a(..)
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
-                       int(shape(a), c_int64_t), 'float64', err, metadata_json, hash)
+                       int(shape(a), c_int64_t), 'float64', err, &
+                       metadata_json, hash, encoding, filter, compression)
    end subroutine append_f64
 
-   subroutine append_i32(file, a, err, metadata_json, hash)
+   subroutine append_i32(file, a, err, metadata_json, hash, encoding, filter, compression)
       type(tensogram_file),       intent(inout) :: file
       integer(c_int32_t), target, contiguous, intent(in) :: a(..)
       integer(c_int),             intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
-                       int(shape(a), c_int64_t), 'int32', err, metadata_json, hash)
+                       int(shape(a), c_int64_t), 'int32', err, &
+                       metadata_json, hash, encoding, filter, compression)
    end subroutine append_i32
 
-   subroutine append_i64(file, a, err, metadata_json, hash)
+   subroutine append_i64(file, a, err, metadata_json, hash, encoding, filter, compression)
       type(tensogram_file),       intent(inout) :: file
       integer(c_int64_t), target, contiguous, intent(in) :: a(..)
       integer(c_int),             intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
+      character(len=*), intent(in), optional :: encoding, filter, compression
       call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
-                       int(shape(a), c_int64_t), 'int64', err, metadata_json, hash)
+                       int(shape(a), c_int64_t), 'int64', err, &
+                       metadata_json, hash, encoding, filter, compression)
    end subroutine append_i64
+
+   ! =========================================================================
+   !  Application-metadata builder (tensogram_meta) + JSON escaping
+   ! =========================================================================
+
+   pure function hex2(c) result(h)
+      integer, intent(in) :: c
+      character(len=2)               :: h
+      character(len=16), parameter   :: dig = '0123456789abcdef'
+      h(1:1) = dig(c / 16 + 1 : c / 16 + 1)
+      h(2:2) = dig(mod(c, 16) + 1 : mod(c, 16) + 1)
+   end function hex2
+
+   !> Escape a string for inclusion as a JSON string body (no surrounding
+   !> quotes): handles ", \, the short control escapes, and other control
+   !> characters as \u00XX.
+   pure function json_escape(s) result(o)
+      character(len=*), intent(in)  :: s
+      character(len=:), allocatable :: o
+      integer   :: i, c
+      character :: ch
+      o = ''
+      do i = 1, len(s)
+         ch = s(i:i)
+         c = iachar(ch)
+         select case (c)
+         case (34);  o = o // '\"'
+         case (92);  o = o // '\\'
+         case (8);   o = o // '\b'
+         case (9);   o = o // '\t'
+         case (10);  o = o // '\n'
+         case (12);  o = o // '\f'
+         case (13);  o = o // '\r'
+         case (0:7, 11, 14:31); o = o // '\u00' // hex2(c)
+         case default; o = o // ch
+         end select
+      end do
+   end function json_escape
+
+   subroutine meta_append_pair(self, key, valjson)
+      class(tensogram_meta), intent(inout) :: self
+      character(len=*),      intent(in)    :: key, valjson
+      if (.not. allocated(self%body)) self%body = ''
+      if (len(self%body) > 0) self%body = self%body // ','
+      self%body = self%body // '"' // json_escape(key) // '":' // valjson
+   end subroutine meta_append_pair
+
+   subroutine meta_add_string(self, key, val)
+      class(tensogram_meta), intent(inout) :: self
+      character(len=*),      intent(in)    :: key, val
+      call meta_append_pair(self, key, '"' // json_escape(val) // '"')
+   end subroutine meta_add_string
+
+   subroutine meta_add_int(self, key, val)
+      class(tensogram_meta), intent(inout) :: self
+      character(len=*),      intent(in)    :: key
+      integer(c_int64_t),    intent(in)    :: val
+      call meta_append_pair(self, key, itoa(val))
+   end subroutine meta_add_int
+
+   subroutine meta_add_real(self, key, val)
+      class(tensogram_meta), intent(inout) :: self
+      character(len=*),      intent(in)    :: key
+      real(c_double),        intent(in)    :: val
+      character(len=64) :: tmp
+      write (tmp, '(g0)') val
+      call meta_append_pair(self, key, trim(adjustl(tmp)))
+   end subroutine meta_add_real
+
+   !> Emit the accumulated keys as a `"base":[{...}]` top-level JSON fragment,
+   !> suitable as the `metadata_json` argument of encode / append.
+   function meta_base_json(self) result(js)
+      class(tensogram_meta), intent(in) :: self
+      character(len=:), allocatable :: js
+      if (allocated(self%body)) then
+         js = '"base":[{' // self%body // '}]'
+      else
+         js = '"base":[{}]'
+      end if
+   end function meta_base_json
+
+   ! =========================================================================
+   !  Metadata handle + getters
+   ! =========================================================================
+
+   subroutine metadata_free(self)
+      class(tensogram_metadata), intent(inout) :: self
+      if (c_associated(self%ptr)) then
+         call c_tgm_metadata_free(self%ptr)
+         self%ptr = c_null_ptr
+      end if
+   end subroutine metadata_free
+
+   subroutine metadata_final(self)
+      type(tensogram_metadata), intent(inout) :: self
+      call self%free()
+   end subroutine metadata_final
+
+   subroutine metadata_assign(lhs, rhs)
+      class(tensogram_metadata), intent(out) :: lhs
+      type(tensogram_metadata),  intent(in)  :: rhs
+      if (c_associated(rhs%ptr)) then
+         error stop "tensogram_metadata is non-copyable: assigning a live handle would alias and double-free; pass by reference"
+      else
+         error stop "tensogram_metadata is non-copyable: do not assign handles; pass by reference"
+      end if
+   end subroutine metadata_assign
+
+   !> Extract an independent metadata handle from a decoded message.
+   subroutine tensogram_message_metadata(msg, meta, err)
+      type(tensogram_message),  intent(in)  :: msg
+      type(tensogram_metadata), intent(out) :: meta
+      integer(c_int),           intent(out) :: err
+      type(c_ptr) :: out
+      err = c_tgm_message_metadata(msg%ptr, out)
+      if (err == TGM_ERROR_OK) meta%ptr = out
+   end subroutine tensogram_message_metadata
+
+   !> Look up a string value by dot-notation key (searches base[i] then
+   !> _extra_). Returns '' when the key is absent or not a string.
+   function tensogram_metadata_get_string(meta, key) result(val)
+      type(tensogram_metadata), intent(in) :: meta
+      character(len=*),         intent(in) :: key
+      character(len=:), allocatable :: val
+      character(kind=c_char), allocatable, target :: key_c(:)
+      call f_to_cstr(key, key_c)
+      val = cptr_to_fstr(c_tgm_metadata_get_string(meta%ptr, c_loc(key_c)))
+   end function tensogram_metadata_get_string
+
+   !> Look up an integer value by dot-notation key; `default_val` when absent.
+   function tensogram_metadata_get_int(meta, key, default_val) result(v)
+      type(tensogram_metadata), intent(in) :: meta
+      character(len=*),         intent(in) :: key
+      integer(c_int64_t),       intent(in) :: default_val
+      integer(c_int64_t) :: v
+      character(kind=c_char), allocatable, target :: key_c(:)
+      call f_to_cstr(key, key_c)
+      v = c_tgm_metadata_get_int(meta%ptr, c_loc(key_c), default_val)
+   end function tensogram_metadata_get_int
+
+   !> Look up a float value by dot-notation key; `default_val` when absent.
+   function tensogram_metadata_get_float(meta, key, default_val) result(v)
+      type(tensogram_metadata), intent(in) :: meta
+      character(len=*),         intent(in) :: key
+      real(c_double),           intent(in) :: default_val
+      real(c_double) :: v
+      character(kind=c_char), allocatable, target :: key_c(:)
+      call f_to_cstr(key, key_c)
+      v = c_tgm_metadata_get_float(meta%ptr, c_loc(key_c), default_val)
+   end function tensogram_metadata_get_float
 
 end module tensogram

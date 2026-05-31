@@ -25,6 +25,21 @@ A multi-message **file API** completes the synchronous surface:
 1-based message indices. New `examples/fortran/file_api.f90` shows the
 append-then-random-access pattern.
 
+**Metadata ergonomics and the encoding pipeline.** Encode and append now
+accept optional `encoding` / `filter` / `compression` (e.g. lossless
+`compression="zstd"`). Per-object application metadata is built with the
+zero-dependency `tensogram_meta` builder (`add_string` / `add_int` /
+`add_real` / `base_json`, with JSON escaping) and read back with
+`tensogram_message_metadata` + the dot-notation getters
+`tensogram_metadata_get_string` / `_int` / `_float`.
+
+**Cross-language parity.** New tests assert the column-major contract in
+both directions against a C/C++ reader/writer — a Fortran-encoded
+`a(ni,nj)` decodes in C/C++ as the transpose `[nj,ni]`, and a C/C++-encoded
+`[nj,ni]` tensor decodes in Fortran as `out(ni,nj)` — bit-identically and
+through a lossless (zstd) pipeline, alongside the existing Fortran→Python
+parity test.
+
 Native array ergonomics come from the Fortran 2008 `contiguous`
 attribute, so the array descriptor never crosses the FFI boundary. A
 Fortran `a(ni,nj)` is written with the on-wire shape/strides reversed to

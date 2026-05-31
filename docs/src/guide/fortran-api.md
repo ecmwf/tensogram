@@ -175,7 +175,7 @@ end if
 
 | Procedure | Purpose |
 |---|---|
-| `tensogram_encode(a, buf, err [, metadata_json, hash])` | Encode an array into a one-object message — **generic** over dtype and rank |
+| `tensogram_encode(a, buf, err [, metadata_json, hash, encoding, filter, compression])` | Encode an array into a one-object message — **generic** over dtype and rank |
 | `tensogram_decode(wire, msg, err [, verify_hash, native_byte_order])` | Decode wire bytes into a message handle |
 | `tensogram_num_objects(msg)` | Number of decoded objects |
 | `tensogram_object_ndim(msg, iobj)` | Rank of object `iobj` (1-based) |
@@ -184,9 +184,12 @@ end if
 | `tensogram_to_array(msg, iobj, out, err)` | Copy an object into a Fortran array — **generic** over dtype and rank of `out` |
 | `tensogram_file_open/create(path, file, err)` | Open / create a `.tgm` file |
 | `tensogram_file_message_count(file, n, err)` | Number of messages in the file |
-| `tensogram_file_append(file, a, err [, metadata_json, hash])` | Encode `a` and append it as a message — **generic** over dtype and rank |
+| `tensogram_file_append(file, a, err [, metadata_json, hash, encoding, filter, compression])` | Encode `a` and append it as a message — **generic** over dtype and rank |
 | `tensogram_file_decode_message(file, index, msg, err [, verify_hash, native_byte_order])` | Decode message `index` (1-based) |
 | `tensogram_file_read_message(file, index, buf, err)` | Read raw message bytes at `index` |
+| `tensogram_meta` + `%add_string` / `%add_int` / `%add_real` / `%base_json` | Build per-object application metadata (JSON-escaped) |
+| `tensogram_message_metadata(msg, meta, err)` | Extract a metadata handle from a decoded message |
+| `tensogram_metadata_get_string/int/float(meta, key [, default])` | Look up metadata by dot-notation key |
 | `buf%as_array(out)` / `buf%size()` / `buf%free()` | Buffer access and release |
 | `file%close()` | Close a file handle (also automatic at scope exit) |
 | `tensogram_check` / `tensogram_last_error` / `tensogram_strerror` | Error helpers |
@@ -231,20 +234,55 @@ call f%close()
 
 See [`examples/fortran/file_api.f90`](https://github.com/ecmwf/tensogram/blob/main/examples/fortran/file_api.f90).
 
-Planned next (see `PLAN_FORTRAN.md`): structured metadata builders, then
-the streaming encoder.
+## Application metadata and compression
+
+The encoding pipeline is configurable per call: pass `encoding`, `filter`,
+and/or `compression` (default `"none"`). Use a **lossless** codec
+(`"zstd"`, `"lz4"`, `"szip"`, `"blosc2"`) to keep round-trips bit-exact.
+
+Per-object application metadata (names, units, namespaced vocabularies)
+is built with the zero-dependency `tensogram_meta` builder, which
+JSON-escapes keys and values for you, and read back with the dot-notation
+getters (which search the `base[i]` entries, then `_extra_`).
+
+```fortran
+type(tensogram_meta)     :: m
+type(tensogram_buffer)   :: buf
+type(tensogram_message)  :: msg
+type(tensogram_metadata) :: meta
+integer(c_int) :: err
+
+call m%add_string('name', 'temperature')
+call m%add_string('units', 'K')
+call m%add_int('level', 850_c_int64_t)
+
+call tensogram_encode(field, buf, err, &
+                      metadata_json = m%base_json(), compression = 'zstd')
+
+! ... decode into msg ...
+call tensogram_message_metadata(msg, meta, err)
+print *, tensogram_metadata_get_string(meta, 'name')          ! temperature
+print *, tensogram_metadata_get_int(meta, 'level', -1_c_int64_t)  ! 850
+```
+
+The library remains vocabulary-agnostic: `tensogram_meta` just builds the
+`base` JSON; the meaning of the keys is the application's concern.
+
+Planned next (see `PLAN_FORTRAN.md`): the streaming encoder.
 
 ## Build and test
 
 ```bash
 make fortran-build      # CMake configure + build
-make fortran-test       # ctest (incl. the Fortran<->Python parity test
-                        #         when a Python with `tensogram` is present)
+make fortran-test       # ctest
 ```
 
-The test suite covers a bit-identical round-trip, the error path, the
-non-copyable guard (a negative test), and cross-language parity that
-asserts the column-major contract against the Python reader.
+The test suite covers bit-identical round-trips across dtypes and ranks,
+the file API, application metadata, lossless-compression round-trips, the
+error path, and the non-copyable guard (a negative test). Cross-language
+parity tests assert the column-major contract in **both directions**
+against a C/C++ reader/writer (and against Python when a Python with the
+`tensogram` package is present).
 
 ## See also
 

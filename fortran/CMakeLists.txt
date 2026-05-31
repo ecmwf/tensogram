@@ -29,9 +29,14 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(TENSOGRAM REQUIRED IMPORTED_TARGET tensogram)
 
 # Standard-conformance + warnings-as-errors on GNU (the supported compiler for
-# the initial arc; PLAN_FORTRAN.md §10).
+# the initial arc; PLAN_FORTRAN.md §10). Scoped to Fortran so the optional
+# C++ cross-language harness (below) is not given Fortran flags.
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
-  add_compile_options(-std=f2018 -Wall -Wextra -Werror)
+  add_compile_options(
+    "$<$<COMPILE_LANGUAGE:Fortran>:-std=f2018>"
+    "$<$<COMPILE_LANGUAGE:Fortran>:-Wall>"
+    "$<$<COMPILE_LANGUAGE:Fortran>:-Wextra>"
+    "$<$<COMPILE_LANGUAGE:Fortran>:-Werror>")
 endif()
 
 # Emit .mod files into a known directory and expose it to consumers.
@@ -61,7 +66,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   enable_testing()
 
   # Positive tests: succeed (exit 0).
-  foreach(t test_roundtrip test_dtype_rank test_file_api test_errors)
+  foreach(t test_roundtrip test_dtype_rank test_file_api test_metadata test_errors)
     add_executable(${t} test/${t}.f90)
     target_link_libraries(${t} PRIVATE tensogram_f)
     add_test(NAME ${t} COMMAND ${t})
@@ -95,5 +100,33 @@ if(TENSOGRAM_FORTRAN_TESTS)
     else()
       message(STATUS "tensogram Python package not importable; skipping Fortran<->Python parity test")
     endif()
+  endif()
+
+  # Cross-language parity with C/C++ (row-major). Fortran encodes / C++ decodes
+  # and vice versa, asserting the column-major contract and lossless (zstd)
+  # bit-identity in BOTH directions. Skipped if no C++ compiler is available.
+  # PLAN_FORTRAN.md §8.
+  include(CheckLanguage)
+  check_language(CXX)
+  if(CMAKE_CXX_COMPILER)
+    enable_language(CXX)
+    add_executable(xlang_fortran test/xlang_fortran.f90)
+    target_link_libraries(xlang_fortran PRIVATE tensogram_f)
+    add_executable(xlang_c test/xlang_c.cpp)
+    target_link_libraries(xlang_c PRIVATE PkgConfig::TENSOGRAM)
+
+    add_test(NAME xlang_fortran_to_c COMMAND ${CMAKE_COMMAND}
+      -DWRITER=$<TARGET_FILE:xlang_fortran> -DWMODE=fwrite
+      -DREADER=$<TARGET_FILE:xlang_c>       -DRMODE=cread
+      -DTGM=${CMAKE_CURRENT_BINARY_DIR}/xlang_f2c.tgm
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/test/run_xlang.cmake)
+
+    add_test(NAME xlang_c_to_fortran COMMAND ${CMAKE_COMMAND}
+      -DWRITER=$<TARGET_FILE:xlang_c>       -DWMODE=cwrite
+      -DREADER=$<TARGET_FILE:xlang_fortran> -DRMODE=fread
+      -DTGM=${CMAKE_CURRENT_BINARY_DIR}/xlang_c2f.tgm
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/test/run_xlang.cmake)
+  else()
+    message(STATUS "No C++ compiler; skipping Fortran<->C++ cross-language tests")
   endif()
 endif()
