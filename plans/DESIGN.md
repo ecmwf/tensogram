@@ -8,7 +8,7 @@ Repo: ecmwf/tensogram
 
 ## Design Premises
 
-1. **CBOR for all metadata** — free-form string keys, strongly-typed values (RFC 8949). The library is vocabulary-agnostic; domain vocabularies (MARS at ECMWF, CF conventions, BIDS in neuroimaging, DICOM in medical imaging, in-house taxonomies) are the application layer's concern. CBOR chosen for flexibility over fixed binary structs because messages are tens to hundreds of MiB where CBOR parsing overhead is negligible compared to payload decode. Every message includes a `version` entry for forward compatibility.
+1. **CBOR for all metadata** — free-form string keys, strongly-typed values (RFC 8949). The library is vocabulary-agnostic; domain vocabularies (MARS at ECMWF, CF conventions, BIDS in neuroimaging, DICOM in medical imaging, in-house taxonomies) are the application layer's concern. CBOR chosen for flexibility over fixed binary structs because messages are tens to hundreds of MiB where CBOR parsing overhead is negligible compared to payload decode. The CBOR metadata frame has **no required top-level keys**; the wire-format version lives exclusively in the 24-byte preamble (see `WIRE_FORMAT.md` §3) and is never written to CBOR. A stray legacy `"version"` key from a pre-0.17 producer is tolerated and routed into `_extra_` on decode.
 
 2. **Self-describing messages, externally-managed vocabulary** — each message carries enough CBOR metadata to be interpreted, but the library doesn't validate or interpret vocabulary semantics.
 

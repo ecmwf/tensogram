@@ -617,18 +617,21 @@ comparison against ecCodes.
 
 ## `tensogram`
 
-- `wire.rs` — v2 frame-based wire format: Preamble (24 B), FrameHeader
-  (16 B), Postamble (16 B), `FrameType` enum (incl. `PrecederMetadata`
-  type 8), `MessageFlags` (incl. bit 6 `PRECEDER_METADATA`),
-  `DataObjectFlags`.
+- `wire.rs` — v3 frame-based wire format: Preamble (24 B), FrameHeader
+  (16 B), Postamble (24 B, with the mirrored `total_length` that enables
+  backward/bidirectional scan), `FrameType` enum (incl. `PrecederMetadata`
+  type 8 and `NTensorFrame` type 9), `MessageFlags` (incl. bit 6
+  `PRECEDER_METADATA` and bit 7 `HASHES_PRESENT`), `FrameFlags` (incl.
+  `HASH_PRESENT` at bit 1), `DataObjectFlags`.
 - `framing.rs` — `encode_message()` with two-pass index construction,
   `decode_message()`, `scan()` for multi-message buffers. Decomposed
   into focused helpers.
 - `metadata.rs` — Deterministic CBOR encoding for `GlobalMetadata`,
   `DataObjectDescriptor`, `IndexFrame`, `HashFrame` (three-step:
   serialize → canonicalize → write). `verify_canonical_cbor()` utility.
-- `types.rs` — `GlobalMetadata` (`version`, `base`, `_reserved_`,
-  `_extra_`), `DataObjectDescriptor`, `IndexFrame`, `HashFrame`.
+- `types.rs` — `GlobalMetadata` (`base`, `_reserved_`, `_extra_`; no
+  `version` field — the wire-format version lives in the preamble),
+  `DataObjectDescriptor`, `IndexFrame`, `HashFrame`.
 - `dtype.rs` — All 15 dtypes (float16/32/64, bfloat16, complex64/128,
   int/uint 8-64, bitmask).
 - `hash.rs` — xxh3 hashing + verification (xxh3 only).
@@ -913,10 +916,12 @@ comparison against ecCodes.
 
 ## Metadata structure
 
-- `GlobalMetadata`: `version`, `base` (per-object metadata array, each
+- `GlobalMetadata`: `base` (per-object metadata array, each
   entry fully self-contained), `_reserved_` (library internals:
   encoder, time, uuid — writable by library only), `_extra_`
-  (client-writable catch-all).
+  (client-writable catch-all).  No `version` field — the wire-format
+  version lives in the preamble (see `WIRE_FORMAT.md` §3); a stray
+  legacy `"version"` key is routed into `_extra_` on decode.
 - Auto-populated tensor metadata (ndim/shape/strides/dtype) lives under
   `base[i]["_reserved_"]["tensor"]`.
 - `compute_common()` utility extracts shared keys from `base` entries

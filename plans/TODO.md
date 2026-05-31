@@ -74,14 +74,95 @@ For speculative ideas, see `IDEAS.md`.
     `fs` backend so `file://` URLs work through the remote read path.
 
 - [ ] **cpp-async follow-up: real `tgm_runtime_shutdown_blocking`**
-    The function is currently a no-op stub that returns 0.  The shared
-    runtime lives behind a `OnceLock` so it cannot be torn down without
-    leaking the slot.  A real implementation needs to switch the
-    singleton to an owning container (e.g. `Arc<RwLock<Option<Runtime>>>`
-    or a `parking_lot` mutex), drain tasks via
-    `Runtime::shutdown_timeout`, and return the count that did not
-    finish.  The C ABI is already shaped for this; only the
-    implementation behind it changes.
+    `tgm_runtime_shutdown_blocking(timeout_ms)` in
+    `rust/tensogram-ffi/src/async_core.rs` is a no-op stub: it ignores
+    `timeout_ms` and returns `0` (always "zero tasks unfinished").  The
+    intended contract (`plans/PLAN_CPP_ASYNC.md` §6 *Lifecycle*, §15.1
+    Q5, §16 acceptance checklist) is: call
+    `Runtime::shutdown_timeout(Duration::from_millis(timeout_ms))`,
+    cancel pending tasks, free every outstanding `tgm_async_file_t` /
+    `tgm_async_streaming_encoder_t` handle, and **return the count of
+    tasks that did not finish within the timeout** so callers can
+    log / abort.
+
+    Pickup notes:
+    - **Blocker:** the runtime lives in
+      `SHARED_RUNTIME: OnceLock<Result<Runtime, String>>` (lazy build,
+      build error cached and surfaced as `TGM_ERROR_IO`).
+      `Runtime::shutdown_timeout` consumes `self`, which a `OnceLock`
+      cannot hand back.  Switch the singleton to an owning container
+      that supports `take` (e.g. `Mutex<Option<Result<Runtime,
+      String>>>` or `Arc<RwLock<Option<Runtime>>>`) while keeping the
+      lazy-build + cached-build-error behaviour.
+    - **Task counting:** there is no live-task counter today.  Add one
+      at the two spawn choke points — `spawn_task` and
+      `spawn_or_set_error` in `async_core.rs` — via an `AtomicUsize`
+      (increment on spawn, decrement on completion/drop) or a
+      `tokio_util::task::TaskTracker`; `shutdown_timeout` reports the
+      residual.
+    - **Post-shutdown:** once shut down the runtime is single-shot — no
+      rebuild; every subsequent `tgm_async_*` call returns
+      `TGM_ERROR_IO` with a descriptive `tgm_last_error()` (§6).
+    - **Test to write:** `cpp/tests/test_async_shutdown_during_flight.cpp`
+      (plan §11.5) — fire shutdown while N tasks are mid-flight, assert
+      the returned unfinished count, assert subsequent `tgm_async_*`
+      calls return `TGM_ERROR_IO`.  Acceptance (§16): "drains in-flight
+      tasks within the supplied timeout and reports cleanly on
+      overflow."
+    - The C ABI (`u64` return) already matches; only the Rust
+      implementation behind it changes.
+
+- [ ] **cpp-async follow-up: object-store / remote streaming *writes***
+    The streaming-async **write** path shipped as local-file only
+    (`tokio::fs::File`).  The object-store producer path that
+    `plans/PLAN_CPP_ASYNC.md` §5 treats as first-class (streaming a
+    `.tgm` straight to `s3://` / `gs://` / `az://` so an HPC producer's
+    network write overlaps the next step's compute) was descoped during
+    implementation — documented in `docs/src/guide/cpp-async.md`
+    "What's not in scope (v1)".  Remote *reads* (`open_remote`) are
+    already shipped; this entry is the write half.
+
+    Pickup notes:
+    - **Core is already sink-agnostic.**
+      `AsyncStreamingEncoder<W: AsyncWrite + Unpin>` in
+      `rust/tensogram/src/streaming_async.rs` is generic over the sink;
+      the FFI wrapper in `rust/tensogram-ffi/src/async_streaming.rs`
+      hardwires `tokio::fs::File::create`.  Work needed: (a) an
+      `AsyncWrite` adapter over `object_store`'s multipart-upload API,
+      and (b) URL-scheme dispatch in
+      `tgm_async_streaming_encoder_create`, which already accepts
+      `path_or_url` + `storage_keys` / `storage_values`.
+    - **Part buffering (§5.2):** `object_store::MultipartUpload` takes
+      whole parts; S3 enforces a 5 MiB minimum part size (final part
+      exempt).  Maintain an internal part-buffer of
+      `multipart_part_size_bytes` — already plumbed through
+      `tgm_runtime_configure` (default 8 MiB) but currently stored-and-
+      unused on the write side — flush a part at the threshold, upload
+      the residual on `finish()`, then `CompleteMultipartUpload`.
+    - **Retry / idempotency (§5.2):** the inline xxh3-64 frame hash is
+      computed once per frame in the calling thread *before* upload;
+      hold each part-buffer until `put_part` returns `Ok`; never re-hash
+      on a transient retry so the landed bytes match the installed hash
+      slot bit-for-bit.  Non-transient (4xx) failures surface as
+      `TGM_ERROR_REMOTE` and leave the upload unfinalised.
+    - **Backfill (§5.3):** object stores cannot seek, so `backfill=true`
+      is silently ignored — the message ships `total_length = 0`
+      (forward-scan only) with a one-shot `tracing::warn!`; local-file
+      backfill semantics are unchanged.
+    - **Tests:** `rust/tensogram/tests/streaming_async_object_store.rs`
+      (S3-mock + GCS-mock via `object_store` test fixtures; happy path +
+      one transient-retry scenario — plan §11.1) and
+      `cpp/tests/test_async_streaming_remote.cpp` (in-process HTTP
+      fixture, no external network — plan §11.2).  Assert remote-written
+      bytes round-trip through the sync decoder and are byte-identical
+      to local-file output for the same sequence of writes.
+    - **Done when:** a producer example writing to `s3://` / `gs://` /
+      `az://` round-trips; the "What's not in scope (v1)" remote-write
+      caveat is removed from `docs/src/guide/cpp-async.md`; and the
+      local-file-only notes in `streaming_async.rs` /
+      `async_streaming.rs` are lifted.  Main risk (plan §14): per-backend
+      `MultipartUpload` differences — S3 5 MiB min part, GCS resumable
+      upload, Azure block blob.
 
 - [ ] **cpp-async follow-up: close mutation-test gaps in
       `streaming_async.rs` and `tensogram-ffi/src/async_*.rs`**
@@ -115,13 +196,32 @@ For speculative ideas, see `IDEAS.md`.
     "cancelled".  Consider either bumping the timeout to 90 min for
     feature-PR scope, or splitting future feature PRs so each
     sits under the typical small-diff window.
-    Still open from the original PR 6 scope: a **cross-language parity
-    test** (C++ async producer + Python async consumer via an
-    in-process HTTP fixture).  The single-process producer/consumer
-    integration test (`cpp/tests/test_async_producer_consumer.cpp`),
-    the `cpp-async` / `cpp-streaming-async` guides, and the
-    DONE / README / ARCHITECTURE entries are done.
-    See `plans/PLAN_CPP_ASYNC.md` §11.3, §13 PR 6.
+
+- [ ] **cpp-async follow-up: cross-language async parity test**
+    `plans/PLAN_CPP_ASYNC.md` §11.3 calls for a C++ async **producer**
+    feeding a Python async **consumer** through a shared in-process HTTP
+    fixture, proving the async streaming encoder's wire output is
+    decodable by a different language's async reader.  Only the
+    single-process C++ producer/consumer integration test
+    (`cpp/tests/test_async_producer_consumer.cpp`) shipped; the
+    cross-language half is still open.  The `cpp-async` /
+    `cpp-streaming-async` guides and the DONE / README / ARCHITECTURE
+    entries are already done.
+
+    Pickup notes:
+    - **Shape:** C++ side writes a multi-message `.tgm` via the async
+      streaming encoder; Python side reads it back with
+      `AsyncTensogramFile` and asserts decoded-array + metadata
+      equality.  Reuse the in-process Range-capable HTTP fixture from
+      the remote-read tests as the transport.
+    - **Where it lives:** either a new `tests/cpp_async_parity/`
+      directory (plan §11.3) driven from CI, or fold it into the
+      existing `tests/remote-parity/` harness, which already spins up a
+      mock HTTP server and cross-language drivers.
+    - **Gating:** the producer currently writes local files only, so a
+      first version can hand off a local `.tgm` path (or `file://`).
+      The full "producer streams to a store, consumer reads from the
+      store" shape depends on the object-store-write entry above.
 
 ## Multi-Language Support
 
