@@ -10,7 +10,7 @@
 //! [`crate::streaming::StreamingEncoder`] that writes to any
 //! `tokio::io::AsyncWrite + Unpin` sink.
 //!
-//! Driver: the HPC producer scenario in `plans/PLAN_CPP_ASYNC.md` §1 —
+//! Driver: the HPC producer scenario —
 //! a producer job emits forecast steps as they are produced, writing to
 //! a shared filesystem or object-store sink without blocking the
 //! caller's compute thread.

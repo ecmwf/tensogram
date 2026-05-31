@@ -67,9 +67,8 @@ pub extern "C" fn tgm_async_streaming_encoder_path(
 /// `tgm_async_streaming_encoder_finish` having completed, the on-disk
 /// file is **structurally invalid** (no footer frames, no postamble,
 /// `total_length = 0`).  Validating readers will reject the file.
-/// This matches the cancellation-mid-stream contract documented in
-/// `plans/PLAN_CPP_ASYNC.md` §5.4: operational systems do not trust
-/// truncated `.tgm` files.  Callers who care about a clean file must
+/// This matches the cancellation-mid-stream contract: operational
+/// systems do not trust truncated `.tgm` files.  Callers who care about a clean file must
 /// drive a successful `finish` task before freeing the encoder.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_async_streaming_encoder_free(enc: *mut TgmAsyncStreamingEncoder) {

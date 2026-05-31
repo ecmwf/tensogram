@@ -7,7 +7,7 @@
 //!
 //! Both produce wire-format-identical bytes for the same logical
 //! sequence of writes.  This is the primary correctness invariant of
-//! the async streaming encoder (`plans/PLAN_CPP_ASYNC.md` §5).
+//! the async streaming encoder.
 
 #![cfg(feature = "async")]
 

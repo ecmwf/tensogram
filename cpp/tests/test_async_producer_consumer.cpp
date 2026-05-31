@@ -3,8 +3,8 @@
 // This software is licensed under the terms of the Apache Licence Version 2.0
 // which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
 
-//! Integration test mirroring the HPC producer/consumer scenario
-//! from `plans/PLAN_CPP_ASYNC.md` §1.  Two C++ jobs coordinate
+//! Integration test mirroring the HPC producer/consumer scenario.
+//! Two C++ jobs coordinate
 //! through a `.tgm` artefact: the producer writes forecast steps as
 //! they're generated; the consumer reads each message as soon as it
 //! arrives.  Tests both the local-file pipe path and a synthetic

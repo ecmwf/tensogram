@@ -64,13 +64,12 @@ typedef enum {
   TGM_ERROR_MISSING_HASH = 11,
   /**
    * Async task exceeded its deadline; the underlying tokio future
-   * was dropped at the next yield point.  See
-   * `plans/PLAN_CPP_ASYNC.md` §7.1.
+   * was dropped at the next yield point.
    */
   TGM_ERROR_TIMEOUT = 12,
   /**
    * Async task observed its cancellation token fire before the
-   * future resolved.  See `plans/PLAN_CPP_ASYNC.md` §7.2.
+   * future resolved.
    */
   TGM_ERROR_CANCELLED = 13,
 } tgm_error;
@@ -993,8 +992,8 @@ void tgm_cancellation_token_free(tgm_cancellation_token_t *tok);
  *
  * The callback fires on a **dispatcher pool worker** (a non-tokio
  * thread owned by `tensogram-ffi`), so a slow or blocking callback
- * does not stall the runtime.  See `plans/PLAN_CPP_ASYNC.md` §4.1
- * for the full contract: callbacks must complete quickly, must not
+ * does not stall the runtime.  The callback contract: callbacks
+ * must complete quickly, must not
  * throw, and must not block on locks held by the caller of any
  * other tgm_* function on this thread.
  *
@@ -1249,7 +1248,7 @@ tgm_error tgm_runtime_configure(uint32_t workers,
  *
  * **Status (v1):** the shared runtime lives behind a `OnceLock` and
  * cannot be torn down without leaking the slot.  Process exit is
- * abrupt by design (see `plans/PLAN_CPP_ASYNC.md` §6); in-flight
+ * abrupt by design; in-flight
  * tasks are dropped by tokio at process teardown.
  *
  * The signature is reserved here so a future implementation can
@@ -1281,9 +1280,8 @@ const char *tgm_async_streaming_encoder_path(const tgm_async_streaming_encoder_t
  * `tgm_async_streaming_encoder_finish` having completed, the on-disk
  * file is **structurally invalid** (no footer frames, no postamble,
  * `total_length = 0`).  Validating readers will reject the file.
- * This matches the cancellation-mid-stream contract documented in
- * `plans/PLAN_CPP_ASYNC.md` §5.4: operational systems do not trust
- * truncated `.tgm` files.  Callers who care about a clean file must
+ * This matches the cancellation-mid-stream contract: operational
+ * systems do not trust truncated `.tgm` files.  Callers who care about a clean file must
  * drive a successful `finish` task before freeing the encoder.
  */
 void tgm_async_streaming_encoder_free(tgm_async_streaming_encoder_t *enc);

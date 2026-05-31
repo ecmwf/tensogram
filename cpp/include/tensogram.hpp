@@ -173,15 +173,14 @@ public:
     remote_error(tgm_error code, const std::string& msg) : error(code, msg) {}
 };
 
-/// Thrown when an async task exceeds its deadline.  See
-/// `plans/PLAN_CPP_ASYNC.md` §7.1.
+/// Thrown when an async task exceeds its deadline.
 class timeout_error : public error {
 public:
     timeout_error(tgm_error code, const std::string& msg) : error(code, msg) {}
 };
 
 /// Thrown when an async task is cancelled via its
-/// `cancellation_token`.  See `plans/PLAN_CPP_ASYNC.md` §7.2.
+/// `cancellation_token`.
 class cancelled_error : public error {
 public:
     cancelled_error(tgm_error code, const std::string& msg) : error(code, msg) {}

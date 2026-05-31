@@ -21,8 +21,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # Empty marker feature required by cargo-c to identify the C-callable crate.
 capi = []
 # Enables the async FFI surface (tgm_async_*).  Pulls in tokio + tokio-util
-# and turns on the `async` and `async-write` features on tensogram.  See
-# `plans/PLAN_CPP_ASYNC.md` §12.1.
+# and turns on the `async` and `async-write` features on tensogram.
 async = [
     "dep:tokio",
     "dep:tokio-util",

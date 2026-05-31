@@ -18,7 +18,7 @@
 ///
 /// Composition story is intentionally weak (no `.then`, no
 /// `when_all`).  Users wanting composition should use `coro.hpp` on
-/// C++20.  Plan: `plans/PLAN_CPP_ASYNC.md` §4.3.
+/// C++20.
 
 #ifndef TENSOGRAM_ASYNC_STD_FUTURE_HPP
 #define TENSOGRAM_ASYNC_STD_FUTURE_HPP

@@ -15,8 +15,6 @@
 /// Header-only, C++17, always available wherever the FFI ships
 /// `--features async`.  The minimum-viable async surface that all
 /// other frontends (`coro.hpp`, `std_future.hpp`) layer on top of.
-///
-/// Plan: `plans/PLAN_CPP_ASYNC.md` §4.1.
 
 #ifndef TENSOGRAM_ASYNC_CALLBACK_HPP
 #define TENSOGRAM_ASYNC_CALLBACK_HPP

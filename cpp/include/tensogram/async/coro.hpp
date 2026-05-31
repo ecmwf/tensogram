@@ -21,8 +21,6 @@
 ///   * `awaiter<T>` — what the async I/O methods return.  Itself
 ///     awaitable; suspends until the underlying FFI task resolves.
 ///     Users typically don't construct these directly.
-///
-/// Plan: `plans/PLAN_CPP_ASYNC.md` §4.2.
 
 #ifndef TENSOGRAM_ASYNC_CORO_HPP
 #define TENSOGRAM_ASYNC_CORO_HPP

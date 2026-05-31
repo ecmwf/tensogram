@@ -13,7 +13,8 @@ that all sit on the same callback-based FFI core:
 | `std::future` | C++17 (opt-in) | `tensogram/async/std_future.hpp` | `std::future<T>` |
 | Coroutines | C++20 (opt-in) | `tensogram/async/coro.hpp` | `task<T>` + `co_await` |
 
-The plan: `plans/PLAN_CPP_ASYNC.md` for full design rationale.
+For the architecture, see the *Asynchronous frontends* section of
+[`plans/ARCHITECTURE.md`](../../../plans/ARCHITECTURE.md).
 
 ## Build setup
 
@@ -284,13 +285,11 @@ See `examples/cpp/19_async_decode_remote.cpp` and the
 ## What's not in scope (v1)
 
 - Object-store backends for the streaming encoder (S3, GCS, Azure).
-  Local file only.  See plan §5.2.
+  Local file only (tracked in `plans/TODO.md`).
 - External tokio runtime interop (users supplying their own runtime).
 - Boost.Asio or Folly frontends — explicitly removed from the plan.
 - MSVC / Windows.  Linux + macOS only.
 - Per-file runtime isolation.
-
-See `plans/PLAN_CPP_ASYNC.md` §10 for the full out-of-scope list.
 
 ## Cross-language parity
 

@@ -111,11 +111,10 @@ pub enum TgmError {
     /// thread-local error.
     MissingHash = 11,
     /// Async task exceeded its deadline; the underlying tokio future
-    /// was dropped at the next yield point.  See
-    /// `plans/PLAN_CPP_ASYNC.md` §7.1.
+    /// was dropped at the next yield point.
     Timeout = 12,
     /// Async task observed its cancellation token fire before the
-    /// future resolved.  See `plans/PLAN_CPP_ASYNC.md` §7.2.
+    /// future resolved.
     Cancelled = 13,
 }
 

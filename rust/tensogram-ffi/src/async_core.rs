@@ -10,7 +10,7 @@
 //!
 //! Provides opaque task handles, cancellation tokens, and runtime
 //! configuration for the C surface that exposes Tensogram's async
-//! reads to C and C++ callers.  Spec: `plans/PLAN_CPP_ASYNC.md` §3.
+//! reads to C and C++ callers.
 //!
 //! The runtime is fully contained: no tokio handle, executor, or any
 //! tokio type ever appears in the public C API.  A process-global
@@ -84,7 +84,7 @@ fn runtime_config() -> &'static RuntimeConfig {
 // ---------------------------------------------------------------------------
 // Dispatcher pool — runs user completion callbacks off the tokio runtime.
 //
-// Per `plans/PLAN_CPP_ASYNC.md` §4.1 callback contract, completion
+// Per the callback contract, completion
 // callbacks must NOT execute on a tokio worker thread directly: a
 // blocking or slow callback would stall the runtime.  This pool sits
 // between `complete()` (the tokio resolver) and the user callback,
@@ -434,8 +434,8 @@ pub extern "C" fn tgm_cancellation_token_free(tok: *mut TgmCancellationToken) {
 ///
 /// The callback fires on a **dispatcher pool worker** (a non-tokio
 /// thread owned by `tensogram-ffi`), so a slow or blocking callback
-/// does not stall the runtime.  See `plans/PLAN_CPP_ASYNC.md` §4.1
-/// for the full contract: callbacks must complete quickly, must not
+/// does not stall the runtime.  The callback contract: callbacks
+/// must complete quickly, must not
 /// throw, and must not block on locks held by the caller of any
 /// other tgm_* function on this thread.
 ///
@@ -1236,7 +1236,7 @@ pub extern "C" fn tgm_runtime_configure(
 ///
 /// **Status (v1):** the shared runtime lives behind a `OnceLock` and
 /// cannot be torn down without leaking the slot.  Process exit is
-/// abrupt by design (see `plans/PLAN_CPP_ASYNC.md` §6); in-flight
+/// abrupt by design; in-flight
 /// tasks are dropped by tokio at process teardown.
 ///
 /// The signature is reserved here so a future implementation can
