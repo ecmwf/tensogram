@@ -96,7 +96,8 @@ program demo
    call random_number(field)
 
    ! Encode -> Rust-owned bytes (lossless: encoding/compression "none").
-   call tensogram_encode_r2_f32(field, buf, err)
+   ! `tensogram_encode` is generic over dtype and rank.
+   call tensogram_encode(field, buf, err)
    call tensogram_check(err, 'encode')
 
    ! Copy the wire bytes out, then decode them back.
@@ -105,7 +106,7 @@ program demo
    call tensogram_check(err, 'decode')
 
    ! Extract object 1 -> a Fortran array shaped like the input.
-   call tensogram_object_to_r2_f32(msg, 1, out, err)
+   call tensogram_to_array(msg, 1, out, err)
    call tensogram_check(err, 'decode object')
 
    print *, 'bit-identical: ', .not. any(transfer(out, [0]) /= transfer(field, [0]))
@@ -174,19 +175,26 @@ end if
 
 | Procedure | Purpose |
 |---|---|
-| `tensogram_encode_r2_f32(a, buf, err [, metadata_json, hash])` | Encode a rank-2 `float32` array into a one-object message |
+| `tensogram_encode(a, buf, err [, metadata_json, hash])` | Encode an array into a one-object message — **generic** over dtype and rank |
 | `tensogram_decode(wire, msg, err [, verify_hash, native_byte_order])` | Decode wire bytes into a message handle |
 | `tensogram_num_objects(msg)` | Number of decoded objects |
 | `tensogram_object_ndim(msg, iobj)` | Rank of object `iobj` (1-based) |
 | `tensogram_object_shape(msg, iobj)` | Extents in Fortran (column-major) order |
 | `tensogram_object_dtype(msg, iobj)` | dtype string (e.g. `"float32"`) |
-| `tensogram_object_to_r2_f32(msg, iobj, out, err)` | Copy a rank-2 `float32` object into `out(ni, nj)` |
+| `tensogram_to_array(msg, iobj, out, err)` | Copy an object into a Fortran array — **generic** over dtype and rank of `out` |
 | `buf%as_array(out)` / `buf%size()` / `buf%free()` | Buffer access and release |
 | `tensogram_check` / `tensogram_last_error` / `tensogram_strerror` | Error helpers |
 
+`tensogram_encode` and `tensogram_to_array` are generic interfaces over
+**dtype** (`real32`, `real64`, `int32`, `int64`) and **rank** (`0`–`7`).
+`a` / `out` are assumed-rank; the dtype is resolved from the array's
+type/kind, the rank from the array itself. A dtype mismatch on decode
+returns `TGM_ERROR_OBJECT`. (`int8`/`int16`/`complex`/`float16` are
+follow-ups — Fortran has no native unsigned or half/complex-as-pair
+mapping.)
+
 Planned next (see `PLAN_FORTRAN.md`): the file API (`.tgm` multi-message
-append / random-access decode), more dtypes and ranks (generic
-interfaces / `select rank`), structured metadata builders, then the
+append / random-access decode), structured metadata builders, then the
 streaming encoder.
 
 ## Build and test

@@ -8,12 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Added — Fortran interface (synchronous core)
 
 A Fortran 2008/2018 binding (`fortran/`) over the existing `libtensogram`
-C ABI — no new C or Rust code. The first synchronous slice encodes a
-native `real(:,:)` field, decodes it back, and inspects object metadata,
-through idiomatic `tensogram_*` procedures, RAII handle types
-(`tensogram_buffer` / `tensogram_message`), and a non-copyable handle
-guard that `error stop`s on an accidental `b = a` rather than aliasing
-and double-freeing.
+C ABI — no new C or Rust code. `tensogram_encode` / `tensogram_to_array`
+encode and decode native Fortran arrays through a single generic
+interface over **dtype** (`real32`, `real64`, `int32`, `int64`) and
+**rank** (`0`–`7`), using assumed-rank dummies. Decoded objects are
+inspected with `tensogram_num_objects` / `_object_ndim` / `_object_shape`
+/ `_object_dtype`. The surface uses idiomatic `tensogram_*` procedures,
+RAII handle types (`tensogram_buffer` / `tensogram_message`), and a
+non-copyable handle guard that `error stop`s on an accidental `b = a`
+rather than aliasing and double-freeing.
 
 Native array ergonomics come from the Fortran 2008 `contiguous`
 attribute, so the array descriptor never crosses the FFI boundary. A

@@ -36,7 +36,7 @@ program parity_write
       end do
    end do
 
-   call tensogram_encode_r2_f32(field, buf, err)
+   call tensogram_encode(field, buf, err)
    call tensogram_check(err, 'encode')
    call buf%as_array(wire)
 

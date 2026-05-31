@@ -57,7 +57,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   enable_testing()
 
   # Positive tests: succeed (exit 0).
-  foreach(t test_roundtrip test_errors)
+  foreach(t test_roundtrip test_dtype_rank test_errors)
     add_executable(${t} test/${t}.f90)
     target_link_libraries(${t} PRIVATE tensogram_f)
     add_test(NAME ${t} COMMAND ${t})

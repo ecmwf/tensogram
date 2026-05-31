@@ -31,7 +31,7 @@ program test_roundtrip
       end do
    end do
 
-   call tensogram_encode_r2_f32(field, buf, err)
+   call tensogram_encode(field, buf, err)
    call assert(err == TGM_ERROR_OK, 'encode returned OK')
    call assert(buf%size() > 0_c_int8_t, 'encoded buffer is non-empty')
 
@@ -49,8 +49,8 @@ program test_roundtrip
    call assert(int(ext(1)) == NI, 'fastest extent is NI')
    call assert(int(ext(2)) == NJ, 'slowest extent is NJ')
 
-   call tensogram_object_to_r2_f32(msg, 1, out, err)
-   call assert(err == TGM_ERROR_OK, 'object_to_r2_f32 returned OK')
+   call tensogram_to_array(msg, 1, out, err)
+   call assert(err == TGM_ERROR_OK, 'to_array returned OK')
    call assert(size(out, 1) == NI .and. size(out, 2) == NJ, 'decoded shape (NI, NJ)')
    call assert(bit_identical(out, field), 'round-trip bit-identical')
 

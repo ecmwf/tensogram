@@ -41,7 +41,7 @@ program encode_decode
    print '(a,i0,a,i0,a)', 'Input:   shape=(', NI, ',', NJ, ')  dtype=float32'
 
    ! 2. Encode -> Rust-owned byte buffer (lossless: encoding/compression "none").
-   call tensogram_encode_r2_f32(field, buf, err)
+   call tensogram_encode(field, buf, err)
    call tensogram_check(err, 'encode')
    print '(a,i0,a)',      'Message: ', buf%size(), ' bytes'
 
@@ -56,8 +56,8 @@ program encode_decode
    print '(a,a)',         '  dtype = ', tensogram_object_dtype(msg, 1)
 
    ! 5. Extract object 1 back into a Fortran array shaped (ni, nj).
-   call tensogram_object_to_r2_f32(msg, 1, out, err)
-   call tensogram_check(err, 'object_to_r2_f32')
+   call tensogram_to_array(msg, 1, out, err)
+   call tensogram_check(err, 'to_array')
    print '(a,i0,a,i0,a)', '  shape = (', size(out, 1), ',', size(out, 2), ')'
 
    ! 6. Verify the Fortran <-> Fortran round-trip is identity.
