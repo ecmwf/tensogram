@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added — Fortran interface (synchronous core)
 
-A Fortran 2008/2018 binding (`fortran/`) over the existing `libtensogram`
+A Fortran 2018 binding (`fortran/`) over the existing `libtensogram`
 C ABI — no new C or Rust code. `tensogram_encode` / `tensogram_to_array`
 encode and decode native Fortran arrays through a single generic
 interface over **dtype** (`real32`, `real64`, `int32`, `int64`) and

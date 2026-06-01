@@ -1,6 +1,6 @@
 # Fortran API
 
-Tensogram ships a shallow **Fortran 2008/2018** binding (`fortran/`) over
+Tensogram ships a shallow **Fortran 2018** binding (`fortran/`) over
 the [C ABI](c-api.md). It is a thin `iso_c_binding` layer that links the
 same `libtensogram` the C and C++ wrappers use — no new C or Rust code —
 following the `eccodes_f90` model ECMWF Fortran codes already expect.

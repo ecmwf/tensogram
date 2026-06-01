@@ -6,7 +6,9 @@
 ! granted to it by virtue of its status as an intergovernmental organisation nor
 ! does it submit to any jurisdiction.
 
-!> tensogram — Fortran 2008/2018 interface to the Tensogram C ABI (libtensogram).
+!> tensogram — Fortran 2018 interface to the Tensogram C ABI (libtensogram).
+!> (Requires F2018 for assumed-rank dummies + select rank; the contiguous
+!> attribute it leans on is F2008.)
 !>
 !> Shallow binding: a private `bind(C)` interface block mirrors the synchronous
 !> subset of `tensogram.h`; the public `tensogram_*` procedures add idiomatic

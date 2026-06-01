@@ -275,7 +275,7 @@ High-level shape of the repository.
 - **`python/`** — PyO3 bindings (published as `tensogram` on PyPI) plus
   pure-Python extras for xarray, Zarr v3, and anemoi-inference integration.
 - **`cpp/`** — C++ wrapper over the C FFI: headers, CMake build, GoogleTest suite.
-- **`fortran/`** — Fortran 2008/2018 binding over the C FFI: `iso_c_binding`
+- **`fortran/`** — Fortran 2018 binding over the C FFI: `iso_c_binding`
   module, CMake + fpm build, tests.
 - **`typescript/`** — TypeScript bindings over the WASM crate, published as
   `@ecmwf.int/tensogram` on npm.
