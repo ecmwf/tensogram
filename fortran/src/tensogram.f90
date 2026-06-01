@@ -503,6 +503,15 @@ contains
       n = product([1_c_size_t, int(ext, c_size_t)])
    end function num_elements
 
+   !> Wire payload byte count = element count × element byte width (`bits/8`).
+   !> Deriving the width from `storage_size(a)` keeps it consistent with the
+   !> actual Fortran type rather than a hard-coded literal per dtype wrapper.
+   pure function byte_count(num, bits) result(n)
+      integer(c_size_t), intent(in) :: num, bits
+      integer(c_size_t) :: n
+      n = num * (bits / 8_c_size_t)
+   end function byte_count
+
    !> Build the one-object descriptor JSON. `fshape` is the Fortran
    !> (column-major) extents; the on-wire shape and C-contiguous strides are
    !> the REVERSE (PLAN_FORTRAN.md §5.1). `extra`, if present, is raw JSON of
@@ -703,7 +712,7 @@ contains
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call encode_core(c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+      call encode_core(c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                        int(shape(a), c_int64_t), 'float32', buf, err, &
                        metadata_json, hash, encoding, filter, compression)
    end subroutine encode_f32
@@ -714,7 +723,7 @@ contains
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call encode_core(c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+      call encode_core(c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                        int(shape(a), c_int64_t), 'float64', buf, err, &
                        metadata_json, hash, encoding, filter, compression)
    end subroutine encode_f64
@@ -725,7 +734,7 @@ contains
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call encode_core(c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+      call encode_core(c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                        int(shape(a), c_int64_t), 'int32', buf, err, &
                        metadata_json, hash, encoding, filter, compression)
    end subroutine encode_i32
@@ -736,7 +745,7 @@ contains
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call encode_core(c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+      call encode_core(c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                        int(shape(a), c_int64_t), 'int64', buf, err, &
                        metadata_json, hash, encoding, filter, compression)
    end subroutine encode_i64
@@ -1079,7 +1088,7 @@ contains
       integer(c_int),        intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+      call append_core(file%ptr, c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                        int(shape(a), c_int64_t), 'float32', err, &
                        metadata_json, hash, encoding, filter, compression)
    end subroutine append_f32
@@ -1090,7 +1099,7 @@ contains
       integer(c_int),         intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+      call append_core(file%ptr, c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                        int(shape(a), c_int64_t), 'float64', err, &
                        metadata_json, hash, encoding, filter, compression)
    end subroutine append_f64
@@ -1101,7 +1110,7 @@ contains
       integer(c_int),             intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+      call append_core(file%ptr, c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                        int(shape(a), c_int64_t), 'int32', err, &
                        metadata_json, hash, encoding, filter, compression)
    end subroutine append_i32
@@ -1112,7 +1121,7 @@ contains
       integer(c_int),             intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call append_core(file%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+      call append_core(file%ptr, c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                        int(shape(a), c_int64_t), 'int64', err, &
                        metadata_json, hash, encoding, filter, compression)
    end subroutine append_i64
@@ -1356,7 +1365,7 @@ contains
       real(c_float), target, contiguous, intent(in) :: a(..)
       integer(c_int),                    intent(out) :: err
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call stream_write_core(enc%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+      call stream_write_core(enc%ptr, c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                              int(shape(a), c_int64_t), 'float32', err, encoding, filter, compression)
    end subroutine stream_write_f32
 
@@ -1365,7 +1374,7 @@ contains
       real(c_double), target, contiguous, intent(in) :: a(..)
       integer(c_int),                     intent(out) :: err
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call stream_write_core(enc%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+      call stream_write_core(enc%ptr, c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                              int(shape(a), c_int64_t), 'float64', err, encoding, filter, compression)
    end subroutine stream_write_f64
 
@@ -1374,7 +1383,7 @@ contains
       integer(c_int32_t), target, contiguous, intent(in) :: a(..)
       integer(c_int),                         intent(out) :: err
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call stream_write_core(enc%ptr, c_loc(a), size(a, kind=c_size_t) * 4_c_size_t, &
+      call stream_write_core(enc%ptr, c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                              int(shape(a), c_int64_t), 'int32', err, encoding, filter, compression)
    end subroutine stream_write_i32
 
@@ -1383,7 +1392,7 @@ contains
       integer(c_int64_t), target, contiguous, intent(in) :: a(..)
       integer(c_int),                         intent(out) :: err
       character(len=*), intent(in), optional :: encoding, filter, compression
-      call stream_write_core(enc%ptr, c_loc(a), size(a, kind=c_size_t) * 8_c_size_t, &
+      call stream_write_core(enc%ptr, c_loc(a), byte_count(size(a, kind=c_size_t), storage_size(a, kind=c_size_t)), &
                              int(shape(a), c_int64_t), 'int64', err, encoding, filter, compression)
    end subroutine stream_write_i64
 
