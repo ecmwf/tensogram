@@ -1,7 +1,7 @@
 # Tensogram Fortran Interface — Development Plan
 
-> **Status.** The **synchronous surface is implemented** on branch
-> `feat/fortran-interface` (PR #127): generic encode/decode (dtype × rank),
+> **Status.** The **synchronous surface is implemented**: generic
+> encode/decode (dtype × rank),
 > the multi-message file API, application metadata + the encoding pipeline,
 > and the streaming encoder — with bidirectional cross-language parity
 > (C/C++ and Python), an error-enum↔header consistency guard, and a CI
@@ -446,8 +446,8 @@ Each milestone is independently shippable, lists its acceptance criteria,
 and — per AGENTS.md — leads with how it is **tested/verified** (TDD,
 behaviour-driven). Ordering is by dependency, not by ceremony.
 
-> **Delivery status (✓ = merged on `feat/fortran-interface`; see
-> `CHANGELOG.md` for specifics).** The original deliverable text below
+> **Delivery status (✓ = delivered; see `CHANGELOG.md` for specifics).**
+> The original deliverable text below
 > is preserved as the roadmap; deviations from what actually shipped are
 > noted inline.
 
