@@ -161,6 +161,22 @@ end if
   failure. Use it in examples and scripts; in library code prefer
   inspecting `err` yourself.
 
+The codes the binding surfaces (see [Error Handling](error-handling.md)
+for the full taxonomy):
+
+| Code | Raised by, for example |
+|------|------------------------|
+| `TGM_ERROR_FRAMING` | decoding a buffer that is not a valid message |
+| `TGM_ERROR_ENCODING` | encoding **non-finite** values (NaN / ±Inf are rejected by default) |
+| `TGM_ERROR_OBJECT` | `tensogram_to_array` with a wrong dtype, wrong rank, or out-of-range object index |
+| `TGM_ERROR_IO` | opening / reading a file that does not exist or cannot be read |
+| `TGM_ERROR_HASH_MISMATCH` / `TGM_ERROR_MISSING_HASH` | `verify_hash = .true.` and the recorded digest disagrees / is absent |
+
+The binding never aborts on these (only the deliberate non-copyable
+handle guard and `tensogram_check` use `error stop`). The metadata
+getters do not raise: a missing key returns the supplied default (or an
+empty string).
+
 ## Decoding options
 
 `tensogram_decode` accepts two optional logicals:
