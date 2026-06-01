@@ -569,17 +569,23 @@ contains
    !  Error helpers
    ! =========================================================================
 
+   !> Static, human-readable description of a `tgm_error` code.
    function tensogram_strerror(err) result(msg)
       integer(c_int), intent(in)    :: err
       character(len=:), allocatable :: msg
       msg = cptr_to_fstr(c_tgm_error_string(err))
    end function tensogram_strerror
 
+   !> The thread-local detail message left by the most recent failing call
+   !> (empty when there is none).
    function tensogram_last_error() result(msg)
       character(len=:), allocatable :: msg
       msg = cptr_to_fstr(c_tgm_last_error())
    end function tensogram_last_error
 
+   !> Convenience guard: a no-op on `TGM_ERROR_OK`; otherwise print `context`
+   !> plus the error detail to stderr and `error stop`. Prefer inspecting the
+   !> error code directly in library code.
    subroutine tensogram_check(err, context)
       integer(c_int),   intent(in)           :: err
       character(len=*), intent(in), optional :: context
@@ -754,6 +760,9 @@ contains
    !  Decode wire bytes -> message handle
    ! =========================================================================
 
+   !> Decode wire-format bytes into a message handle. `verify_hash` (default
+   !> `.false.`, to match the core library) checks the per-object xxh3 digest;
+   !> `native_byte_order` (default `.true.`) converts to the host byte order.
    subroutine tensogram_decode(wire, msg, err, verify_hash, native_byte_order)
       integer(c_int8_t), target, contiguous, intent(in)  :: wire(:)
       type(tensogram_message),               intent(out) :: msg
@@ -776,12 +785,14 @@ contains
    !  Object metadata accessors
    ! =========================================================================
 
+   !> Number of decoded objects in the message.
    function tensogram_num_objects(msg) result(n)
       type(tensogram_message), intent(in) :: msg
       integer :: n
       n = int(c_tgm_message_num_objects(msg%ptr))
    end function tensogram_num_objects
 
+   !> Rank of object `iobj` (1-based); `0` for an out-of-range index.
    function tensogram_object_ndim(msg, iobj) result(nd)
       type(tensogram_message), intent(in) :: msg
       integer,                 intent(in) :: iobj
@@ -808,6 +819,8 @@ contains
       end do
    end function tensogram_object_shape
 
+   !> dtype string of object `iobj` (e.g. `"float32"`); empty for an
+   !> out-of-range index.
    function tensogram_object_dtype(msg, iobj) result(dt)
       type(tensogram_message), intent(in) :: msg
       integer,                 intent(in) :: iobj
