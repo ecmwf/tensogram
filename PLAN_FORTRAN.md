@@ -7,7 +7,7 @@
 > (C/C++ and Python), an error-enum↔header consistency guard, and a CI
 > lane. Only the **async surface is deferred** (§7). This document remains
 > the durable design + roadmap; per-milestone status is marked in §7 and
-> the backward-looking record of merged work is `../CHANGELOG.md`.
+> the backward-looking record of merged work is `CHANGELOG.md`.
 > It is grounded in a direct reading of the `tensogram-ffi` C ABI at
 > version **0.21.0**.
 
@@ -31,9 +31,9 @@ In scope (in priority order):
 4. Native `real(:,:)` (and other rank/dtype) **array ergonomics** so the
    user never hand-rolls `c_loc`, strides, or byte counts.
 
-Deferred (documented, not built in the first arc):
+Deferred (the streaming encoder was originally listed here but has since
+shipped — see §7):
 
-- The **streaming encoder** (progressive writes).
 - The entire **async** surface (it uses C completion callbacks — the
   hardest part to bind and the least in demand for NWP codes, which are
   happy with blocking calls).
@@ -447,7 +447,7 @@ and — per AGENTS.md — leads with how it is **tested/verified** (TDD,
 behaviour-driven). Ordering is by dependency, not by ceremony.
 
 > **Delivery status (✓ = merged on `feat/fortran-interface`; see
-> `../CHANGELOG.md` for specifics).** The original deliverable text below
+> `CHANGELOG.md` for specifics).** The original deliverable text below
 > is preserved as the roadmap; deviations from what actually shipped are
 > noted inline.
 
