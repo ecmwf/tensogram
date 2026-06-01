@@ -102,22 +102,34 @@ if(TENSOGRAM_FORTRAN_TESTS)
     endforeach()
   endif()
 
-  # Negative test: the non-copyable handle guard must abort (non-zero exit).
-  # WILL_FAIL inverts the pass/fail sense, so a clean exit 0 (guard silently
-  # gone) is reported as a regression. PLAN_FORTRAN.md §5.4.
+  # Negative test: the non-copyable handle guard must abort via the defined
+  # `assignment(=)` + `error stop`. Asserting the guard's message (rather than
+  # WILL_FAIL on ANY non-zero exit) means a setup failure that aborts *before*
+  # the guard — a different message — is reported as a failure, not a false
+  # pass; and a clean exit 0 (guard silently gone) still fails. With
+  # PASS_REGULAR_EXPRESSION set, CTest matches the regex against the captured
+  # output and ignores the (non-zero) exit code. PLAN_FORTRAN.md §5.4.
   add_executable(test_copy_guard test/test_copy_guard.f90)
   target_link_libraries(test_copy_guard PRIVATE tensogram_f)
   add_test(NAME test_copy_guard COMMAND test_copy_guard)
-  set_tests_properties(test_copy_guard PROPERTIES WILL_FAIL TRUE)
+  set_tests_properties(test_copy_guard PROPERTIES
+    PASS_REGULAR_EXPRESSION "tensogram_message is non-copyable")
 
   # Every handle type's non-copyable guard (and tensogram_check's failure
-  # path) must abort. One program, one WILL_FAIL test per mode.
+  # path) must abort with its specific message. One program, one test per
+  # mode, each asserting the intended abort fired.
   add_executable(test_guards test/test_guards.f90)
   target_link_libraries(test_guards PRIVATE tensogram_f)
   foreach(mode buffer message file metadata stream check_ctx check_noctx)
     add_test(NAME guard_${mode} COMMAND test_guards ${mode})
-    set_tests_properties(guard_${mode} PROPERTIES WILL_FAIL TRUE)
   endforeach()
+  set_tests_properties(guard_buffer    PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_buffer is non-copyable")
+  set_tests_properties(guard_message   PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_message is non-copyable")
+  set_tests_properties(guard_file      PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_file is non-copyable")
+  set_tests_properties(guard_metadata  PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_metadata is non-copyable")
+  set_tests_properties(guard_stream    PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_streaming_encoder is non-copyable")
+  set_tests_properties(guard_check_ctx   PROPERTIES PASS_REGULAR_EXPRESSION "tensogram: guard-context")
+  set_tests_properties(guard_check_noctx PROPERTIES PASS_REGULAR_EXPRESSION "tensogram: ")
 
   # Canonical Fortran side of the cross-language parity harness
   # (`xlang_fortran fwrite` / `fread`). Pure Fortran, so it is built whether
