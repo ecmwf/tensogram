@@ -24,28 +24,33 @@ program test_file_api
    real(c_float)      :: a1(5)
    real(c_double)     :: a2(3, 2)
    integer(c_int32_t) :: a3(4)
+   integer(c_int64_t) :: a4(3)
    real(c_float),      allocatable :: o1(:)
    real(c_double),     allocatable :: o2(:,:)
    integer(c_int32_t), allocatable :: o3(:)
+   integer(c_int64_t), allocatable :: o4(:)
 
    do i = 1, 5; a1(i) = real(i, c_float) * 0.5_c_float; end do
    do j = 1, 2; do i = 1, 3; a2(i, j) = real(i * 10 + j, c_double); end do; end do
    a3 = [11_c_int32_t, 22_c_int32_t, 33_c_int32_t, 44_c_int32_t]
+   a4 = [100000_c_int64_t, 200000_c_int64_t, 300000_c_int64_t]
 
-   ! Create and append three messages (mixed dtype/rank).
+   ! Create and append four messages (mixed dtype/rank).
    call tensogram_file_create(path, f, err); call assert(err == TGM_ERROR_OK, 'create')
    call tensogram_file_append(f, a1, err);   call assert(err == TGM_ERROR_OK, 'append a1')
    call tensogram_file_append(f, a2, err);   call assert(err == TGM_ERROR_OK, 'append a2')
    call tensogram_file_append(f, a3, err);   call assert(err == TGM_ERROR_OK, 'append a3')
+   call tensogram_file_append(f, a4, err);   call assert(err == TGM_ERROR_OK, 'append a4 (int64)')
    call f%close()
 
    ! Reopen and count.
    call tensogram_file_open(path, f, err);          call assert(err == TGM_ERROR_OK, 'open')
    call tensogram_file_message_count(f, n, err);    call assert(err == TGM_ERROR_OK, 'count')
-   call assert(n == 3, 'message_count == 3')
+   call assert(n == 4, 'message_count == 4')
 
-   ! Random-access decode by index (1-based).
-   call tensogram_file_decode_message(f, 1, msg, err); call assert(err == TGM_ERROR_OK, 'decode 1')
+   ! Random-access decode by index (1-based; explicit decode options here).
+   call tensogram_file_decode_message(f, 1, msg, err, verify_hash=.false., native_byte_order=.true.)
+   call assert(err == TGM_ERROR_OK, 'decode 1')
    call tensogram_to_array(msg, 1, o1, err);           call assert(err == TGM_ERROR_OK, 'to_array 1')
    call assert(size(o1) == 5, 'msg1 size')
    call assert(bytes_eq(transfer(o1, [0_c_int8_t]), transfer(a1, [0_c_int8_t])), 'msg1 values')
@@ -58,6 +63,10 @@ program test_file_api
    call tensogram_file_decode_message(f, 3, msg, err); call assert(err == TGM_ERROR_OK, 'decode 3')
    call tensogram_to_array(msg, 1, o3, err);           call assert(err == TGM_ERROR_OK, 'to_array 3')
    call assert(all(o3 == a3), 'msg3 values')
+
+   call tensogram_file_decode_message(f, 4, msg, err); call assert(err == TGM_ERROR_OK, 'decode 4')
+   call tensogram_to_array(msg, 1, o4, err);           call assert(err == TGM_ERROR_OK, 'to_array 4')
+   call assert(all(o4 == a4), 'msg4 values (int64)')
 
    ! Raw-bytes path: read_message -> decode.
    call read_back_first()

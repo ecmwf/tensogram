@@ -20,6 +20,8 @@ program test_edge_cases
    call short_buffer_decode()
    call zero_object_stream()
    call unicode_and_long_metadata()
+   call explicit_options_and_empty_buffer()
+   call streaming_i64_and_metadata()
 
    print '(a)', 'test_edge_cases: PASS'
 
@@ -103,6 +105,73 @@ contains
       open(newunit=ios, file=p, status='old', iostat=err)
       if (err == 0) close(ios, status='delete')
    end subroutine zero_object_stream
+
+   !> Explicit hash / decode options exercise the optional-argument branches,
+   !> and `as_array` on an unencoded buffer yields a zero-size array.
+   subroutine explicit_options_and_empty_buffer()
+      real(c_float)              :: a(3)
+      real(c_float), allocatable :: out(:)
+      integer(c_int8_t), allocatable :: wire(:)
+      type(tensogram_buffer)  :: buf, empty_buf
+      type(tensogram_message) :: msg
+      integer(c_int) :: err
+      a = [1.0_c_float, 2.0_c_float, 3.0_c_float]
+      ! Explicit hash name (present branch of resolve_hash).
+      call tensogram_encode(a, buf, err, hash='xxh3'); call assert(err == TGM_ERROR_OK, 'explicit hash name')
+      call buf%as_array(wire)
+      ! Explicit decode options (the present branches of verify / byte order).
+      call tensogram_decode(wire, msg, err, verify_hash=.false., native_byte_order=.true.)
+      call assert(err == TGM_ERROR_OK, 'explicit decode options')
+      call tensogram_to_array(msg, 1, out, err)
+      call assert(err == TGM_ERROR_OK .and. size(out) == 3, 'explicit decode round-trip')
+      ! Empty hash name => no hash (NULL branch of resolve_hash).
+      call tensogram_encode(a, buf, err, hash=''); call assert(err == TGM_ERROR_OK, 'empty hash name -> no hash')
+      ! as_array on a never-encoded buffer is an empty array.
+      call empty_buf%as_array(wire)
+      call assert(size(wire) == 0, 'empty buffer as_array -> size 0')
+
+      ! An empty metadata builder still emits a valid "base":[{}] fragment.
+      block
+         type(tensogram_meta) :: em
+         call tensogram_encode(a, buf, err, metadata_json=em%base_json())
+         call assert(err == TGM_ERROR_OK, 'empty base_json encode')
+      end block
+
+      ! Correct dtype but wrong target rank -> OBJECT (the rank-mismatch path).
+      block
+         real(c_float), allocatable :: out2(:,:)
+         call tensogram_encode(a, buf, err); call buf%as_array(wire)
+         call tensogram_decode(wire, msg, err)
+         call tensogram_to_array(msg, 1, out2, err)   ! rank-2 out for a rank-1 object
+         call assert(err == TGM_ERROR_OBJECT, 'rank mismatch -> OBJECT')
+      end block
+   end subroutine explicit_options_and_empty_buffer
+
+   !> Streaming with explicit metadata and an int64 object (covers the int64
+   !> streaming-write overload and the explicit-metadata create branch).
+   subroutine streaming_i64_and_metadata()
+      character(len=*), parameter :: p = 'test_edge_stream_tmp.tgm'
+      type(tensogram_streaming_encoder) :: enc
+      type(tensogram_file)              :: f
+      type(tensogram_message)           :: msg
+      integer(c_int64_t)              :: a(4)
+      integer(c_int64_t), allocatable :: out(:)
+      integer(c_int) :: err, ios
+      a = [1_c_int64_t, 2_c_int64_t, 3_c_int64_t, 4_c_int64_t]
+      call tensogram_streaming_encoder_create(p, enc, err, metadata_json='{}')
+      call assert(err == TGM_ERROR_OK, 'stream create w/ explicit metadata')
+      call tensogram_streaming_encoder_write(enc, a, err)
+      call assert(err == TGM_ERROR_OK, 'stream write int64')
+      call tensogram_streaming_encoder_finish(enc, err); call enc%free()
+      call tensogram_file_open(p, f, err)
+      call tensogram_file_decode_message(f, 1, msg, err)
+      call tensogram_to_array(msg, 1, out, err)
+      call assert(err == TGM_ERROR_OK, 'stream int64 to_array')
+      call assert(all(out == a), 'stream int64 round-trip')
+      call f%close()
+      open(newunit=ios, file=p, status='old', iostat=err)
+      if (err == 0) close(ios, status='delete')
+   end subroutine streaming_i64_and_metadata
 
    !> Unicode (raw UTF-8) and long strings survive the metadata builder /
    !> JSON escaper / decode / getter round-trip byte-for-byte.

@@ -70,7 +70,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   enable_testing()
 
   # Positive tests: succeed (exit 0).
-  foreach(t test_roundtrip test_dtype_rank test_file_api test_metadata test_streaming test_edge_cases test_errors)
+  foreach(t test_roundtrip test_dtype_rank test_ranks test_file_api test_metadata test_streaming test_edge_cases test_errors)
     add_executable(${t} test/${t}.f90)
     target_link_libraries(${t} PRIVATE tensogram_f)
     add_test(NAME ${t} COMMAND ${t})
@@ -91,6 +91,15 @@ if(TENSOGRAM_FORTRAN_TESTS)
   target_link_libraries(test_copy_guard PRIVATE tensogram_f)
   add_test(NAME test_copy_guard COMMAND test_copy_guard)
   set_tests_properties(test_copy_guard PROPERTIES WILL_FAIL TRUE)
+
+  # Every handle type's non-copyable guard (and tensogram_check's failure
+  # path) must abort. One program, one WILL_FAIL test per mode.
+  add_executable(test_guards test/test_guards.f90)
+  target_link_libraries(test_guards PRIVATE tensogram_f)
+  foreach(mode buffer message file metadata stream check_ctx check_noctx)
+    add_test(NAME guard_${mode} COMMAND test_guards ${mode})
+    set_tests_properties(guard_${mode} PROPERTIES WILL_FAIL TRUE)
+  endforeach()
 
   # Canonical Fortran side of the cross-language parity harness
   # (`xlang_fortran fwrite` / `fread`). Pure Fortran, so it is built whether

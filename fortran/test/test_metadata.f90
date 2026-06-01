@@ -15,9 +15,10 @@ program test_metadata
    use tensogram
    implicit none
 
-   ! Contains a quote, a backslash, and a newline -> exercises json_escape.
-   character(len=*), parameter :: NOTE = 'a' // char(34) // 'b' // char(92) // &
-                                          'c' // char(10) // 'd'
+   ! Exercises every json_escape branch: " \ backspace tab newline formfeed
+   ! carriage-return and two \u00XX control chars (the latter via hex2).
+   character(len=*), parameter :: NOTE = char(34) // char(92) // char(8) // char(9) // &
+      char(10) // char(12) // char(13) // char(1) // char(31) // 'end'
 
    type(tensogram_meta)     :: m
    type(tensogram_buffer)   :: buf
