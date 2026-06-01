@@ -1,13 +1,15 @@
 # Tensogram Fortran Interface — Development Plan
 
-> **Status.** Accepted (lifted from `plans/IDEAS.md` into
-> `plans/TODO.md` → *Multi-Language Support*). **Not yet implemented.**
-> This document is the durable design + roadmap so any future session can
-> pick the work up without re-deriving it. It is grounded in a direct
-> reading of the `tensogram-ffi` C ABI at version **0.21.0**, not just in
-> abstract analysis.
->
-> Branch for the work: `feat/fortran-interface`.
+> **Status.** The **synchronous surface is implemented** on branch
+> `feat/fortran-interface` (PR #127): generic encode/decode (dtype × rank),
+> the multi-message file API, application metadata + the encoding pipeline,
+> and the streaming encoder — with bidirectional cross-language parity
+> (C/C++ and Python), an error-enum↔header consistency guard, and a CI
+> lane. Only the **async surface is deferred** (§7). This document remains
+> the durable design + roadmap; per-milestone status is marked in §7 and
+> the backward-looking record of merged work is `../CHANGELOG.md`.
+> It is grounded in a direct reading of the `tensogram-ffi` C ABI at
+> version **0.21.0**.
 
 ---
 
@@ -444,7 +446,12 @@ Each milestone is independently shippable, lists its acceptance criteria,
 and — per AGENTS.md — leads with how it is **tested/verified** (TDD,
 behaviour-driven). Ordering is by dependency, not by ceremony.
 
-### Milestone — Synchronous round-trip core (the walking skeleton)
+> **Delivery status (✓ = merged on `feat/fortran-interface`; see
+> `../CHANGELOG.md` for specifics).** The original deliverable text below
+> is preserved as the roadmap; deviations from what actually shipped are
+> noted inline.
+
+### Milestone — Synchronous round-trip core (the walking skeleton) — ✓ delivered
 
 - **Tests first**: `test_roundtrip.f90` asserts `maxval(abs(out -
   field)) == 0` for a `real32` `(ni,nj)` field through
@@ -463,7 +470,14 @@ behaviour-driven). Ordering is by dependency, not by ceremony.
   and documented; the Fortran↔Python parity seed exists (even if
   single-case).
 
-### Milestone — Generic dtype & rank coverage
+### Milestone — Generic dtype & rank coverage — ✓ delivered
+
+> *Shipped:* `tensogram_encode` / `tensogram_to_array` generic over
+> `real32/64`, `int32/64` and ranks 0–7 (assumed-rank; `c_loc`/`shape`
+> work directly on a `contiguous` assumed-rank arg, so encode needs no
+> per-rank `select rank`). The rank-2-`float32`-specific procedures from
+> the first milestone were *replaced* by these generics. `int8/16`,
+> complex, and `float16/bf16` are documented follow-ups (§10).
 
 - **Tests first**: parametrised matrix over dtypes (`real32/64`,
   `int8/16/32/64`; complex as interleaved real) × ranks 1–7, plus a
@@ -475,7 +489,12 @@ behaviour-driven). Ordering is by dependency, not by ceremony.
   and/or assumed-rank `select rank`), keeping `c_loc` Fortran-side.
 - **Acceptance**: full matrix round-trips bit-identically.
 
-### Milestone — File API
+### Milestone — File API — ✓ delivered
+
+> *Shipped:* `tensogram_file` + `open`/`create`/`message_count`/
+> `read_message`/`decode_message`/`append` (generic). Iteration is
+> `message_count` + `decode_message(index)` (1-based); `append_raw` and a
+> dedicated file-iterator handle were not needed and are not exposed.
 
 - **Tests first**: `test_file_api.f90` — create a `.tgm`, append N
   messages, reopen, assert `message_count == N`, decode each by index
@@ -487,7 +506,13 @@ behaviour-driven). Ordering is by dependency, not by ceremony.
   pattern.
 - **Acceptance**: multi-message round-trip + iterate-all pass.
 
-### Milestone — Metadata ergonomics
+### Milestone — Metadata ergonomics — ✓ delivered
+
+> *Shipped:* optional `encoding`/`filter`/`compression` on encode/append/
+> stream; the `tensogram_meta` builder (`add_string`/`add_int`/`add_real`/
+> `base_json`) with a zero-dependency JSON escaper; `tensogram_metadata`
+> handle + `tensogram_message_metadata` + `get_string`/`get_int`/
+> `get_float` dot-notation getters.
 
 - **Tests first**: encode with MARS-like `base` metadata; decode; read
   keys back via getters; assert a Python reader sees the same metadata.
@@ -498,7 +523,15 @@ behaviour-driven). Ordering is by dependency, not by ceremony.
   (`get_string`/`get_int`/`get_float` by dotted key).
 - **Acceptance**: metadata round-trip + Python parity pass.
 
-### Milestone — Packaging, docs & CI hardening
+### Milestone — Packaging, docs & CI hardening — ✓ delivered
+
+> *Shipped:* CMake (system of record) + fpm; `fortran-api.md` + SUMMARY +
+> README + CHANGELOG; `make fortran-build`/`fortran-test`/`fortran-fpm-test`;
+> a `Fortran (Linux)` CI job (installs gfortran + cargo-c, runs CTest); the
+> error-enum↔header consistency CTest; both-direction Fortran↔Python parity
+> as CI tests; `fortran/fpm.toml` + `fortran/CMakeLists.txt` on the
+> VERSION-sync list. gfortran is the supported compiler; ifx/nvfortran
+> remain deferred (§10).
 
 - **Deliverable**: CMake build alongside fpm; install `.mod` + lib;
   `docs/src/guide/fortran-api.md` + `SUMMARY.md` entry; README + CHANGELOG
@@ -512,13 +545,17 @@ behaviour-driven). Ordering is by dependency, not by ceremony.
 - **Acceptance**: `make fortran-test` green in CI; docs build; version
   sync check passes; CI image carries gfortran + fpm.
 
-### Milestone — Streaming encoder (optional, demand-driven)
+### Milestone — Streaming encoder — ✓ delivered
+
+> *Shipped:* `tensogram_streaming_encoder` + `create`/`write` (generic)/
+> `count`/`finish` and `free`. `write_preceder` (early per-object
+> metadata) was not needed for v1 and is a documented follow-up.
 
 - **Deliverable**: `tgm_streaming_encoder_*` wrappers (create / write /
   write_preceder / finish / free) for progressive writes; example.
 - **Acceptance**: stream N objects to a file; sync reader round-trips.
 
-### Milestone — Async (deferred, only if a concrete need arises)
+### Milestone — Async (deferred, only if a concrete need arises) — deferred
 
 - Blocking `tgm_async_task_join_*` variants first; `bind(C)` completion
   callbacks last. Do not start without a real consumer requirement.
