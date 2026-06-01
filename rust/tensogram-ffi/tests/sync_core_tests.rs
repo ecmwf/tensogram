@@ -304,7 +304,7 @@ fn decode_null_buf_nonzero_len_is_invalid_arg() {
 
 #[test]
 fn decode_garbage_is_error() {
-    let garbage = vec![0xde_u8, 0xad, 0xbe, 0xef, 0, 0, 0, 0];
+    let garbage = [0xde_u8, 0xad, 0xbe, 0xef, 0, 0, 0, 0];
     let mut msg: *mut TgmMessage = ptr::null_mut();
     let err = tgm_decode(garbage.as_ptr(), garbage.len(), 1, 0, 0, &mut msg);
     assert!(!matches!(err, TgmError::Ok));
@@ -325,7 +325,7 @@ fn decode_metadata_roundtrip() {
 
 #[test]
 fn decode_metadata_garbage_is_error() {
-    let g = vec![0u8; 8];
+    let g = [0u8; 8];
     let mut meta: *mut TgmMetadata = ptr::null_mut();
     let err = tgm_decode_metadata(g.as_ptr(), g.len(), &mut meta);
     assert!(!matches!(err, TgmError::Ok));
@@ -506,7 +506,7 @@ fn validate_good_message_reports() {
 
 #[test]
 fn validate_garbage_does_not_crash() {
-    let g = vec![0xde_u8, 0xad, 0xbe, 0xef];
+    let g = [0xde_u8, 0xad, 0xbe, 0xef];
     let level = cstring("quick");
     let mut out = TgmBytes {
         data: ptr::null_mut(),
