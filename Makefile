@@ -143,7 +143,7 @@ fortran-build: ## Build the Fortran binding + examples + tests via CMake
 	cmake --build build/fortran
 
 fortran-test: fortran-build ## Run Fortran tests (incl. Fortran<->Python parity when available)
-	ctest --test-dir build/fortran --output-on-failure
+	cd build/fortran && ctest --output-on-failure
 
 fortran-fpm-test: ## Build the Fortran library via fpm (injects pkg-config flags)
 	cd fortran && fpm build \
