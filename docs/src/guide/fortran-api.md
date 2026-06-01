@@ -57,8 +57,16 @@ In your own project:
 ```cmake
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(TENSOGRAM REQUIRED IMPORTED_TARGET tensogram)
-add_executable(my_app my_app.f90)
-target_link_libraries(my_app PRIVATE tensogram_f)   # + PkgConfig::TENSOGRAM
+
+# The binding is a single module file. The simplest integration is to
+# compile it into your own target and link the C ABI:
+add_executable(my_app /path/to/tensogram/fortran/src/tensogram.f90 my_app.f90)
+target_link_libraries(my_app PRIVATE PkgConfig::TENSOGRAM)
+
+# Alternatively, if you have the repository checked out, build the binding's
+# own library target and link that (it propagates the .mod path and the C ABI):
+#   add_subdirectory(/path/to/tensogram/fortran tensogram_fortran)
+#   target_link_libraries(my_app PRIVATE tensogram_f)
 ```
 
 ### fpm
@@ -206,7 +214,8 @@ empty string).
 | `tensogram_file_read_message(file, index, buf, err)` | Read raw message bytes at `index` |
 | `tensogram_meta` + `%add_string` / `%add_int` / `%add_real` / `%base_json` | Build per-object application metadata (JSON-escaped) |
 | `tensogram_message_metadata(msg, meta, err)` | Extract a metadata handle from a decoded message |
-| `tensogram_metadata_get_string/int/float(meta, key [, default])` | Look up metadata by dot-notation key |
+| `tensogram_metadata_get_string(meta, key)` | Look up a string by dot-notation key (empty if absent) |
+| `tensogram_metadata_get_int(meta, key, default)` / `_get_float(meta, key, default)` | Look up an int / float by key (`default` returned if absent) |
 | `tensogram_streaming_encoder_create(path, enc, err [, metadata_json, hash])` | Open a streaming encoder (writes a message progressively to a file) |
 | `tensogram_streaming_encoder_write(enc, a, err [, encoding, filter, compression])` | Append one object to the stream — **generic** over dtype and rank |
 | `tensogram_streaming_encoder_count(enc)` / `_finish(enc, err)` / `enc%free()` | Objects written so far / finalise (footer + close) / release |
