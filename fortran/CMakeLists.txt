@@ -76,6 +76,14 @@ if(TENSOGRAM_FORTRAN_TESTS)
     add_test(NAME ${t} COMMAND ${t})
   endforeach()
 
+  # Run the examples as smoke tests when they are built — otherwise they are
+  # only compile-checked, never executed. Each must exit 0.
+  if(TENSOGRAM_FORTRAN_EXAMPLES)
+    foreach(ex fortran_encode_decode fortran_file_api fortran_streaming)
+      add_test(NAME smoke_${ex} COMMAND ${ex})
+    endforeach()
+  endif()
+
   # Negative test: the non-copyable handle guard must abort (non-zero exit).
   # WILL_FAIL inverts the pass/fail sense, so a clean exit 0 (guard silently
   # gone) is reported as a regression. PLAN_FORTRAN.md §5.4.
