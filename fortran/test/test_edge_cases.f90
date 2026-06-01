@@ -22,6 +22,7 @@ program test_edge_cases
    call unicode_and_long_metadata()
    call explicit_options_and_empty_buffer()
    call streaming_i64_and_metadata()
+   call padded_path_and_hash()
 
    print '(a)', 'test_edge_cases: PASS'
 
@@ -158,6 +159,41 @@ contains
          call assert(err == TGM_ERROR_OBJECT, 'rank mismatch -> OBJECT')
       end block
    end subroutine explicit_options_and_empty_buffer
+
+   !> Fixed-length character variables are space-padded by Fortran; the wrapper
+   !> must trim paths and the hash name before crossing to C, or the common
+   !> `character(len=N) :: path; call get_command_argument(...)` pattern would
+   !> pass space-padded values that fail.
+   subroutine padded_path_and_hash()
+      character(len=64) :: path
+      character(len=16) :: hash
+      real(c_float)  :: a(3)
+      type(tensogram_buffer) :: buf
+      type(tensogram_file)   :: f
+      integer(c_int) :: err, n, ios
+      logical :: exists
+      a = [1.0_c_float, 2.0_c_float, 3.0_c_float]
+
+      hash = 'xxh3'                              ! padded to length 16
+      call tensogram_encode(a, buf, err, hash=hash)
+      call assert(err == TGM_ERROR_OK, 'space-padded hash name accepted')
+
+      path = 'test_edge_padded_tmp.tgm'          ! padded to length 64
+      call tensogram_file_create(path, f, err)
+      call assert(err == TGM_ERROR_OK, 'space-padded path create')
+      call tensogram_file_append(f, a, err);     call assert(err == TGM_ERROR_OK, 'padded path append')
+      call f%close()
+      ! The file must exist under the TRIMMED name (it would carry trailing
+      ! spaces if the wrapper did not trim).
+      inquire(file='test_edge_padded_tmp.tgm', exist=exists)
+      call assert(exists, 'padded path created the trimmed filename')
+      call tensogram_file_open(path, f, err);    call assert(err == TGM_ERROR_OK, 'padded path open')
+      call tensogram_file_message_count(f, n, err)
+      call assert(err == TGM_ERROR_OK .and. n == 1, 'padded path reopened')
+      call f%close()
+      open(newunit=ios, file='test_edge_padded_tmp.tgm', status='old', iostat=err)
+      if (err == 0) close(ios, status='delete')
+   end subroutine padded_path_and_hash
 
    !> Streaming with explicit metadata and an int64 object (covers the int64
    !> streaming-write overload and the explicit-metadata create branch).

@@ -486,7 +486,7 @@ contains
       type(c_ptr),                                 intent(out) :: hash_ptr
       character(len=:), allocatable :: hash_s
       if (present(hash)) then
-         hash_s = hash
+         hash_s = trim(hash)            ! drop fixed-length padding
       else
          hash_s = 'xxh3'
       end if
@@ -1018,7 +1018,7 @@ contains
       integer(c_int),        intent(out) :: err
       character(kind=c_char), allocatable, target :: path_c(:)
       type(c_ptr) :: out
-      call f_to_cstr(path, path_c)
+      call f_to_cstr(trim(path), path_c)
       err = c_tgm_file_open(c_loc(path_c), out)
       if (err == TGM_ERROR_OK) file%ptr = out
    end subroutine tensogram_file_open
@@ -1030,7 +1030,7 @@ contains
       integer(c_int),        intent(out) :: err
       character(kind=c_char), allocatable, target :: path_c(:)
       type(c_ptr) :: out
-      call f_to_cstr(path, path_c)
+      call f_to_cstr(trim(path), path_c)
       err = c_tgm_file_create(c_loc(path_c), out)
       if (err == TGM_ERROR_OK) file%ptr = out
    end subroutine tensogram_file_create
@@ -1287,7 +1287,7 @@ contains
       character(len=*),         intent(in) :: key
       character(len=:), allocatable :: val
       character(kind=c_char), allocatable, target :: key_c(:)
-      call f_to_cstr(key, key_c)
+      call f_to_cstr(trim(key), key_c)
       val = cptr_to_fstr(c_tgm_metadata_get_string(meta%ptr, c_loc(key_c)))
    end function tensogram_metadata_get_string
 
@@ -1298,7 +1298,7 @@ contains
       integer(c_int64_t),       intent(in) :: default_val
       integer(c_int64_t) :: v
       character(kind=c_char), allocatable, target :: key_c(:)
-      call f_to_cstr(key, key_c)
+      call f_to_cstr(trim(key), key_c)
       v = c_tgm_metadata_get_int(meta%ptr, c_loc(key_c), default_val)
    end function tensogram_metadata_get_int
 
@@ -1309,7 +1309,7 @@ contains
       real(c_double),           intent(in) :: default_val
       real(c_double) :: v
       character(kind=c_char), allocatable, target :: key_c(:)
-      call f_to_cstr(key, key_c)
+      call f_to_cstr(trim(key), key_c)
       v = c_tgm_metadata_get_float(meta%ptr, c_loc(key_c), default_val)
    end function tensogram_metadata_get_float
 
@@ -1351,7 +1351,7 @@ contains
       character(kind=c_char), allocatable, target :: path_c(:), meta_c(:), hash_c(:)
       character(len=:),       allocatable         :: meta_s
       type(c_ptr) :: hash_ptr, out
-      call f_to_cstr(path, path_c)
+      call f_to_cstr(trim(path), path_c)
       if (present(metadata_json)) then
          meta_s = metadata_json
       else
