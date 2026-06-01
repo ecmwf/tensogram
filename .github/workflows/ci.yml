@@ -162,6 +162,43 @@ jobs:
         if: always()
         run: rm -rf "$TMPDIR" .venv target
 
+  # ── Linux: runnable docs examples ──────────────────────────────
+  # mdbook code blocks are NOT exercised by `cargo test` (only `///` doctests
+  # are), so a documented example can silently rot. This runs the
+  # self-contained ones (Rust `fn main()` + Python with their own imports).
+  doc-examples:
+    name: Doc examples
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.3.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      - name: Run runnable docs examples (Rust + Python)
+        run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
+          . .venv/bin/activate
+          uv pip install maturin numpy
+          cd python/bindings && maturin develop && cd ../..
+          # Optional deps used by some doc examples (xarray / zarr / dask);
+          # blocks needing an absent optional dep are skipped, not failed.
+          uv pip install -e "python/tensogram-xarray/[dask]"
+          uv pip install -e python/tensogram-zarr/
+          python scripts/test_doc_examples.py
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv target
+
   # ── Linux: earthkit-data integration ───────────────────────────
   test-earthkit:
     name: Test (earthkit-data integration)

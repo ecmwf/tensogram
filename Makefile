@@ -17,7 +17,7 @@
         fortran-build fortran-test fortran-fpm-test fortran-f2008-check \
         cargo-c-build cargo-c-install cargo-c-smoke \
         mutants-install mutants mutants-diff mutants-shard \
-        wasm-test docs-build \
+        wasm-test docs-build doc-examples \
         ts-install ts-build ts-test ts-typecheck \
         remote-parity-rust-build remote-parity-ts-install remote-parity-fixtures \
         remote-parity-build remote-parity remote-parity-clean
@@ -279,6 +279,15 @@ ts-typecheck: ts-build ## Strict typecheck source + tests
 
 docs-build: ## Build mdbook documentation
 	mdbook build docs/
+
+# Run the self-contained, runnable code examples embedded in docs/src/**/*.md
+# (Rust `fn main()` blocks + self-contained Python blocks). mdbook code blocks
+# are not exercised by `cargo test`, so this gate catches documented examples
+# that stop working. Needs cargo on PATH and the `tensogram` Python binding
+# importable by `$(PYTHON)` (plus any optional deps the examples use, e.g.
+# numpy / xarray / zarr — missing optional deps are skipped, not failed).
+doc-examples: ## Run the runnable code examples in docs/src (Rust + Python)
+	$(PYTHON) scripts/test_doc_examples.py
 
 # ── Remote parity harness ─────────────────────────────────────────────────
 #
