@@ -537,8 +537,11 @@ jobs:
         run: |
           FPM_VERSION=0.10.0
           mkdir -p "$HOME/.local/bin"
+          # v0.10.0 ships a single statically-linked binary named
+          # fpm-<ver>-linux-x86_64 (the -gcc-12 suffix only appears on newer
+          # releases). The static build avoids a libgfortran runtime dependency.
           curl -fsSL -o "$HOME/.local/bin/fpm" \
-            "https://github.com/fortran-lang/fpm/releases/download/v${FPM_VERSION}/fpm-${FPM_VERSION}-linux-x86_64-gcc-12"
+            "https://github.com/fortran-lang/fpm/releases/download/v${FPM_VERSION}/fpm-${FPM_VERSION}-linux-x86_64"
           chmod +x "$HOME/.local/bin/fpm"
           export PATH="$HOME/.local/bin:$PATH"
           make fortran-fpm-test
