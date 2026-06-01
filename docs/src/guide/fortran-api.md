@@ -302,6 +302,23 @@ object out with `tensogram_to_array`. See
 
 Planned next (see `PLAN_FORTRAN.md`): the async surface (deferred).
 
+## Edge cases
+
+The binding fails gracefully rather than crashing:
+
+- **Zero-size tensors** (e.g. `real :: a(0)`) encode and round-trip to a
+  zero-size array.
+- **Out-of-range object indices** (`< 1` or `> num_objects`) return
+  `TGM_ERROR_OBJECT` from `tensogram_to_array`; the raw accessors
+  (`tensogram_object_dtype` / `_ndim` / `_shape`) return an empty / zero
+  result for an out-of-range index rather than aborting.
+- **Empty or truncated wire buffers** decode to a non-`OK` error with
+  `tensogram_last_error()` populated, never a crash.
+- **Zero-object messages** (e.g. a streamed message finished with no
+  writes) are valid and decode to `num_objects == 0`.
+- **Unicode (raw UTF-8) and long strings** in metadata survive the
+  builder / JSON escaper / decode / getter round-trip byte-for-byte.
+
 ## Build and test
 
 ```bash
