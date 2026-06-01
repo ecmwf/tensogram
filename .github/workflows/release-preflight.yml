@@ -100,6 +100,13 @@ jobs:
             check_version "$pkgjson" "$VER"
           done
 
+          # Fortran binding manifests (on the VERSION single-source list in
+          # AGENTS.md): fpm.toml `version` and the CMake `project(... VERSION ...)`.
+          FPM_VER=$(grep '^version' fortran/fpm.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          check_version "fortran/fpm.toml" "$FPM_VER"
+          FCM_VER=$(grep -E '^project\(' fortran/CMakeLists.txt | head -1 | sed -E 's/.*VERSION[[:space:]]+([^ )]+).*/\1/')
+          check_version "fortran/CMakeLists.txt project(VERSION)" "$FCM_VER"
+
           if [ "$ERRORS" -gt 0 ]; then
             echo "::error::$ERRORS version mismatches found"
             exit 1
