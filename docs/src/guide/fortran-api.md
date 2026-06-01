@@ -247,9 +247,10 @@ empty string).
 
 `tensogram_encode`, `tensogram_to_array`, `tensogram_file_append`, and
 `tensogram_streaming_encoder_write` are generic interfaces over **dtype**
-(`real32`, `real64`, `int32`, `int64`) and **rank** (`0`–`7`). `a` / `out` are assumed-rank; the dtype is
-resolved from the array's type/kind, the rank from the array itself. A
-dtype mismatch on decode returns `TGM_ERROR_OBJECT`.
+(`real32`, `real64`, `int32`, `int64`) and **rank** (`0`–`7`). The dtype is
+resolved from the array's type/kind, the rank from the array itself (ranks
+above 7 are unsupported and fail to compile). A dtype mismatch on decode
+returns `TGM_ERROR_OBJECT`.
 (`int8`/`int16`/`complex`/`float16` are follow-ups — Fortran has no
 native unsigned or half/complex-as-pair mapping.)
 
