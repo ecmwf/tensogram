@@ -1159,6 +1159,19 @@ contains
       character(len=:), allocatable :: o
       integer   :: i, c
       character :: ch
+      ! Fast path: most keys/values contain nothing that needs escaping, so
+      ! return the input unchanged (a single allocation) rather than rebuilding
+      ! it character by character. " (34), \ (92), and control chars (< 32) are
+      ! the only characters this escaper rewrites.
+      do i = 1, len(s)
+         c = iachar(s(i:i))
+         if (c == 34 .or. c == 92 .or. c < 32) exit
+      end do
+      if (i > len(s)) then
+         o = s
+         return
+      end if
+      ! Slow path: at least one character needs escaping.
       o = ''
       do i = 1, len(s)
          ch = s(i:i)

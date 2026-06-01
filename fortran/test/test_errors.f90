@@ -56,6 +56,11 @@ program test_errors
    call wrong_dtype(msg, err)
    call assert(err == TGM_ERROR_OBJECT, 'wrong-dtype to_array -> OBJECT')
 
+   ! Integrity: verify_hash accepts a valid message and rejects a corrupted
+   ! payload with TGM_ERROR_HASH_MISMATCH; with verification off the same bytes
+   ! still decode (the digest is not checked).
+   call hash_verify_check()
+
    ! Static descriptions exist for every known code.
    call assert(len(tensogram_strerror(TGM_ERROR_FRAMING))  > 0, 'strerror FRAMING')
    call assert(len(tensogram_strerror(TGM_ERROR_ENCODING)) > 0, 'strerror ENCODING')
@@ -64,6 +69,26 @@ program test_errors
    print '(a)', 'test_errors: PASS'
 
 contains
+
+   subroutine hash_verify_check()
+      real(c_float)              :: big(256)
+      integer(c_int8_t), allocatable :: w(:)
+      type(tensogram_buffer)  :: b
+      type(tensogram_message) :: m
+      integer(c_int) :: e
+      integer :: k, mid
+      do k = 1, 256; big(k) = real(k, c_float) * 1.5_c_float; end do
+      call tensogram_encode(big, b, e); call assert(e == TGM_ERROR_OK, 'hash: encode')
+      call b%as_array(w)
+      call tensogram_decode(w, m, e, verify_hash=.true.)
+      call assert(e == TGM_ERROR_OK, 'verify valid -> OK')
+      mid = size(w) / 2                       ! payload dominates -> hash scope
+      w(mid) = not(w(mid))                    ! flip a payload byte
+      call tensogram_decode(w, m, e, verify_hash=.true.)
+      call assert(e == TGM_ERROR_HASH_MISMATCH, 'verify corrupt -> HASH_MISMATCH')
+      call tensogram_decode(w, m, e, verify_hash=.false.)
+      call assert(e == TGM_ERROR_OK, 'no-verify corrupt -> decodes (digest unchecked)')
+   end subroutine hash_verify_check
 
    subroutine wrong_dtype(m, e)
       type(tensogram_message), intent(in)  :: m
