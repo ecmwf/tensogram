@@ -30,5 +30,12 @@ auto-examples = false
 auto-tests = false
 link = ["tensogram"]          # -ltensogram (paths via the pkg-config flags above)
 
+# The binding module is `tensogram.F90` (capital F): it uses the C preprocessor
+# to expand the rank-generic encode/decode surface from per-rank templates
+# (src/tgm_*.inc, PLAN_FORTRAN.md §5.2) — the Fortran 2008 substitute for
+# assumed-rank + SELECT RANK. Enable cpp so fpm preprocesses it like CMake does.
+[preprocess]
+[preprocess.cpp]
+
 [library]
 source-dir = "src"

@@ -7,16 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added — Fortran interface (synchronous core)
 
-A Fortran 2018 binding (`fortran/`) over the existing `libtensogram`
+A Fortran 2008 binding (`fortran/`) over the existing `libtensogram`
 C ABI — no new C or Rust code. `tensogram_encode` / `tensogram_to_array`
 encode and decode native Fortran arrays through a single generic
 interface over **dtype** (`real32`, `real64`, `int32`, `int64`) and
-**rank** (`0`–`7`), using assumed-rank dummies. Decoded objects are
-inspected with `tensogram_num_objects` / `_object_ndim` / `_object_shape`
-/ `_object_dtype`. The surface uses idiomatic `tensogram_*` procedures,
-RAII handle types (`tensogram_buffer` / `tensogram_message`), and a
-non-copyable handle guard that `error stop`s on an accidental `b = a`
-rather than aliasing and double-freeing.
+**rank** (`0`–`7`), implemented as explicit per-rank specifics expanded by
+the C preprocessor from per-rank templates (`fortran/src/tgm_*.inc` in the
+`.F90` module) — so the library compiles clean under
+`-std=f2008 -Wall -Wextra -Werror`, with no F2018-only assumed-rank or
+`SELECT RANK`. Decoded objects are inspected with `tensogram_num_objects`
+/ `_object_ndim` / `_object_shape` / `_object_dtype`. The surface uses
+idiomatic `tensogram_*` procedures, RAII handle types (`tensogram_buffer`
+/ `tensogram_message`), and a non-copyable handle guard that `error stop`s
+on an accidental `b = a` rather than aliasing and double-freeing. The CI
+`fortran-f2008-check` gate keeps the library F2008-conformant; note that
+gfortran emits a benign `f08/0011` advisory for the RAII handle types when
+used as *locals* under `-std=f2008` (valid F2008), so application and
+example code uses `-std=f2018`.
 
 A multi-message **file API** completes the synchronous surface:
 `tensogram_file_open` / `_create` / `_message_count` / `_append`

@@ -25,10 +25,17 @@ Or compile a single example directly against an installed `tensogram.pc`:
 
 ```bash
 gfortran -std=f2018 \
-    fortran/src/tensogram.f90 examples/fortran/encode_decode.f90 \
+    fortran/src/tensogram.F90 examples/fortran/encode_decode.f90 \
     $(pkg-config --cflags --libs tensogram) -o encode_decode
 ./encode_decode
 ```
+
+The binding module is `tensogram.F90` (capital F — preprocessed
+automatically); keep the `fortran/src/tgm_*.inc` templates beside it.
+`-std=f2018` is used here because example/application code that declares
+handle locals trips a gfortran `f08/0011` advisory under `-std=f2008`
+(valid F2008; see the Fortran API guide). The binding *library* itself is
+F2008-clean.
 
 ## Note on array order
 

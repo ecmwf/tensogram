@@ -28,12 +28,30 @@ option(TENSOGRAM_FORTRAN_TESTS    "Build the Fortran tests"    ON)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(TENSOGRAM REQUIRED IMPORTED_TARGET tensogram)
 
+# Fortran standard to enforce via the GNU `-std=` flag. The binding LIBRARY is
+# Fortran 2008: the rank-generic encode/decode/append/streaming surface uses
+# explicit per-rank specifics (src/tgm_*.inc, expanded by cpp) rather than the
+# F2018 assumed-rank + SELECT RANK, so `src/tensogram.F90` compiles clean under
+# `-std=f2008 -Wall -Wextra -Werror`.
+#
+# The DEFAULT is f2018 because the examples and tests declare handle LOCALS,
+# and gfortran's `-std=f2008` emits an unconditional f08/0011 advisory for any
+# finalizable + default-initialized type used as a local (the handle RAII /
+# null-safety design, PLAN_FORTRAN.md §5.4) — valid F2008, but `-Werror`
+# rejects it. So the full tree builds under f2018; F2008 conformance is gated
+# on the LIBRARY alone (the `fortran-f2008-check` make target / CI step), which
+# configures with TESTS and EXAMPLES OFF. `-DTENSOGRAM_FORTRAN_STD=f2008`
+# remains a repeatable audit knob.
+set(TENSOGRAM_FORTRAN_STD "f2018" CACHE STRING
+    "Fortran standard via GNU -std= (library is f2008-clean; f2018 default builds the full tree)")
+set_property(CACHE TENSOGRAM_FORTRAN_STD PROPERTY STRINGS f2008 f2018 f2003 gnu)
+
 # Standard-conformance + warnings-as-errors on GNU (the supported compiler for
 # the initial arc; PLAN_FORTRAN.md §10). Scoped to Fortran so the optional
 # C++ cross-language harness (below) is not given Fortran flags.
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
   add_compile_options(
-    "$<$<COMPILE_LANGUAGE:Fortran>:-std=f2018>"
+    "$<$<COMPILE_LANGUAGE:Fortran>:-std=${TENSOGRAM_FORTRAN_STD}>"
     "$<$<COMPILE_LANGUAGE:Fortran>:-Wall>"
     "$<$<COMPILE_LANGUAGE:Fortran>:-Wextra>"
     "$<$<COMPILE_LANGUAGE:Fortran>:-Werror>")
@@ -42,7 +60,7 @@ endif()
 # Emit .mod files into a known directory and expose it to consumers.
 set(CMAKE_Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
-add_library(tensogram_f STATIC src/tensogram.f90)
+add_library(tensogram_f STATIC src/tensogram.F90)
 target_link_libraries(tensogram_f PUBLIC PkgConfig::TENSOGRAM)
 target_include_directories(tensogram_f PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/mod>
@@ -166,6 +184,6 @@ if(TENSOGRAM_FORTRAN_TESTS)
   if(EXISTS ${_tgm_header} AND BASH_PROGRAM)
     add_test(NAME error_enum_consistency
       COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_error_enum.sh
-              ${CMAKE_CURRENT_SOURCE_DIR}/src/tensogram.f90 ${_tgm_header})
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/tensogram.F90 ${_tgm_header})
   endif()
 endif()

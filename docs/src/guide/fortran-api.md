@@ -1,9 +1,11 @@
 # Fortran API
 
-Tensogram ships a shallow **Fortran 2018** binding (`fortran/`) over
+Tensogram ships a shallow **Fortran 2008** binding (`fortran/`) over
 the [C ABI](c-api.md). It is a thin `iso_c_binding` layer that links the
 same `libtensogram` the C and C++ wrappers use — no new C or Rust code —
 following the `eccodes_f90` model ECMWF Fortran codes already expect.
+The library compiles clean under `-std=f2008 -Wall -Wextra -Werror`; see
+[Fortran standard](#fortran-standard) for the one gfortran caveat.
 
 > **Status.** Emerging. The synchronous surface is complete: generic
 > encode/decode, the multi-message file API, application metadata, the
@@ -58,9 +60,11 @@ In your own project:
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(TENSOGRAM REQUIRED IMPORTED_TARGET tensogram)
 
-# The binding is a single module file. The simplest integration is to
-# compile it into your own target and link the C ABI:
-add_executable(my_app /path/to/tensogram/fortran/src/tensogram.f90 my_app.f90)
+# The binding is one preprocessed module source (tensogram.F90) plus the
+# per-rank include templates beside it (src/tgm_*.inc). The simplest
+# integration is to compile it into your own target and link the C ABI
+# (the .F90 is preprocessed automatically; the .inc files resolve from src/):
+add_executable(my_app /path/to/tensogram/fortran/src/tensogram.F90 my_app.f90)
 target_link_libraries(my_app PRIVATE PkgConfig::TENSOGRAM)
 
 # Alternatively, if you have the repository checked out, build the binding's
@@ -83,9 +87,27 @@ fpm build \
 ### Plain gfortran
 
 ```bash
-gfortran -std=f2018 fortran/src/tensogram.f90 my_app.f90 \
+gfortran -std=f2018 fortran/src/tensogram.F90 my_app.f90 \
     $(pkg-config --cflags --libs tensogram) -o my_app
 ```
+
+The `.F90` (capital F) is preprocessed automatically; keep the
+`src/tgm_*.inc` templates beside it.
+
+### Fortran standard
+
+The binding **library** is Fortran 2008 and builds clean under
+`-std=f2008 -Wall -Wextra -Werror` (the rank-generic surface uses explicit
+per-rank specifics, not the F2018 assumed-rank + `SELECT RANK`). The
+examples above use `-std=f2018` for one reason: the handle types pair a
+`final` procedure with default initialization (the RAII / null-safety
+design), and **gfortran** emits an `f08/0011` advisory wherever such a type
+is used as a *local variable* under `-std=f2008` — which includes your own
+application code. That construct is valid Fortran 2008; the advisory is a
+gfortran diagnostic that `-Werror` would promote to an error. So if you
+compile your application with `-std=f2008`, either drop `-Werror`, or use
+`-std=f2018` / `-std=gnu`. (The library itself has no such locals and stays
+warning-clean, which is what the CI `fortran-f2008-check` gate verifies.)
 
 ## Quick start
 

@@ -8,12 +8,12 @@
 # does it submit to any jurisdiction.
 #
 # Single source of truth for error codes (AGENTS.md): the Fortran
-# TGM_ERROR_* parameter mirror in tensogram.f90 must match the C `tgm_error`
+# TGM_ERROR_* parameter mirror in tensogram.F90 must match the C `tgm_error`
 # enum in tensogram.h exactly. Fails (non-zero) on any drift, so a new
 # variant added to the header without updating the Fortran mirror is caught
 # at CI time.
 #
-# Usage: check_error_enum.sh <tensogram.f90> <tensogram.h>
+# Usage: check_error_enum.sh <tensogram.F90> <tensogram.h>
 
 set -euo pipefail
 

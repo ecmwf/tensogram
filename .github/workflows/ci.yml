@@ -530,6 +530,13 @@ jobs:
       - name: Build + test the Fortran binding (CMake + CTest)
         run: make fortran-test
 
+      # Fortran 2008 conformance gate: the binding library must keep compiling
+      # under -std=f2008 -Wall -Wextra -Werror (no assumed-rank / SELECT RANK).
+      # Library only — examples/tests declare handle locals that trip gfortran's
+      # f08/0011 advisory under -std=f2008 (valid F2008; see PLAN_FORTRAN.md §5.4).
+      - name: Check the Fortran binding compiles under -std=f2008 (library gate)
+        run: make fortran-f2008-check
+
       # fpm has no pkg-config integration, so the flags are injected by the
       # make target. This compiles the binding through the fpm manifest as a
       # drift check against the (authoritative) CMake build.
