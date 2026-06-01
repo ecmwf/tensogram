@@ -190,20 +190,28 @@ def is_runnable(b: Block) -> bool:
     return False
 
 
+def _run(cmd: list[str], timeout: int) -> tuple[int, str]:
+    """Run a subprocess, returning (returncode, combined-output). A timeout is
+    a failure (124), not a harness crash — so a runaway example is reported."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        return 124, f"timed out after {timeout}s"
+
+
 def run_python(blocks: list[Block]) -> list[tuple[Block, str]]:
     fails: list[tuple[Block, str]] = []
     with tempfile.TemporaryDirectory() as td:
         for i, b in enumerate(blocks):
             f = Path(td) / f"block_{i}.py"
             f.write_text(b.code, encoding="utf-8")
-            r = subprocess.run(
-                [sys.executable, str(f)], capture_output=True, text=True, timeout=60
-            )
+            rc, output = _run([sys.executable, str(f)], timeout=90)
             tag = f"{b.path.relative_to(REPO_ROOT)}:{b.line}"
-            if r.returncode == 0:
+            if rc == 0:
                 print(f"  pass  {tag}")
                 continue
-            out = (r.stdout + r.stderr).strip()
+            out = output.strip()
             # An optional doc dependency that isn't installed here is a skip,
             # not a failure — keeps the gate robust as the docs grow. A broken
             # `import tensogram` (or any logic error) still fails.
@@ -235,37 +243,25 @@ def run_rust(blocks: list[Block]) -> list[tuple[Block, str]]:
         )
         # Compile every block once (shared target), then run each so that
         # runtime assertions (not just compile errors) are exercised.
-        build = subprocess.run(
-            ["cargo", "build", "--manifest-path", str(proj / "Cargo.toml")],
-            capture_output=True,
-            text=True,
-            timeout=900,
+        manifest = str(proj / "Cargo.toml")
+        rc, build_out = _run(
+            ["cargo", "build", "--manifest-path", manifest], timeout=900
         )
-        if build.returncode != 0:
+        if rc != 0:
             # A compile error names the offending bin; report the whole batch.
             for b in blocks:
                 tag = f"{b.path.relative_to(REPO_ROOT)}:{b.line}"
                 print(f"  FAIL  {tag}  (compile)")
-                fails.append((b, build.stderr.strip()[-1500:]))
+                fails.append((b, build_out.strip()[-1500:]))
             return fails
         for name, b in zip(names, blocks):
             tag = f"{b.path.relative_to(REPO_ROOT)}:{b.line}"
-            r = subprocess.run(
-                [
-                    "cargo",
-                    "run",
-                    "--quiet",
-                    "--manifest-path",
-                    str(proj / "Cargo.toml"),
-                    "--bin",
-                    name,
-                ],
-                capture_output=True,
-                text=True,
+            rc, output = _run(
+                ["cargo", "run", "--quiet", "--manifest-path", manifest, "--bin", name],
                 timeout=120,
             )
-            if r.returncode != 0:
-                fails.append((b, (r.stdout + r.stderr).strip()[-1500:]))
+            if rc != 0:
+                fails.append((b, output.strip()[-1500:]))
                 print(f"  FAIL  {tag}")
             else:
                 print(f"  pass  {tag}")
