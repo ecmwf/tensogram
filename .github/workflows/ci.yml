@@ -479,7 +479,9 @@ jobs:
   # Links the cargo-c-installed C ABI via pkg-config (matching the user
   # flow). CMake is the system of record; CTest runs the round-trip,
   # dtype/rank, file API, metadata, error, copy-guard, the error-enum
-  # consistency check, and the bidirectional Fortran<->C/C++ parity tests.
+  # consistency check, and the bidirectional Fortran<->C/C++ AND
+  # Fortran<->Python parity tests. The library is also built via fpm so the
+  # fpm manifest cannot drift from the CMake build (PLAN_FORTRAN.md §5.6).
   fortran:
     name: Fortran (Linux)
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
@@ -512,8 +514,34 @@ jobs:
           echo "PKG_CONFIG_PATH=$PFX/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$PFX/lib" >> "$GITHUB_ENV"
 
+      # Build the Python binding so the Fortran<->Python parity tests in the
+      # CMake suite are actually exercised (they are skipped when `import
+      # tensogram` fails). Put the venv's python first on PATH so CMake's
+      # find_program(python3) discovers the binding-bearing interpreter.
+      - name: Set up the Python binding (for Fortran<->Python parity)
+        run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
+          . .venv/bin/activate
+          uv pip install maturin numpy
+          cd python/bindings && maturin develop && cd ../..
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
       - name: Build + test the Fortran binding (CMake + CTest)
         run: make fortran-test
+
+      # fpm has no pkg-config integration, so the flags are injected by the
+      # make target. This compiles the binding through the fpm manifest as a
+      # drift check against the (authoritative) CMake build.
+      - name: Build the Fortran binding via fpm (drift check)
+        run: |
+          FPM_VERSION=0.10.0
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/fpm" \
+            "https://github.com/fortran-lang/fpm/releases/download/v${FPM_VERSION}/fpm-${FPM_VERSION}-linux-x86_64-gcc-12"
+          chmod +x "$HOME/.local/bin/fpm"
+          export PATH="$HOME/.local/bin:$PATH"
+          make fortran-fpm-test
 
       - name: sccache stats
         if: always()
@@ -521,7 +549,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" build target .ffi-prefix
+        run: rm -rf "$TMPDIR" build target .ffi-prefix .venv fortran/build
 
   # ── C++: macOS ─────────────────────────────────────────────────
   cpp-macos:
