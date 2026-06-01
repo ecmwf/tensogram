@@ -185,9 +185,9 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
       Fortran↔Fortran round-trips are bit-identical and a NumPy / C
       reader sees the transpose. This is the single most consequential
       decision — document it loudly against the existing readers.
-    - **Synchronous first.** Ship encode/decode + the file API; defer the
-      streaming encoder and the whole async surface (the C async path
-      uses completion callbacks — hardest part, least demand).
+    - **Synchronous first.** Ship encode/decode, the file API, and the
+      streaming encoder; defer the async surface (the C async path uses
+      completion callbacks — hardest part, least demand).
     - **Distribution**: `fpm` plus CMake/pkg-config against the shipped
       `tensogram.pc`; lands as `fortran/` beside `cpp/`, with
       `examples/fortran/` and a `docs/src/guide/fortran-api.md` guide.
