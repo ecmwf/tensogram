@@ -474,6 +474,35 @@ contains
       end if
    end function host_byte_order
 
+   !> Resolve the optional hash-algorithm name to a C string pointer. Fills
+   !> `hash_c` (a caller-owned target buffer that must outlive the C call) and
+   !> `hash_ptr`: a present-but-empty name means "no hash" (NULL); absent means
+   !> the default "xxh3".
+   subroutine resolve_hash(hash, hash_c, hash_ptr)
+      character(len=*), intent(in), optional :: hash
+      character(kind=c_char), allocatable, target, intent(out) :: hash_c(:)
+      type(c_ptr),                                 intent(out) :: hash_ptr
+      character(len=:), allocatable :: hash_s
+      if (present(hash)) then
+         hash_s = hash
+      else
+         hash_s = 'xxh3'
+      end if
+      if (len(hash_s) == 0) then
+         hash_ptr = c_null_ptr
+      else
+         call f_to_cstr(hash_s, hash_c)
+         hash_ptr = c_loc(hash_c)
+      end if
+   end subroutine resolve_hash
+
+   !> Total element count for a Fortran extent vector (1 for a scalar / empty).
+   pure function num_elements(ext) result(n)
+      integer(c_int64_t), intent(in) :: ext(:)
+      integer(c_size_t) :: n
+      n = product([1_c_size_t, int(ext, c_size_t)])
+   end function num_elements
+
    !> Build the one-object descriptor JSON. `fshape` is the Fortran
    !> (column-major) extents; the on-wire shape and C-contiguous strides are
    !> the REVERSE (PLAN_FORTRAN.md §5.1). `extra`, if present, is raw JSON of
@@ -650,26 +679,14 @@ contains
       character(len=*), intent(in), optional :: encoding, filter, compression
 
       character(kind=c_char), allocatable, target :: meta_c(:), hash_c(:)
-      character(len=:),       allocatable         :: meta_s, hash_s
+      character(len=:),       allocatable         :: meta_s
       type(c_ptr),       target :: ptrs(1)
       integer(c_size_t), target :: lens(1)
       type(c_ptr)               :: hash_ptr
 
       meta_s = descriptor_json(fshape, dtype, metadata_json, encoding, filter, compression)
       call f_to_cstr(meta_s, meta_c)
-
-      if (present(hash)) then
-         hash_s = hash
-      else
-         hash_s = 'xxh3'
-      end if
-      if (len(hash_s) == 0) then
-         hash_ptr = c_null_ptr
-      else
-         call f_to_cstr(hash_s, hash_c)
-         hash_ptr = c_loc(hash_c)
-      end if
-
+      call resolve_hash(hash, hash_c, hash_ptr)
       ptrs(1) = ptr
       lens(1) = nbytes
       err = c_tgm_encode(c_loc(meta_c), c_loc(ptrs), c_loc(lens), &
@@ -844,7 +861,7 @@ contains
       rank(7); allocate(out(ext(1),ext(2),ext(3),ext(4),ext(5),ext(6),ext(7)))
       rank default; err = TGM_ERROR_OBJECT; return
       end select
-      nelem = product([1_c_size_t, int(ext, c_size_t)])
+      nelem = num_elements(ext)
       call c_f_pointer(dptr,       src, [nelem])
       call c_f_pointer(c_loc(out), dst, [nelem])
       dst = src
@@ -872,7 +889,7 @@ contains
       rank(7); allocate(out(ext(1),ext(2),ext(3),ext(4),ext(5),ext(6),ext(7)))
       rank default; err = TGM_ERROR_OBJECT; return
       end select
-      nelem = product([1_c_size_t, int(ext, c_size_t)])
+      nelem = num_elements(ext)
       call c_f_pointer(dptr,       src, [nelem])
       call c_f_pointer(c_loc(out), dst, [nelem])
       dst = src
@@ -900,7 +917,7 @@ contains
       rank(7); allocate(out(ext(1),ext(2),ext(3),ext(4),ext(5),ext(6),ext(7)))
       rank default; err = TGM_ERROR_OBJECT; return
       end select
-      nelem = product([1_c_size_t, int(ext, c_size_t)])
+      nelem = num_elements(ext)
       call c_f_pointer(dptr,       src, [nelem])
       call c_f_pointer(c_loc(out), dst, [nelem])
       dst = src
@@ -928,7 +945,7 @@ contains
       rank(7); allocate(out(ext(1),ext(2),ext(3),ext(4),ext(5),ext(6),ext(7)))
       rank default; err = TGM_ERROR_OBJECT; return
       end select
-      nelem = product([1_c_size_t, int(ext, c_size_t)])
+      nelem = num_elements(ext)
       call c_f_pointer(dptr,       src, [nelem])
       call c_f_pointer(c_loc(out), dst, [nelem])
       dst = src
@@ -1043,23 +1060,13 @@ contains
       character(len=*), intent(in), optional :: metadata_json, hash
       character(len=*), intent(in), optional :: encoding, filter, compression
       character(kind=c_char), allocatable, target :: meta_c(:), hash_c(:)
-      character(len=:),       allocatable         :: meta_s, hash_s
+      character(len=:),       allocatable         :: meta_s
       type(c_ptr),       target :: ptrs(1)
       integer(c_size_t), target :: lens(1)
       type(c_ptr)               :: hash_ptr
       meta_s = descriptor_json(fshape, dtype, metadata_json, encoding, filter, compression)
       call f_to_cstr(meta_s, meta_c)
-      if (present(hash)) then
-         hash_s = hash
-      else
-         hash_s = 'xxh3'
-      end if
-      if (len(hash_s) == 0) then
-         hash_ptr = c_null_ptr
-      else
-         call f_to_cstr(hash_s, hash_c)
-         hash_ptr = c_loc(hash_c)
-      end if
+      call resolve_hash(hash, hash_c, hash_ptr)
       ptrs(1) = ptr
       lens(1) = nbytes
       err = c_tgm_file_append(file_ptr, c_loc(meta_c), c_loc(ptrs), c_loc(lens), &
@@ -1296,7 +1303,7 @@ contains
       integer(c_int),                    intent(out) :: err
       character(len=*), intent(in), optional :: metadata_json, hash
       character(kind=c_char), allocatable, target :: path_c(:), meta_c(:), hash_c(:)
-      character(len=:),       allocatable         :: meta_s, hash_s
+      character(len=:),       allocatable         :: meta_s
       type(c_ptr) :: hash_ptr, out
       call f_to_cstr(path, path_c)
       if (present(metadata_json)) then
@@ -1305,17 +1312,7 @@ contains
          meta_s = '{}'
       end if
       call f_to_cstr(meta_s, meta_c)
-      if (present(hash)) then
-         hash_s = hash
-      else
-         hash_s = 'xxh3'
-      end if
-      if (len(hash_s) == 0) then
-         hash_ptr = c_null_ptr
-      else
-         call f_to_cstr(hash_s, hash_c)
-         hash_ptr = c_loc(hash_c)
-      end if
+      call resolve_hash(hash, hash_c, hash_ptr)
       err = c_tgm_streaming_encoder_create(c_loc(path_c), c_loc(meta_c), hash_ptr, &
                                            0_c_int32_t, out)
       if (err == TGM_ERROR_OK) enc%ptr = out
