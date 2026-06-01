@@ -137,6 +137,18 @@ contains
          call assert(err == TGM_ERROR_OK, 'empty base_json encode')
       end block
 
+      ! A complete JSON object is accepted too (same contract as streaming):
+      ! the outer braces are stripped so the result stays one valid object.
+      block
+         type(tensogram_metadata) :: meta2
+         call tensogram_encode(a, buf, err, metadata_json='{"base":[{"tag":"obj"}]}')
+         call assert(err == TGM_ERROR_OK, 'complete-object metadata encode')
+         call buf%as_array(wire); call tensogram_decode(wire, msg, err)
+         call tensogram_message_metadata(msg, meta2, err)
+         call assert(tensogram_metadata_get_string(meta2, 'tag') == 'obj', &
+                     'complete-object metadata round-trip')
+      end block
+
       ! Correct dtype but wrong target rank -> OBJECT (the rank-mismatch path).
       block
          real(c_float), allocatable :: out2(:,:)

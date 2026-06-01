@@ -558,11 +558,20 @@ contains
       character(len=*),   intent(in)           :: dtype
       character(len=*),   intent(in), optional :: extra
       character(len=*),   intent(in), optional :: encoding, filter, compression
-      character(len=:), allocatable :: js
+      character(len=:), allocatable :: js, e
       js = '{"descriptors":[' // &
            descriptor_object_json(fshape, dtype, encoding, filter, compression) // ']'
       if (present(extra)) then
-         if (len_trim(extra) > 0) js = js // ',' // trim(extra)
+         ! `extra` may be a complete JSON object (`{ ... }`, matching the
+         ! streaming metadata argument) or a raw top-level key fragment
+         ! (`"base":[...]`, e.g. the output of tensogram_meta%base_json()).
+         ! Strip the outer braces of a complete object so the result is a
+         ! single valid object either way.
+         e = trim(adjustl(extra))
+         if (len(e) >= 2) then
+            if (e(1:1) == '{' .and. e(len(e):len(e)) == '}') e = e(2:len(e) - 1)
+         end if
+         if (len_trim(e) > 0) js = js // ',' // e
       end if
       js = js // '}'
    end function descriptor_json

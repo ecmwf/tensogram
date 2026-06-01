@@ -294,6 +294,11 @@ print *, tensogram_metadata_get_string(meta, 'name')          ! temperature
 print *, tensogram_metadata_get_int(meta, 'level', -1_c_int64_t)  ! 850
 ```
 
+The `metadata_json` argument of `tensogram_encode` / `tensogram_file_append`
+accepts either the builder's fragment (`m%base_json()`) or a complete JSON
+object such as `'{"base":[{...}]}'` (the same shape the streaming encoder's
+`metadata_json` takes) — both produce the same message.
+
 The library remains vocabulary-agnostic: `tensogram_meta` just builds the
 `base` JSON; the meaning of the keys is the application's concern.
 
