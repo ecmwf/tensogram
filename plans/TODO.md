@@ -165,6 +165,29 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
 
 ## Multi-Language Support
 
+  - [ ] **fortran-interface — follow-ups (synchronous binding DELIVERED)**
+    The shallow `iso_c_binding` binding over the C FFI has **shipped**: the
+    `fortran/` Fortran 2008 library (Path A — a hand-written module over the
+    existing `libtensogram`, no new C/Rust code), with generic encode/decode,
+    the file API, metadata + the encoding pipeline, and the streaming encoder;
+    the column-major contract (reversed on-wire shape/strides); examples;
+    tests; the user guide (`docs/src/guide/fortran-api.md`); and CI — CMake +
+    fpm, the `fortran-f2008-check` conformance gate, bidirectional
+    Fortran↔C/C++ and Fortran↔Python parity, and the error-enum↔`tensogram.h`
+    consistency check. `fortran/fpm.toml` is on the VERSION-sync list. See
+    `PLAN_FORTRAN.md` (§7 milestones, §10 decisions) and the `CHANGELOG`.
+    Remaining, demand-driven follow-ups:
+    - **Async surface** — the C async path uses completion callbacks (the
+      hardest part to bind and the least in demand for blocking NWP codes).
+      Bind the blocking `tgm_async_task_join_*` variants before callbacks;
+      do not start without a real consumer (PLAN_FORTRAN.md §5.7).
+    - **Extra dtypes** — `int8`/`int16`/`complex`/`float16`. Fortran has no
+      native unsigned or half/complex-as-pair scalar mapping, so each needs a
+      deliberate representation decision.
+    - **Zero-copy non-contiguous input** via `CFI_cdesc_t` / TS 29113 — only
+      worth it if a concrete need appears; the contiguous-gather path covers
+      today's usage (PLAN_FORTRAN.md §4.1, Path C).
+
   - [ ] **typescript-wrapper (Scope C.3) — distribution & CI maturity**
     Three intertwined tasks that all touch the build, pack, and publish
     pipeline. Best done together so we don't re-open CI config three

@@ -5,6 +5,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Fortran interface (synchronous core)
+
+A Fortran 2008 binding (`fortran/`) over the existing `libtensogram`
+C ABI — no new C or Rust code. `tensogram_encode` / `tensogram_to_array`
+encode and decode native Fortran arrays through a single generic
+interface over **dtype** (`real32`, `real64`, `int32`, `int64`) and
+**rank** (`0`–`7`), implemented as explicit per-rank specifics expanded by
+the C preprocessor from per-rank templates (`fortran/src/tgm_*.inc` in the
+`.F90` module) — so the library compiles clean under
+`-std=f2008 -Wall -Wextra -Werror`, with no F2018-only assumed-rank or
+`SELECT RANK`. Decoded objects are inspected with `tensogram_num_objects`
+/ `_object_ndim` / `_object_shape` / `_object_dtype`. The surface uses
+idiomatic `tensogram_*` procedures, RAII handle types (`tensogram_buffer`
+/ `tensogram_message`), and a non-copyable handle guard that `error stop`s
+on an accidental `b = a` rather than aliasing and double-freeing. The CI
+`fortran-f2008-check` gate keeps the library F2008-conformant; note that
+gfortran emits a benign `f08/0011` advisory for the RAII handle types when
+used as *locals* under `-std=f2008` (valid F2008), so application and
+example code uses `-std=f2018`.
+
+A multi-message **file API** completes the synchronous surface:
+`tensogram_file_open` / `_create` / `_message_count` / `_append`
+(generic, encodes one array per message) / `_decode_message` /
+`_read_message`, with a non-copyable `tensogram_file` RAII handle and
+1-based message indices. New `examples/fortran/file_api.f90` shows the
+append-then-random-access pattern.
+
+**Metadata ergonomics and the encoding pipeline.** Encode and append now
+accept optional `encoding` / `filter` / `compression` (e.g. lossless
+`compression="zstd"`). Per-object application metadata is built with the
+zero-dependency `tensogram_meta` builder (`add_string` / `add_int` /
+`add_real` / `base_json`, with JSON escaping) and read back with
+`tensogram_message_metadata` + the dot-notation getters
+`tensogram_metadata_get_string` / `_int` / `_float`.
+
+**Streaming encoder.** `tensogram_streaming_encoder` writes a single
+multi-object message to a file progressively — preamble + header metadata
+on `_create`, one data-object frame per `_write` (generic over dtype and
+rank, with optional compression), footer + postamble on `_finish` —
+without buffering the whole message. Non-copyable RAII handle;
+`tensogram_streaming_encoder_count` reports progress. New
+`examples/fortran/streaming.f90`.
+
+**Cross-language parity.** New tests assert the column-major contract in
+both directions against a C/C++ reader/writer — a Fortran-encoded
+`a(ni,nj)` decodes in C/C++ as the transpose `[nj,ni]`, and a C/C++-encoded
+`[nj,ni]` tensor decodes in Fortran as `out(ni,nj)` — bit-identically and
+through a lossless (zstd) pipeline. The same is checked **both ways**
+against Python/NumPy (Fortran→Python and Python→Fortran).
+
+Native array ergonomics come from the Fortran 2008 `contiguous`
+attribute, so the array descriptor never crosses the FFI boundary. A
+Fortran `a(ni,nj)` is written with the on-wire shape/strides reversed to
+C order: Fortran↔Fortran round-trips are bit-identical, while a NumPy / C
+reader sees the transpose `(nj, ni)`. A Fortran→Python parity test
+verifies this contract.
+
+CMake is the build system of record (pkg-config discovery of
+`tensogram.pc`); an `fpm` manifest is retained as a Fortran-native
+devloop. New `examples/fortran/encode_decode.f90`, the user guide
+`docs/src/guide/fortran-api.md`, and `make fortran-build` /
+`fortran-test` targets. The full staged roadmap lives in
+`PLAN_FORTRAN.md`.
+
 ### Added — Asynchronous C++ API
 
 A header-only asynchronous read/write surface for the C++ wrapper,

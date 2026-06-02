@@ -1,0 +1,249 @@
+! (C) Copyright 2026- ECMWF and individual contributors.
+!
+! This software is licensed under the terms of the Apache Licence Version 2.0
+! which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+! In applying this licence, ECMWF does not waive the privileges and immunities
+! granted to it by virtue of its status as an intergovernmental organisation nor
+! does it submit to any jurisdiction.
+
+!> Edge-case behaviour of the Fortran binding: zero-size tensors, out-of-range
+!> object indices, too-short / empty decode buffers, zero-object streaming
+!> messages, and Unicode / long-string metadata. Each must fail gracefully
+!> (clean error or empty result) rather than crash, or round-trip exactly.
+program test_edge_cases
+   use, intrinsic :: iso_c_binding
+   use tensogram
+   implicit none
+
+   call empty_array_roundtrip()
+   call out_of_range_object()
+   call short_buffer_decode()
+   call zero_object_stream()
+   call unicode_and_long_metadata()
+   call explicit_options_and_empty_buffer()
+   call streaming_i64_and_metadata()
+   call padded_path_and_hash()
+
+   print '(a)', 'test_edge_cases: PASS'
+
+contains
+
+   subroutine assert(cond, what)
+      logical,          intent(in) :: cond
+      character(len=*), intent(in) :: what
+      if (.not. cond) then
+         print '(a,a)', 'test_edge_cases: FAIL: ', what
+         error stop 1
+      end if
+   end subroutine assert
+
+   !> A zero-element tensor encodes and round-trips to a zero-size array.
+   subroutine empty_array_roundtrip()
+      real(c_float)              :: a(0)
+      real(c_float), allocatable :: out(:)
+      integer(c_int8_t), allocatable :: wire(:)
+      type(tensogram_buffer)  :: buf
+      type(tensogram_message) :: msg
+      integer(c_int) :: err
+      call tensogram_encode(a, buf, err);    call assert(err == TGM_ERROR_OK, 'empty encode')
+      call buf%as_array(wire)
+      call tensogram_decode(wire, msg, err); call assert(err == TGM_ERROR_OK, 'empty decode')
+      call assert(tensogram_num_objects(msg) == 1, 'empty: one object')
+      call tensogram_to_array(msg, 1, out, err); call assert(err == TGM_ERROR_OK, 'empty to_array')
+      call assert(size(out) == 0, 'empty: decoded size 0')
+   end subroutine empty_array_roundtrip
+
+   !> Object indices outside [1, num_objects] fail cleanly, never crash.
+   subroutine out_of_range_object()
+      real(c_float)              :: a(3)
+      real(c_float), allocatable :: out(:)
+      integer(c_int8_t), allocatable :: wire(:)
+      type(tensogram_buffer)  :: buf
+      type(tensogram_message) :: msg
+      integer(c_int) :: err
+      a = [1.0_c_float, 2.0_c_float, 3.0_c_float]
+      call tensogram_encode(a, buf, err);    call assert(err == TGM_ERROR_OK, 'oor encode')
+      call buf%as_array(wire)
+      call tensogram_decode(wire, msg, err); call assert(err == TGM_ERROR_OK, 'oor decode')
+      call tensogram_to_array(msg, 2, out, err)   ! beyond count
+      call assert(err == TGM_ERROR_OBJECT, 'to_array beyond count -> OBJECT')
+      call tensogram_to_array(msg, 0, out, err)   ! zero / underflow index
+      call assert(err == TGM_ERROR_OBJECT, 'to_array index 0 -> OBJECT')
+      call assert(len(tensogram_object_dtype(msg, 9)) == 0, 'oor dtype -> empty string')
+   end subroutine out_of_range_object
+
+   !> Empty and too-short wire buffers decode to a clean error, not a crash.
+   subroutine short_buffer_decode()
+      integer(c_int8_t), allocatable :: wire(:)
+      integer(c_int8_t) :: tiny(4)
+      type(tensogram_message) :: msg
+      integer(c_int) :: err
+      allocate(wire(0))
+      call tensogram_decode(wire, msg, err); call assert(err /= TGM_ERROR_OK, 'empty buffer -> error')
+      tiny = 0_c_int8_t
+      call tensogram_decode(tiny, msg, err); call assert(err /= TGM_ERROR_OK, 'tiny buffer -> error')
+      call assert(len(tensogram_last_error()) > 0, 'short buffer sets last_error')
+   end subroutine short_buffer_decode
+
+   !> A streamed message with no objects (create then finish) is valid and
+   !> decodes to zero objects.
+   subroutine zero_object_stream()
+      character(len=*), parameter :: p = 'test_edge_zero_tmp.tgm'
+      type(tensogram_streaming_encoder) :: enc
+      type(tensogram_file)              :: f
+      type(tensogram_message)           :: msg
+      integer(c_int) :: err
+      integer :: n, ios
+      call tensogram_streaming_encoder_create(p, enc, err); call assert(err == TGM_ERROR_OK, 'zero-stream create')
+      call tensogram_streaming_encoder_finish(enc, err);    call assert(err == TGM_ERROR_OK, 'zero-stream finish')
+      call enc%free()
+      call tensogram_file_open(p, f, err);             call assert(err == TGM_ERROR_OK, 'zero-stream open')
+      call tensogram_file_message_count(f, n, err);    call assert(err == TGM_ERROR_OK, 'zero-stream count')
+      call assert(n == 1, 'zero-stream: one message')
+      call tensogram_file_decode_message(f, 1, msg, err); call assert(err == TGM_ERROR_OK, 'zero-stream decode')
+      call assert(tensogram_num_objects(msg) == 0, 'zero-stream: zero objects')
+      call f%close()
+      open(newunit=ios, file=p, status='old', iostat=err)
+      if (err == 0) close(ios, status='delete')
+   end subroutine zero_object_stream
+
+   !> Explicit hash / decode options exercise the optional-argument branches,
+   !> and `as_array` on an unencoded buffer yields a zero-size array.
+   subroutine explicit_options_and_empty_buffer()
+      real(c_float)              :: a(3)
+      real(c_float), allocatable :: out(:)
+      integer(c_int8_t), allocatable :: wire(:)
+      type(tensogram_buffer)  :: buf, empty_buf
+      type(tensogram_message) :: msg
+      integer(c_int) :: err
+      a = [1.0_c_float, 2.0_c_float, 3.0_c_float]
+      ! Explicit hash name (present branch of resolve_hash).
+      call tensogram_encode(a, buf, err, hash='xxh3'); call assert(err == TGM_ERROR_OK, 'explicit hash name')
+      call buf%as_array(wire)
+      ! Explicit decode options (the present branches of verify / byte order).
+      call tensogram_decode(wire, msg, err, verify_hash=.false., native_byte_order=.true.)
+      call assert(err == TGM_ERROR_OK, 'explicit decode options')
+      call tensogram_to_array(msg, 1, out, err)
+      call assert(err == TGM_ERROR_OK .and. size(out) == 3, 'explicit decode round-trip')
+      ! Empty hash name => no hash (NULL branch of resolve_hash).
+      call tensogram_encode(a, buf, err, hash=''); call assert(err == TGM_ERROR_OK, 'empty hash name -> no hash')
+      ! as_array on a never-encoded buffer is an empty array.
+      call empty_buf%as_array(wire)
+      call assert(size(wire) == 0, 'empty buffer as_array -> size 0')
+
+      ! An empty metadata builder still emits a valid "base":[{}] fragment.
+      block
+         type(tensogram_meta) :: em
+         call tensogram_encode(a, buf, err, metadata_json=em%base_json())
+         call assert(err == TGM_ERROR_OK, 'empty base_json encode')
+      end block
+
+      ! A complete JSON object is accepted too (same contract as streaming):
+      ! the outer braces are stripped so the result stays one valid object.
+      block
+         type(tensogram_metadata) :: meta2
+         call tensogram_encode(a, buf, err, metadata_json='{"base":[{"tag":"obj"}]}')
+         call assert(err == TGM_ERROR_OK, 'complete-object metadata encode')
+         call buf%as_array(wire); call tensogram_decode(wire, msg, err)
+         call tensogram_message_metadata(msg, meta2, err)
+         call assert(tensogram_metadata_get_string(meta2, 'tag') == 'obj', &
+                     'complete-object metadata round-trip')
+      end block
+
+      ! Correct dtype but wrong target rank -> OBJECT (the rank-mismatch path).
+      block
+         real(c_float), allocatable :: out2(:,:)
+         call tensogram_encode(a, buf, err); call buf%as_array(wire)
+         call tensogram_decode(wire, msg, err)
+         call tensogram_to_array(msg, 1, out2, err)   ! rank-2 out for a rank-1 object
+         call assert(err == TGM_ERROR_OBJECT, 'rank mismatch -> OBJECT')
+      end block
+   end subroutine explicit_options_and_empty_buffer
+
+   !> Fixed-length character variables are space-padded by Fortran; the wrapper
+   !> must trim paths and the hash name before crossing to C, or the common
+   !> `character(len=N) :: path; call get_command_argument(...)` pattern would
+   !> pass space-padded values that fail.
+   subroutine padded_path_and_hash()
+      character(len=64) :: path
+      character(len=16) :: hash
+      real(c_float)  :: a(3)
+      type(tensogram_buffer) :: buf
+      type(tensogram_file)   :: f
+      integer(c_int) :: err, n, ios
+      logical :: exists
+      a = [1.0_c_float, 2.0_c_float, 3.0_c_float]
+
+      hash = 'xxh3'                              ! padded to length 16
+      call tensogram_encode(a, buf, err, hash=hash)
+      call assert(err == TGM_ERROR_OK, 'space-padded hash name accepted')
+
+      path = 'test_edge_padded_tmp.tgm'          ! padded to length 64
+      call tensogram_file_create(path, f, err)
+      call assert(err == TGM_ERROR_OK, 'space-padded path create')
+      call tensogram_file_append(f, a, err);     call assert(err == TGM_ERROR_OK, 'padded path append')
+      call f%close()
+      ! The file must exist under the TRIMMED name (it would carry trailing
+      ! spaces if the wrapper did not trim).
+      inquire(file='test_edge_padded_tmp.tgm', exist=exists)
+      call assert(exists, 'padded path created the trimmed filename')
+      call tensogram_file_open(path, f, err);    call assert(err == TGM_ERROR_OK, 'padded path open')
+      call tensogram_file_message_count(f, n, err)
+      call assert(err == TGM_ERROR_OK .and. n == 1, 'padded path reopened')
+      call f%close()
+      open(newunit=ios, file='test_edge_padded_tmp.tgm', status='old', iostat=err)
+      if (err == 0) close(ios, status='delete')
+   end subroutine padded_path_and_hash
+
+   !> Streaming with explicit metadata and an int64 object (covers the int64
+   !> streaming-write overload and the explicit-metadata create branch).
+   subroutine streaming_i64_and_metadata()
+      character(len=*), parameter :: p = 'test_edge_stream_tmp.tgm'
+      type(tensogram_streaming_encoder) :: enc
+      type(tensogram_file)              :: f
+      type(tensogram_message)           :: msg
+      integer(c_int64_t)              :: a(4)
+      integer(c_int64_t), allocatable :: out(:)
+      integer(c_int) :: err, ios
+      a = [1_c_int64_t, 2_c_int64_t, 3_c_int64_t, 4_c_int64_t]
+      call tensogram_streaming_encoder_create(p, enc, err, metadata_json='{}')
+      call assert(err == TGM_ERROR_OK, 'stream create w/ explicit metadata')
+      call tensogram_streaming_encoder_write(enc, a, err)
+      call assert(err == TGM_ERROR_OK, 'stream write int64')
+      call tensogram_streaming_encoder_finish(enc, err); call enc%free()
+      call tensogram_file_open(p, f, err)
+      call tensogram_file_decode_message(f, 1, msg, err)
+      call tensogram_to_array(msg, 1, out, err)
+      call assert(err == TGM_ERROR_OK, 'stream int64 to_array')
+      call assert(all(out == a), 'stream int64 round-trip')
+      call f%close()
+      open(newunit=ios, file=p, status='old', iostat=err)
+      if (err == 0) close(ios, status='delete')
+   end subroutine streaming_i64_and_metadata
+
+   !> Unicode (raw UTF-8) and long strings survive the metadata builder /
+   !> JSON escaper / decode / getter round-trip byte-for-byte.
+   subroutine unicode_and_long_metadata()
+      type(tensogram_meta)     :: m
+      type(tensogram_buffer)   :: buf
+      type(tensogram_message)  :: msg
+      type(tensogram_metadata) :: meta
+      integer(c_int8_t), allocatable :: wire(:)
+      real(c_float)  :: a(2)
+      integer(c_int) :: err
+      character(len=:), allocatable :: uni, longstr
+      a = [1.0_c_float, 2.0_c_float]
+      uni = 'caf' // char(195) // char(169)    ! "café" as raw UTF-8 bytes
+      longstr = repeat('x', 500)
+      call m%add_string('city', uni)
+      call m%add_string('long', longstr)
+      call tensogram_encode(a, buf, err, metadata_json=m%base_json())
+      call assert(err == TGM_ERROR_OK, 'unicode encode')
+      call buf%as_array(wire)
+      call tensogram_decode(wire, msg, err);            call assert(err == TGM_ERROR_OK, 'unicode decode')
+      call tensogram_message_metadata(msg, meta, err);  call assert(err == TGM_ERROR_OK, 'unicode metadata')
+      call assert(tensogram_metadata_get_string(meta, 'city') == uni, 'unicode round-trip')
+      call assert(tensogram_metadata_get_string(meta, 'long') == longstr, 'long string round-trip')
+   end subroutine unicode_and_long_metadata
+
+end program test_edge_cases

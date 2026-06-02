@@ -45,13 +45,13 @@ import threading
 import numpy as np
 import tensogram
 
-data = np.random.randn(1_000_000).astype(np.float32)
+data = np.random.randn(100_000).astype(np.float32)
 meta = {"base": [{}]}
-desc = {"type": "ntensor", "shape": [1_000_000], "dtype": "float32"}
+desc = {"type": "ntensor", "shape": [100_000], "dtype": "float32"}
 msg = tensogram.encode(meta, [(desc, data)])
 
 def decode_worker():
-    for _ in range(100):
+    for _ in range(10):
         result = tensogram.decode(msg)
 
 threads = [threading.Thread(target=decode_worker) for _ in range(8)]

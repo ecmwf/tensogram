@@ -182,7 +182,7 @@ meta, objects = tensogram.decode(msg, native_byte_order=False)
 `meta` is a `Metadata` object:
 
 ```python
-meta.version     # int — always 2
+meta.version     # int — always 3
 meta.base        # list[dict] — per-object metadata (one entry per object)
 meta.extra       # dict — message-level annotations (_extra_ in CBOR)
 meta.reserved    # dict — library internals (_reserved_ in CBOR, read-only)

@@ -162,6 +162,43 @@ jobs:
         if: always()
         run: rm -rf "$TMPDIR" .venv target
 
+  # ── Linux: runnable docs examples ──────────────────────────────
+  # mdbook code blocks are NOT exercised by `cargo test` (only `///` doctests
+  # are), so a documented example can silently rot. This runs the
+  # self-contained ones (Rust `fn main()` + Python with their own imports).
+  doc-examples:
+    name: Doc examples
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.3.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      - name: Run runnable docs examples (Rust + Python)
+        run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
+          . .venv/bin/activate
+          uv pip install maturin numpy
+          cd python/bindings && maturin develop && cd ../..
+          # Optional deps used by some doc examples (xarray / zarr / dask);
+          # blocks needing an absent optional dep are skipped, not failed.
+          uv pip install -e "python/tensogram-xarray/[dask]"
+          uv pip install -e python/tensogram-zarr/
+          python scripts/test_doc_examples.py
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv target
+
   # ── Linux: earthkit-data integration ───────────────────────────
   test-earthkit:
     name: Test (earthkit-data integration)
@@ -474,6 +511,92 @@ jobs:
       - name: Cleanup
         if: always()
         run: rm -rf "$TMPDIR" target
+
+  # ── Fortran: binding build + tests (incl. cross-language parity) ─
+  # Links the cargo-c-installed C ABI via pkg-config (matching the user
+  # flow). CMake is the system of record; CTest runs the round-trip,
+  # dtype/rank, file API, metadata, error, copy-guard, the error-enum
+  # consistency check, and the bidirectional Fortran<->C/C++ AND
+  # Fortran<->Python parity tests. The library is also built via fpm so the
+  # fpm manifest cannot drift from the CMake build (PLAN_FORTRAN.md §5.6).
+  fortran:
+    name: Fortran (Linux)
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.3.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    env:
+      CARGO_C_VERSION: "0.10.21"
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      # The CI image carries a C/C++ toolchain (used by the cpp + cargo-c
+      # jobs) but not gfortran; install it here so the image stays lean.
+      - name: Install gfortran
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gfortran
+          apt-get clean && rm -rf /var/lib/apt/lists/*
+
+      - name: Install cargo-c
+        run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
+
+      - name: Install the tensogram C ABI (cargo-c) and expose via pkg-config
+        run: |
+          PFX="$GITHUB_WORKSPACE/.ffi-prefix"
+          cargo cinstall --release -p tensogram-ffi --prefix="$PFX" --libdir=lib
+          echo "PKG_CONFIG_PATH=$PFX/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$PFX/lib" >> "$GITHUB_ENV"
+
+      # Build the Python binding so the Fortran<->Python parity tests in the
+      # CMake suite are actually exercised (they are skipped when `import
+      # tensogram` fails). Put the venv's python first on PATH so CMake's
+      # find_program(python3) discovers the binding-bearing interpreter.
+      - name: Set up the Python binding (for Fortran<->Python parity)
+        run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
+          . .venv/bin/activate
+          uv pip install maturin numpy
+          cd python/bindings && maturin develop && cd ../..
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Build + test the Fortran binding (CMake + CTest)
+        run: make fortran-test
+
+      # Fortran 2008 conformance gate: the binding library must keep compiling
+      # under -std=f2008 -Wall -Wextra -Werror (no assumed-rank / SELECT RANK).
+      # Library only — examples/tests declare handle locals that trip gfortran's
+      # f08/0011 advisory under -std=f2008 (valid F2008; see PLAN_FORTRAN.md §5.4).
+      - name: Check the Fortran binding compiles under -std=f2008 (library gate)
+        run: make fortran-f2008-check
+
+      # fpm has no pkg-config integration, so the flags are injected by the
+      # make target. This compiles the binding through the fpm manifest as a
+      # drift check against the (authoritative) CMake build.
+      - name: Build the Fortran binding via fpm (drift check)
+        run: |
+          FPM_VERSION=0.10.0
+          mkdir -p "$HOME/.local/bin"
+          # v0.10.0 ships a single statically-linked binary named
+          # fpm-<ver>-linux-x86_64 (the -gcc-12 suffix only appears on newer
+          # releases). The static build avoids a libgfortran runtime dependency.
+          curl -fsSL -o "$HOME/.local/bin/fpm" \
+            "https://github.com/fortran-lang/fpm/releases/download/v${FPM_VERSION}/fpm-${FPM_VERSION}-linux-x86_64"
+          chmod +x "$HOME/.local/bin/fpm"
+          export PATH="$HOME/.local/bin:$PATH"
+          make fortran-fpm-test
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" build target .ffi-prefix .venv fortran/build
 
   # ── C++: macOS ─────────────────────────────────────────────────
   cpp-macos:

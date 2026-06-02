@@ -71,7 +71,7 @@ fn main() {
     let strides = vec![200u64, 1]; // C-contiguous (row-major)
     let num_elements = 100 * 200;
     let data: Vec<u8> = (0..num_elements)
-        .flat_map(|i| (273.15f32 + (i as f32 / 100.0)).to_be_bytes())
+        .flat_map(|i| (273.15f32 + (i as f32 / 100.0)).to_ne_bytes())
         .collect();
 
     // 2. Describe the tensor (`GlobalMetadata::default()` stamps the
@@ -84,7 +84,7 @@ fn main() {
         shape,
         strides,
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -149,7 +149,7 @@ let desc = DataObjectDescriptor {
     shape: vec![100, 200],
     strides: vec![200, 1],
     dtype: Dtype::Float32,
-    byte_order: ByteOrder::Big,
+    byte_order: ByteOrder::native(),
     encoding: "none".to_string(),
     filter: "none".to_string(),
     compression: "none".to_string(),

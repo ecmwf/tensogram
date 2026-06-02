@@ -14,9 +14,10 @@
         python-build python-dist python-dist-extras python-test python-lint python-fmt \
         earthkit-install earthkit-test earthkit-lint \
         cpp-build cpp-test \
+        fortran-build fortran-test fortran-fpm-test fortran-f2008-check \
         cargo-c-build cargo-c-install cargo-c-smoke \
         mutants-install mutants mutants-diff mutants-shard \
-        wasm-test docs-build \
+        wasm-test docs-build doc-examples \
         ts-install ts-build ts-test ts-typecheck \
         remote-parity-rust-build remote-parity-ts-install remote-parity-fixtures \
         remote-parity-build remote-parity remote-parity-clean
@@ -128,6 +129,38 @@ cpp-build: ## Build C++ tests via CMake
 
 cpp-test: cpp-build ## Run C++ tests
 	cd build && ctest --output-on-failure
+
+# ── Fortran ───────────────────────────────────────────────────────────────
+#
+# The Fortran binding (fortran/) links the system libtensogram discovered via
+# pkg-config (the cargo-c / release-tarball install that ships tensogram.pc).
+# CMake is the system of record; fpm is retained as a devloop. Not folded into
+# the default `make test` because it needs a Fortran compiler and an installed
+# tensogram.pc.
+
+fortran-build: ## Build the Fortran binding + examples + tests via CMake
+	cmake -S fortran -B build/fortran -DCMAKE_BUILD_TYPE=Debug
+	cmake --build build/fortran
+
+fortran-test: fortran-build ## Run Fortran tests (incl. Fortran<->Python parity when available)
+	cd build/fortran && ctest --output-on-failure
+
+fortran-fpm-test: ## Build the Fortran library via fpm (injects pkg-config flags)
+	cd fortran && fpm build \
+		--flag      "$$(pkg-config --cflags tensogram)" \
+		--link-flag "$$(pkg-config --libs   tensogram)"
+
+# Fortran 2008 conformance gate: the binding LIBRARY must compile clean under
+# -std=f2008 -Wall -Wextra -Werror. Examples/tests are OFF on purpose — they
+# declare handle locals, which gfortran flags with an f08/0011 advisory under
+# -std=f2008 (valid F2008, but -Werror-promoted; see fortran/CMakeLists.txt and
+# PLAN_FORTRAN.md §5.4). A nonzero exit means the library regressed into an
+# F2018-only construct.
+fortran-f2008-check: ## Verify the binding library compiles clean under -std=f2008
+	cmake -S fortran -B build/fortran-f2008 -DCMAKE_BUILD_TYPE=Debug \
+		-DTENSOGRAM_FORTRAN_STD=f2008 \
+		-DTENSOGRAM_FORTRAN_TESTS=OFF -DTENSOGRAM_FORTRAN_EXAMPLES=OFF
+	cmake --build build/fortran-f2008
 
 # ── cargo-c (C API distribution) ──────────────────────────────────────────
 
@@ -246,6 +279,15 @@ ts-typecheck: ts-build ## Strict typecheck source + tests
 
 docs-build: ## Build mdbook documentation
 	mdbook build docs/
+
+# Run the self-contained, runnable code examples embedded in docs/src/**/*.md
+# (Rust `fn main()` blocks + self-contained Python blocks). mdbook code blocks
+# are not exercised by `cargo test`, so this gate catches documented examples
+# that stop working. Needs cargo on PATH and the `tensogram` Python binding
+# importable by `$(PYTHON)` (plus any optional deps the examples use, e.g.
+# numpy / xarray / zarr — missing optional deps are skipped, not failed).
+doc-examples: ## Run the runnable code examples in docs/src (Rust + Python)
+	$(PYTHON) scripts/test_doc_examples.py
 
 # ── Remote parity harness ─────────────────────────────────────────────────
 #

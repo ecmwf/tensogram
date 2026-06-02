@@ -55,7 +55,7 @@ Tensogram defines a binary message format, not strictly a file format. Multiple 
 
 ## Language Support
 
-- **Multiple languages** — Rust, Python (NumPy), C/C++, WebAssembly
+- **Multiple languages** — Rust, Python (NumPy), C/C++, Fortran (encode/decode), WebAssembly
 - **Free-threaded Python** — GIL-free operation on Python 3.13t with full parallel encode/decode
 
 ## Extensions
@@ -275,6 +275,8 @@ High-level shape of the repository.
 - **`python/`** — PyO3 bindings (published as `tensogram` on PyPI) plus
   pure-Python extras for xarray, Zarr v3, and anemoi-inference integration.
 - **`cpp/`** — C++ wrapper over the C FFI: headers, CMake build, GoogleTest suite.
+- **`fortran/`** — Fortran 2008 binding over the C FFI: `iso_c_binding`
+  module, CMake + fpm build, tests.
 - **`typescript/`** — TypeScript bindings over the WASM crate, published as
   `@ecmwf.int/tensogram` on npm.
 - **`tensoscope/`** — Browser-based interactive `.tgm` viewer, built on the
