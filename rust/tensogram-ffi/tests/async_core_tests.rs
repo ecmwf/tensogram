@@ -956,8 +956,10 @@ fn async_decode_range_round_trip() {
 
 // NOTE: `tgm_runtime_shutdown_blocking` tears down the process-global
 // runtime permanently, so it cannot be exercised here without poisoning
-// every sibling test in this binary.  Its tests live in the dedicated,
-// process-isolated `tests/async_shutdown_tests.rs` binary.
+// every sibling test in this binary.  It is covered by the in-crate
+// unit test `async_core::tests::shutdown_blocking_drains_and_reports_unfinished`
+// (the sole shutdown caller in the lib-test binary) and by the C++
+// gtest `cpp/tests/test_async_shutdown_during_flight.cpp`.
 
 #[cfg(feature = "async-remote")]
 #[test]
