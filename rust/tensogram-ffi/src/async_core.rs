@@ -1563,9 +1563,12 @@ mod tests {
             "second shutdown must be a no-op returning 0"
         );
 
-        // The leaked task handle is intentionally not freed/joined: the
-        // runtime that owned its future is gone, so joining would block
-        // forever.  Leaking one Arc in a unit test is acceptable.
-        let _ = task;
+        // Free the task handle.  We must NOT *join* it — the runtime
+        // that owned its future is gone, so a join would block forever
+        // — but `tgm_async_task_free` only drops the heap-allocated
+        // handle box (one `Arc<TaskShared>` ref); it never joins or
+        // blocks.  The spawned future holds its own `Arc` clone, so
+        // this is safe and keeps the test clean under leak-sanitizer.
+        tgm_async_task_free(task);
     }
 }
