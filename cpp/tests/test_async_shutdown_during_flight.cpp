@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <functional>
 #include <future>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -57,8 +58,16 @@ std::filesystem::path make_sync_test_file() {
 
     auto bytes = tensogram::encode(meta_json, objs);
     auto* fp = std::fopen(path.c_str(), "wb");
-    std::fwrite(bytes.data(), 1, bytes.size(), fp);
+    if (fp == nullptr) {
+        throw std::runtime_error("make_sync_test_file: fopen failed for " +
+                                 path.string());
+    }
+    std::size_t written = std::fwrite(bytes.data(), 1, bytes.size(), fp);
     std::fclose(fp);
+    if (written != bytes.size()) {
+        throw std::runtime_error("make_sync_test_file: short write to " +
+                                 path.string());
+    }
     return path;
 }
 
