@@ -1249,9 +1249,9 @@ tgm_error tgm_runtime_configure(uint32_t workers,
  * Returns the number of tasks that had **not** finished when the
  * timeout elapsed (`0` on a clean drain).  After this call the
  * runtime is permanently shut down: every subsequent `tgm_async_*`
- * entry point fails fast with [`TgmError::Io`] and a descriptive
- * [`tgm_last_error`](crate::tgm_last_error) (`"runtime has been shut
- * down"`).  The runtime is single-shot — there is no rebuild.
+ * entry point fails fast with `TGM_ERROR_IO` and a descriptive
+ * `tgm_last_error()` (`"runtime has been shut down"`).  The runtime
+ * is single-shot — there is no rebuild.
  *
  * Behaviour by prior state:
  *   * **never built** (no async op ran) → transitions straight to
@@ -1259,9 +1259,9 @@ tgm_error tgm_runtime_configure(uint32_t workers,
  *   * **build previously failed** → transitions to `ShutDown` and
  *     returns `0`; there was no runtime to drain.
  *   * **already shut down** → idempotent no-op returning `0`.
- *   * **live** → takes ownership of the runtime, calls
- *     [`tokio::runtime::Runtime::shutdown_timeout`], and reports the
- *     residual [`LIVE_TASKS`] count.
+ *   * **live** → takes ownership of the runtime, drains in-flight
+ *     tasks up to `timeout_ms`, tears the runtime down, and reports
+ *     the count of tasks that had not finished by the deadline.
  *
  * Must not be called from inside an async callback running on the
  * runtime's own worker threads (tokio forbids dropping a runtime
