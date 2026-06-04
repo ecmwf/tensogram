@@ -113,10 +113,21 @@ static RUNTIME: Mutex<RuntimeState> = Mutex::new(RuntimeState::Uninit);
 /// did not drain within the timeout.
 static LIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
 
-/// RAII guard that decrements [`LIVE_TASKS`] exactly once when the
-/// spawned task's future is dropped — whichever branch it exits
-/// through.
+/// RAII guard pairing one [`LIVE_TASKS`] increment with exactly one
+/// decrement.  [`new`](Self::new) increments on construction; `Drop`
+/// decrements when the guard is dropped — whichever branch the owning
+/// future exits through, **including** being dropped before its first
+/// poll (e.g. when the runtime is torn down while the task is still
+/// queued).  Encapsulating both halves in one type makes it impossible
+/// to increment without arranging the matching decrement.
 struct LiveTaskGuard;
+
+impl LiveTaskGuard {
+    fn new() -> Self {
+        LIVE_TASKS.fetch_add(1, Ordering::SeqCst);
+        LiveTaskGuard
+    }
+}
 
 impl Drop for LiveTaskGuard {
     fn drop(&mut self) {
@@ -405,15 +416,23 @@ where
     // token was never cancelled (the common case).
     let external_token = shared.external.clone();
 
-    // Count this task as live before it is spawned.  The drop-guard
-    // inside the future decrements on every exit path (completion,
-    // inner error, cancel, timeout, or the future being dropped when
-    // the runtime is torn down), so `LIVE_TASKS` is an accurate count
-    // of not-yet-drained tasks for `tgm_runtime_shutdown_blocking`.
-    LIVE_TASKS.fetch_add(1, Ordering::SeqCst);
+    // Count this task as live before it is spawned.  The guard is
+    // constructed *here*, outside the async block, and moved into the
+    // future so it is owned by the future itself — not merely created
+    // on first poll.  This decrements `LIVE_TASKS` on every exit path
+    // (completion, inner error, cancel, timeout) AND when the future
+    // is dropped before it is ever polled (e.g. the runtime is torn
+    // down with the task still queued).  Constructing it inside the
+    // async block would skip the decrement in that drop-before-poll
+    // case, permanently inflating the counter.  `LiveTaskGuard::new`
+    // does the `fetch_add`; its `Drop` does the matching `fetch_sub`.
+    let live_guard = LiveTaskGuard::new();
 
     rt.spawn(async move {
-        let _live = LiveTaskGuard;
+        // Bind the guard into the future so its lifetime is the
+        // future's lifetime.  `let _live = live_guard;` rather than a
+        // bare move expression so the binding is unambiguous.
+        let _live = live_guard;
         let outcome: AsyncOutcome = if timeout_ms > 0 {
             let deadline = Duration::from_millis(timeout_ms);
             tokio::select! {
@@ -1319,9 +1338,9 @@ pub extern "C" fn tgm_runtime_configure(
 /// Returns the number of tasks that had **not** finished when the
 /// timeout elapsed (`0` on a clean drain).  After this call the
 /// runtime is permanently shut down: every subsequent `tgm_async_*`
-/// entry point fails fast with [`TgmError::Io`] and a descriptive
-/// [`tgm_last_error`](crate::tgm_last_error) (`"runtime has been shut
-/// down"`).  The runtime is single-shot — there is no rebuild.
+/// entry point fails fast with `TGM_ERROR_IO` and a descriptive
+/// `tgm_last_error()` (`"runtime has been shut down"`).  The runtime
+/// is single-shot — there is no rebuild.
 ///
 /// Behaviour by prior state:
 ///   * **never built** (no async op ran) → transitions straight to
@@ -1329,9 +1348,9 @@ pub extern "C" fn tgm_runtime_configure(
 ///   * **build previously failed** → transitions to `ShutDown` and
 ///     returns `0`; there was no runtime to drain.
 ///   * **already shut down** → idempotent no-op returning `0`.
-///   * **live** → takes ownership of the runtime, calls
-///     [`tokio::runtime::Runtime::shutdown_timeout`], and reports the
-///     residual [`LIVE_TASKS`] count.
+///   * **live** → takes ownership of the runtime, drains in-flight
+///     tasks up to `timeout_ms`, tears the runtime down, and reports
+///     the count of tasks that had not finished by the deadline.
 ///
 /// Must not be called from inside an async callback running on the
 /// runtime's own worker threads (tokio forbids dropping a runtime
@@ -1364,17 +1383,27 @@ pub extern "C" fn tgm_runtime_shutdown_blocking(timeout_ms: u64) -> u64 {
     // dropping the runtime drops every still-pending future, which
     // runs each `LiveTaskGuard` and would otherwise drive the count
     // to zero regardless of whether those tasks actually finished.
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    // Cooperative drain via elapsed-time comparison rather than an
+    // absolute `Instant` deadline.  `Instant + Duration` panics on
+    // overflow, and this is a non-panicking FFI entry point, so we
+    // never add a caller-controlled `Duration` to an `Instant`.
+    // Instead we measure `start.elapsed()` (always well-defined) and
+    // compare against the requested timeout — no arithmetic that can
+    // overflow on a hostile `timeout_ms`.
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
     let poll_interval = Duration::from_millis(5);
     loop {
         if LIVE_TASKS.load(Ordering::SeqCst) == 0 {
             break;
         }
-        let now = std::time::Instant::now();
-        if now >= deadline {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
             break;
         }
-        std::thread::sleep(poll_interval.min(deadline - now));
+        // Sleep the shorter of the poll interval and the remaining
+        // budget so we do not overshoot the deadline.
+        std::thread::sleep(poll_interval.min(timeout - elapsed));
     }
     let unfinished = LIVE_TASKS.load(Ordering::SeqCst) as u64;
 
