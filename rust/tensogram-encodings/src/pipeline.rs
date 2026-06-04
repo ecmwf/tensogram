@@ -1984,7 +1984,13 @@ mod tests {
         // still decode cleanly.
         #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
         {
-            let data: Vec<u8> = (0..256u32).map(|i| (i % 7) as u8).collect();
+            // Use a large, trivially-compressible buffer (all zeros) so
+            // the compressed payload is *guaranteed* shorter than the
+            // decoded length on any zstd version — this deterministically
+            // exercises the "compressed length != descriptor-derived
+            // decoded length" case without relying on incidental codec
+            // sizing for a small mixed input.
+            let data: Vec<u8> = vec![0u8; 64 * 1024];
             let cfg = PipelineConfig {
                 encoding: EncodingType::None,
                 filter: FilterType::None,
@@ -1998,9 +2004,16 @@ mod tests {
                 compute_hash: false,
             };
             let payload = encode_pipeline(&data, &cfg).unwrap().encoded_bytes;
-            // Compressed payload length differs from the decoded length;
-            // the gate must not fire.
-            assert_ne!(payload.len(), data.len());
+            // 64 KiB of zeros compresses far below 64 KiB under any zstd
+            // build, so the on-disk length provably differs from the
+            // descriptor-derived decoded length — yet the gate must not
+            // fire and the object must round-trip.
+            assert!(
+                payload.len() < data.len(),
+                "64 KiB of zeros must compress smaller; got {} >= {}",
+                payload.len(),
+                data.len()
+            );
             let out = decode_pipeline(&payload, &cfg, false).expect("compressed must decode");
             assert_eq!(out, data);
         }
