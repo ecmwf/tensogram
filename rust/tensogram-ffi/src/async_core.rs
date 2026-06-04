@@ -21,6 +21,7 @@
 
 use std::ffi::{CStr, CString, c_void};
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -74,8 +75,54 @@ fn num_cpus_or_default() -> u32 {
 }
 
 static RUNTIME_CONFIG: OnceLock<RuntimeConfig> = OnceLock::new();
-static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
 static DISPATCHER: OnceLock<DispatcherPool> = OnceLock::new();
+
+/// Lifecycle state of the process-global tokio runtime.
+///
+/// The runtime is single-shot: built lazily on first use, and once
+/// [`tgm_runtime_shutdown_blocking`] runs it transitions to
+/// [`RuntimeState::ShutDown`] permanently — there is no rebuild.  A
+/// build failure is cached so every subsequent call surfaces the same
+/// diagnostic rather than retrying a doomed build.
+///
+/// `shutdown_timeout` consumes the owned [`tokio::runtime::Runtime`],
+/// which is why this lives behind a `Mutex<…>` we can `take` from,
+/// rather than the previous `OnceLock` (which can never hand `self`
+/// back).
+enum RuntimeState {
+    /// No runtime built yet.
+    Uninit,
+    /// Runtime built and live.
+    Built(tokio::runtime::Runtime),
+    /// A previous build attempt failed; the error is cached and
+    /// re-reported on every call.
+    BuildFailed(String),
+    /// The runtime has been shut down.  All async entry points fail
+    /// fast from here on.
+    ShutDown,
+}
+
+static RUNTIME: Mutex<RuntimeState> = Mutex::new(RuntimeState::Uninit);
+
+/// Count of tasks spawned on the shared runtime that have not yet run
+/// their completion path.  Incremented at the single spawn choke
+/// point ([`spawn_task`]) and decremented by a drop-guard inside the
+/// spawned future, so it covers normal completion, inner error,
+/// cancellation, timeout, and a dropped/aborted task uniformly.
+/// Read by [`tgm_runtime_shutdown_blocking`] to report how many tasks
+/// did not drain within the timeout.
+static LIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII guard that decrements [`LIVE_TASKS`] exactly once when the
+/// spawned task's future is dropped — whichever branch it exits
+/// through.
+struct LiveTaskGuard;
+
+impl Drop for LiveTaskGuard {
+    fn drop(&mut self) {
+        LIVE_TASKS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 fn runtime_config() -> &'static RuntimeConfig {
     RUNTIME_CONFIG.get_or_init(RuntimeConfig::default)
@@ -171,18 +218,45 @@ fn dispatch_to_pool(cb: extern "C" fn(*mut c_void), userdata: *mut c_void) {
     }
 }
 
-fn runtime() -> Result<&'static tokio::runtime::Runtime, &'static str> {
-    let cfg = runtime_config();
-    match RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(cfg.workers as usize)
-            .enable_all()
-            .thread_name("tensogram-async")
-            .build()
-            .map_err(|e| format!("failed to build tokio runtime: {e}"))
-    }) {
-        Ok(rt) => Ok(rt),
-        Err(s) => Err(s.as_str()),
+/// Resolve the shared runtime to a spawnable [`tokio::runtime::Handle`].
+///
+/// Builds the runtime lazily on first call.  The returned `Handle` is
+/// a cheap clone of the runtime's handle, so callers spawn through it
+/// **without** holding the runtime mutex across the spawn.  The mutex
+/// is held only briefly to read/transition the [`RuntimeState`].
+///
+/// Errors:
+///   * `Err("…")` with the cached build error if the runtime failed to
+///     build (sticky — same message every call).
+///   * `Err("runtime has been shut down")` once
+///     [`tgm_runtime_shutdown_blocking`] has run — the runtime is
+///     single-shot and never rebuilt.
+fn runtime() -> Result<tokio::runtime::Handle, String> {
+    let mut guard = RUNTIME.lock().expect("runtime mutex poisoned");
+    match &*guard {
+        RuntimeState::Built(rt) => Ok(rt.handle().clone()),
+        RuntimeState::BuildFailed(e) => Err(e.clone()),
+        RuntimeState::ShutDown => Err("runtime has been shut down".to_string()),
+        RuntimeState::Uninit => {
+            let cfg = runtime_config();
+            match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(cfg.workers as usize)
+                .enable_all()
+                .thread_name("tensogram-async")
+                .build()
+            {
+                Ok(rt) => {
+                    let handle = rt.handle().clone();
+                    *guard = RuntimeState::Built(rt);
+                    Ok(handle)
+                }
+                Err(e) => {
+                    let msg = format!("failed to build tokio runtime: {e}");
+                    *guard = RuntimeState::BuildFailed(msg.clone());
+                    Err(msg)
+                }
+            }
+        }
     }
 }
 
@@ -331,7 +405,15 @@ where
     // token was never cancelled (the common case).
     let external_token = shared.external.clone();
 
+    // Count this task as live before it is spawned.  The drop-guard
+    // inside the future decrements on every exit path (completion,
+    // inner error, cancel, timeout, or the future being dropped when
+    // the runtime is torn down), so `LIVE_TASKS` is an accurate count
+    // of not-yet-drained tasks for `tgm_runtime_shutdown_blocking`.
+    LIVE_TASKS.fetch_add(1, Ordering::SeqCst);
+
     rt.spawn(async move {
+        let _live = LiveTaskGuard;
         let outcome: AsyncOutcome = if timeout_ms > 0 {
             let deadline = Duration::from_millis(timeout_ms);
             tokio::select! {
@@ -1231,23 +1313,78 @@ pub extern "C" fn tgm_runtime_configure(
     TgmError::Ok
 }
 
-/// Reserved ABI for graceful shutdown.  Currently a no-op that
-/// always returns `0`.
+/// Shut the shared async runtime down, blocking for up to
+/// `timeout_ms` while in-flight tasks drain.
 ///
-/// **Status (v1):** the shared runtime lives behind a `OnceLock` and
-/// cannot be torn down without leaking the slot.  Process exit is
-/// abrupt by design; in-flight
-/// tasks are dropped by tokio at process teardown.
+/// Returns the number of tasks that had **not** finished when the
+/// timeout elapsed (`0` on a clean drain).  After this call the
+/// runtime is permanently shut down: every subsequent `tgm_async_*`
+/// entry point fails fast with [`TgmError::Io`] and a descriptive
+/// [`tgm_last_error`](crate::tgm_last_error) (`"runtime has been shut
+/// down"`).  The runtime is single-shot — there is no rebuild.
 ///
-/// The signature is reserved here so a future implementation can
-/// switch the singleton to an owning container, drain tasks
-/// cooperatively, and return the count that did not finish within
-/// `timeout_ms` — without breaking the C ABI.  The argument is
-/// accepted but ignored today.
+/// Behaviour by prior state:
+///   * **never built** (no async op ran) → transitions straight to
+///     `ShutDown` and returns `0`; nothing was ever spawned.
+///   * **build previously failed** → transitions to `ShutDown` and
+///     returns `0`; there was no runtime to drain.
+///   * **already shut down** → idempotent no-op returning `0`.
+///   * **live** → takes ownership of the runtime, calls
+///     [`tokio::runtime::Runtime::shutdown_timeout`], and reports the
+///     residual [`LIVE_TASKS`] count.
+///
+/// Must not be called from inside an async callback running on the
+/// runtime's own worker threads (tokio forbids dropping a runtime
+/// from within itself).  The intended caller is the application's
+/// main/teardown thread.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_runtime_shutdown_blocking(timeout_ms: u64) -> u64 {
-    let _ = timeout_ms;
-    0
+    // Take the runtime out under the lock and mark the singleton
+    // shut down, then release the lock *before* the (potentially
+    // long) blocking drain so concurrent `tgm_async_*` callers see
+    // `ShutDown` immediately and fail fast rather than blocking on
+    // the mutex.
+    let taken = {
+        let mut guard = RUNTIME.lock().expect("runtime mutex poisoned");
+        match std::mem::replace(&mut *guard, RuntimeState::ShutDown) {
+            RuntimeState::Built(rt) => Some(rt),
+            // Uninit / BuildFailed / ShutDown: nothing to drain.
+            _ => None,
+        }
+    };
+
+    let Some(rt) = taken else {
+        return 0;
+    };
+
+    // Cooperative drain.  Poll `LIVE_TASKS` until it reaches zero or
+    // the deadline elapses, then capture the residual *before* the
+    // forced teardown below.  Reading the count here — rather than
+    // after `shutdown_timeout` — is what makes the result accurate:
+    // dropping the runtime drops every still-pending future, which
+    // runs each `LiveTaskGuard` and would otherwise drive the count
+    // to zero regardless of whether those tasks actually finished.
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let poll_interval = Duration::from_millis(5);
+    loop {
+        if LIVE_TASKS.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        std::thread::sleep(poll_interval.min(deadline - now));
+    }
+    let unfinished = LIVE_TASKS.load(Ordering::SeqCst) as u64;
+
+    // Force the runtime down now.  Any tasks still in flight are
+    // abandoned; we already captured their count above.  `ZERO`
+    // because the cooperative wait already happened — this call is
+    // just the teardown.
+    rt.shutdown_timeout(Duration::ZERO);
+
+    unfinished
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,5 +1477,66 @@ fn dtype_name(d: tensogram::dtype::Dtype) -> &'static str {
         Dtype::Uint32 => "uint32",
         Dtype::Uint64 => "uint64",
         Dtype::Bitmask => "bitmask",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Full single-shot shutdown lifecycle, in one test because the
+    /// runtime is process-global and shutdown is irreversible — a
+    /// second test calling shutdown would observe an already-torn-down
+    /// runtime.  Determinism comes from spawning a task that sleeps far
+    /// longer than the shutdown timeout, so it is guaranteed to still
+    /// be in flight when we drain.
+    ///
+    /// Asserts:
+    ///   1. a task in flight past the drain deadline is reported as
+    ///      unfinished (count ≥ 1);
+    ///   2. after shutdown the runtime is `ShutDown` and `spawn_task`
+    ///      fails with the documented diagnostic;
+    ///   3. a second shutdown is an idempotent no-op returning 0.
+    #[test]
+    fn shutdown_blocking_drains_and_reports_unfinished() {
+        // Spawn a task that outlives any reasonable drain window.
+        let task = spawn_task(
+            async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok(TaskResult::Void)
+            },
+            None,
+            0,
+        )
+        .expect("spawn before shutdown should succeed");
+
+        // Drain for far less than the task's sleep, so it is still
+        // in flight at the deadline and must be counted.
+        let unfinished = tgm_runtime_shutdown_blocking(50);
+        assert!(
+            unfinished >= 1,
+            "a task sleeping for an hour must be reported unfinished after a 50 ms drain, got {unfinished}"
+        );
+
+        // The runtime is now single-shot: further spawns fail with the
+        // documented diagnostic (which the FFI maps to TGM_ERROR_IO).
+        let err = spawn_task(async { Ok(TaskResult::Void) }, None, 0)
+            .expect_err("spawn after shutdown must fail");
+        assert!(
+            err.contains("shut down"),
+            "post-shutdown spawn error should mention shutdown, got: {err}"
+        );
+
+        // Second shutdown is an idempotent no-op.
+        assert_eq!(
+            tgm_runtime_shutdown_blocking(10),
+            0,
+            "second shutdown must be a no-op returning 0"
+        );
+
+        // The leaked task handle is intentionally not freed/joined: the
+        // runtime that owned its future is gone, so joining would block
+        // forever.  Leaking one Arc in a unit test is acceptable.
+        let _ = task;
     }
 }

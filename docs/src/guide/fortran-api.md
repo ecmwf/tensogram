@@ -10,9 +10,7 @@ The library compiles clean under `-std=f2008 -Wall -Wextra -Werror`; see
 > **Status.** Emerging. The synchronous surface is complete: generic
 > encode/decode, the multi-message file API, application metadata, the
 > encoding pipeline, and the streaming encoder. Only the async surface is
-> deferred; see
-> [`PLAN_FORTRAN.md`](https://github.com/ecmwf/tensogram/blob/main/PLAN_FORTRAN.md)
-> for the staged roadmap.
+> deferred.
 
 ## The memory-order contract (read this first)
 
@@ -353,7 +351,7 @@ The result is one message with `nobj` objects; reopen it with
 object out with `tensogram_to_array`. See
 [`examples/fortran/streaming.f90`](https://github.com/ecmwf/tensogram/blob/main/examples/fortran/streaming.f90).
 
-Planned next (see `PLAN_FORTRAN.md`): the async surface (deferred).
+Planned next: the async surface (deferred).
 
 ## Edge cases
 
@@ -391,5 +389,3 @@ NumPy (when a Python with the `tensogram` package is present).
 
 - [C API](c-api.md) — the ABI the binding sits on.
 - [Objects and Dtypes](../concepts/objects.md) — strides and layout.
-- [`PLAN_FORTRAN.md`](https://github.com/ecmwf/tensogram/blob/main/PLAN_FORTRAN.md)
-  — design rationale and the full roadmap.

@@ -241,11 +241,27 @@ tac::runtime_configure(/*workers=*/16,
 Subsequent calls throw `invalid_arg_error` because the runtime is
 built lazily on first use and cannot be reconfigured after that.
 
-`runtime_shutdown_blocking(timeout)` is reserved for graceful shutdown.
-In the current release it is a no-op that returns `0`: process exit is
-abrupt by design and tokio drops in-flight tasks at teardown. The
-signature is stable so a future release can drain tasks and report the
-count that did not finish within the deadline without an ABI break.
+`runtime_shutdown_blocking(timeout_ms)` shuts the shared async runtime
+down gracefully. It blocks for up to `timeout_ms` while in-flight tasks
+drain, then returns the number of tasks that had **not** finished when
+the timeout elapsed (`0` on a clean drain) so a caller can log or abort:
+
+```cpp
+using namespace std::chrono_literals;
+std::uint64_t unfinished = tac::runtime_shutdown_blocking(5000ms);  // 5 s
+if (unfinished != 0) {
+    // some work did not drain in time — decide how to react
+}
+```
+
+The runtime is **single-shot**: once shut down it is never rebuilt.
+Every subsequent async call fails fast with `io_error` (the C ABI
+returns `TGM_ERROR_IO`), and a second `runtime_shutdown_blocking` is an
+idempotent no-op returning `0`. Calling it before any async work has run
+is also a clean no-op (nothing was ever spawned). Do **not** call it from
+inside an async completion callback running on the runtime's own worker
+threads — tokio forbids dropping a runtime from within itself; call it
+from your application's teardown thread instead.
 
 ## Remote reads (`open_remote`)
 

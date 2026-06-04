@@ -6,7 +6,7 @@
 ! granted to it by virtue of its status as an intergovernmental organisation nor
 ! does it submit to any jurisdiction.
 
-!> Negative test for the non-copyable handle guard (PLAN_FORTRAN.md §5.4).
+!> Negative test for the non-copyable handle guard.
 !> A whole-type assignment of a handle must invoke the defined `assignment(=)`
 !> and `error stop` — aborting with a non-zero exit code. This program is
 !> registered in CTest with WILL_FAIL TRUE: if the guard ever stops firing

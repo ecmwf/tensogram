@@ -6,8 +6,8 @@
 # granted to it by virtue of its status as an intergovernmental organisation nor
 # does it submit to any jurisdiction.
 
-# CMake build for the Tensogram Fortran binding (the system of record;
-# PLAN_FORTRAN.md §5.6). Links the system `libtensogram` discovered through
+# CMake build for the Tensogram Fortran binding (the system of record).
+# Links the system `libtensogram` discovered through
 # pkg-config (the cargo-c / release-tarball install that ships tensogram.pc).
 #
 #   cmake -S fortran -B build/fortran
@@ -37,7 +37,7 @@ pkg_check_modules(TENSOGRAM REQUIRED IMPORTED_TARGET tensogram)
 # The DEFAULT is f2018 because the examples and tests declare handle LOCALS,
 # and gfortran's `-std=f2008` emits an unconditional f08/0011 advisory for any
 # finalizable + default-initialized type used as a local (the handle RAII /
-# null-safety design, PLAN_FORTRAN.md §5.4) — valid F2008, but `-Werror`
+# null-safety design) — valid F2008, but `-Werror`
 # rejects it. So the full tree builds under f2018; F2008 conformance is gated
 # on the LIBRARY alone (the `fortran-f2008-check` make target / CI step), which
 # configures with TESTS and EXAMPLES OFF. `-DTENSOGRAM_FORTRAN_STD=f2008`
@@ -47,7 +47,7 @@ set(TENSOGRAM_FORTRAN_STD "f2018" CACHE STRING
 set_property(CACHE TENSOGRAM_FORTRAN_STD PROPERTY STRINGS f2008 f2018 f2003 gnu)
 
 # Standard-conformance + warnings-as-errors on GNU (the supported compiler for
-# the initial arc; PLAN_FORTRAN.md §10). Scoped to Fortran so the optional
+# the initial arc). Scoped to Fortran so the optional
 # C++ cross-language harness (below) is not given Fortran flags.
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
   add_compile_options(
@@ -108,7 +108,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   # the guard — a different message — is reported as a failure, not a false
   # pass; and a clean exit 0 (guard silently gone) still fails. With
   # PASS_REGULAR_EXPRESSION set, CTest matches the regex against the captured
-  # output and ignores the (non-zero) exit code. PLAN_FORTRAN.md §5.4.
+  # output and ignores the (non-zero) exit code.
   add_executable(test_copy_guard test/test_copy_guard.f90)
   target_link_libraries(test_copy_guard PRIVATE tensogram_f)
   add_test(NAME test_copy_guard COMMAND test_copy_guard)
@@ -136,7 +136,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   # or not a C++ compiler is present, and is reused by both the Python and
   # C/C++ parity directions below. The shared driver run_xlang.cmake runs a
   # writer then a reader; both agree on F(i,j)=i*1000+j and a lossless (zstd)
-  # pipeline. PLAN_FORTRAN.md §8.
+  # pipeline.
   add_executable(xlang_fortran test/xlang_fortran.f90)
   target_link_libraries(xlang_fortran PRIVATE tensogram_f)
 

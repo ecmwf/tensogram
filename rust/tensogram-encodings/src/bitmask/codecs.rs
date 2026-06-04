@@ -235,4 +235,43 @@ mod tests {
         let err = decode_lz4(b"not a valid lz4 stream", 8).unwrap_err();
         assert!(matches!(err, MaskError::Codec(_)));
     }
+
+    /// An empty mask (zero elements) round-trips through every codec.
+    /// This exercises the empty-input fast paths (`packed.is_empty()`
+    /// on encode, `bytes.is_empty()` / `num_items == 0` on decode) that
+    /// the populated `sample_mask` cases never reach.
+    #[test]
+    fn none_roundtrip_empty() {
+        let enc = encode_none(&[]).unwrap();
+        let dec = decode_none(&enc, 0).unwrap();
+        assert!(dec.is_empty());
+    }
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn lz4_roundtrip_empty() {
+        let enc = encode_lz4(&[]).unwrap();
+        let dec = decode_lz4(&enc, 0).unwrap();
+        assert!(dec.is_empty());
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn zstd_roundtrip_empty() {
+        let enc = encode_zstd(&[], None).unwrap();
+        let dec = decode_zstd(&enc, 0).unwrap();
+        assert!(dec.is_empty());
+    }
+
+    #[cfg(feature = "blosc2")]
+    #[test]
+    fn blosc2_roundtrip_empty() {
+        use crate::pipeline::Blosc2Codec;
+        // Empty bits → empty packed → the encoder returns an empty blob,
+        // and the decoder's empty-bytes branch reconstructs zero items.
+        let enc = encode_blosc2(&[], Blosc2Codec::Lz4, 5).unwrap();
+        assert!(enc.is_empty());
+        let dec = decode_blosc2(&enc, 0).unwrap();
+        assert!(dec.is_empty());
+    }
 }

@@ -954,12 +954,10 @@ fn async_decode_range_round_trip() {
     tgm_async_file_close(file);
 }
 
-#[test]
-fn async_runtime_shutdown_blocking_is_noop() {
-    // Reserved ABI: currently a no-op that reports zero unfinished tasks
-    // (process exit is abrupt by design).  Must not panic.
-    assert_eq!(tgm_runtime_shutdown_blocking(100), 0);
-}
+// NOTE: `tgm_runtime_shutdown_blocking` tears down the process-global
+// runtime permanently, so it cannot be exercised here without poisoning
+// every sibling test in this binary.  Its tests live in the dedicated,
+// process-isolated `tests/async_shutdown_tests.rs` binary.
 
 #[cfg(feature = "async-remote")]
 #[test]

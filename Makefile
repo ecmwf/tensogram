@@ -153,8 +153,8 @@ fortran-fpm-test: ## Build the Fortran library via fpm (injects pkg-config flags
 # Fortran 2008 conformance gate: the binding LIBRARY must compile clean under
 # -std=f2008 -Wall -Wextra -Werror. Examples/tests are OFF on purpose — they
 # declare handle locals, which gfortran flags with an f08/0011 advisory under
-# -std=f2008 (valid F2008, but -Werror-promoted; see fortran/CMakeLists.txt and
-# PLAN_FORTRAN.md §5.4). A nonzero exit means the library regressed into an
+# -std=f2008 (valid F2008, but -Werror-promoted; see fortran/CMakeLists.txt).
+# A nonzero exit means the library regressed into an
 # F2018-only construct.
 fortran-f2008-check: ## Verify the binding library compiles clean under -std=f2008
 	cmake -S fortran -B build/fortran-f2008 -DCMAKE_BUILD_TYPE=Debug \

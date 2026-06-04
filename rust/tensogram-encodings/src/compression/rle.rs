@@ -97,3 +97,86 @@ impl Compressor for RleCompressor {
         Err(CompressionError::RangeNotSupported)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Packed bitmask bytes round-trip through compress → decompress
+    /// byte-for-byte.  Exercises the `n_elements` header write/read, the
+    /// pack/unpack bridge, and the expected-size check on the happy path.
+    #[test]
+    fn rle_compress_decompress_round_trip() {
+        // A mix of runs so the RLE body is non-trivial: 0xFF (8 set),
+        // 0x00 (8 clear), 0xAA (alternating).
+        let packed = vec![0xFFu8, 0x00, 0xAA, 0x0F];
+        let result = RleCompressor.compress(&packed).expect("compress");
+        // The blob carries the 4-byte big-endian element count prefix.
+        assert!(result.data.len() >= 4);
+        assert_eq!(
+            &result.data[0..4],
+            &((packed.len() * 8) as u32).to_be_bytes()
+        );
+        assert!(result.block_offsets.is_none());
+
+        let restored = RleCompressor
+            .decompress(&result.data, packed.len())
+            .expect("decompress");
+        assert_eq!(restored, packed);
+    }
+
+    /// An all-zero bitmask is the RLE best case (one long run); it must
+    /// still round-trip byte-exactly.
+    #[test]
+    fn rle_round_trip_all_zero() {
+        let packed = vec![0x00u8; 16];
+        let blob = RleCompressor.compress(&packed).unwrap().data;
+        let restored = RleCompressor.decompress(&blob, packed.len()).unwrap();
+        assert_eq!(restored, packed);
+    }
+
+    /// A blob shorter than the 4-byte `n_elements` prefix is rejected
+    /// with a clear error rather than panicking on the missing chunk.
+    #[test]
+    fn rle_decompress_rejects_short_blob() {
+        let err = RleCompressor
+            .decompress(&[0x00, 0x01, 0x02], 1)
+            .expect_err("blob shorter than the 4-byte prefix must be rejected");
+        match err {
+            CompressionError::Unknown(msg) => assert!(
+                msg.contains("too short"),
+                "expected a 'too short' diagnostic, got: {msg}"
+            ),
+            other => panic!("expected Unknown, got: {other:?}"),
+        }
+    }
+
+    /// When the caller's `expected_size` disagrees with the repacked
+    /// length, decompress reports the mismatch instead of silently
+    /// returning the wrong number of bytes.
+    #[test]
+    fn rle_decompress_rejects_size_mismatch() {
+        let packed = vec![0xFFu8, 0x00];
+        let blob = RleCompressor.compress(&packed).unwrap().data;
+        // Real size is 2 bytes; claim 3.
+        let err = RleCompressor
+            .decompress(&blob, 3)
+            .expect_err("size mismatch must be rejected");
+        match err {
+            CompressionError::Unknown(msg) => assert!(
+                msg.contains("!= expected"),
+                "expected a size-mismatch diagnostic, got: {msg}"
+            ),
+            other => panic!("expected Unknown, got: {other:?}"),
+        }
+    }
+
+    /// Partial range decode is structurally unsupported for RLE.
+    #[test]
+    fn rle_decompress_range_unsupported() {
+        let err = RleCompressor
+            .decompress_range(&[0u8; 8], &[], 0, 1)
+            .expect_err("range decode must be unsupported");
+        assert!(matches!(err, CompressionError::RangeNotSupported));
+    }
+}

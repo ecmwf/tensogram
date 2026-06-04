@@ -208,3 +208,115 @@ mod allocation_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod method_registry_tests {
+    use super::*;
+
+    /// Every feature-independent method round-trips through
+    /// `name()` → `from_name()` unchanged.  Pins the wire-stable
+    /// string mapping in both directions.
+    #[test]
+    fn method_name_round_trip() {
+        for method in [
+            MaskMethod::Rle,
+            MaskMethod::Roaring,
+            MaskMethod::Zstd { level: None },
+            MaskMethod::Lz4,
+            MaskMethod::None,
+        ] {
+            let name = method.name();
+            let parsed = MaskMethod::from_name(name).expect("known name must parse");
+            assert_eq!(parsed, method, "round-trip mismatch for {name:?}");
+        }
+    }
+
+    /// `Zstd` carries a level but its canonical name is level-agnostic;
+    /// `from_name("zstd")` yields the default (`None`) level, and the
+    /// name is the same regardless of the level the variant holds.
+    #[test]
+    fn zstd_name_is_level_agnostic() {
+        assert_eq!(MaskMethod::Zstd { level: Some(9) }.name(), "zstd");
+        assert_eq!(MaskMethod::Zstd { level: None }.name(), "zstd");
+        assert_eq!(
+            MaskMethod::from_name("zstd").unwrap(),
+            MaskMethod::Zstd { level: None }
+        );
+    }
+
+    /// The default method is Roaring, and it names to "roaring".
+    #[test]
+    fn default_method_is_roaring() {
+        assert_eq!(MaskMethod::default(), MaskMethod::Roaring);
+        assert_eq!(MaskMethod::default().name(), "roaring");
+    }
+
+    /// An unrecognised method name surfaces `UnknownMethod` carrying the
+    /// offending string, and its Display lists the accepted values.
+    #[test]
+    fn from_name_rejects_unknown() {
+        let err = MaskMethod::from_name("brotli").expect_err("unknown method must be rejected");
+        match &err {
+            MaskError::UnknownMethod(name) => assert_eq!(name, "brotli"),
+            other => panic!("expected UnknownMethod, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brotli"),
+            "Display must name the bad method: {msg}"
+        );
+        assert!(
+            msg.contains("roaring"),
+            "Display must list accepted values: {msg}"
+        );
+    }
+
+    /// `blosc2` parses to the LZ4 sub-codec default when the feature is
+    /// compiled in; when it is not, it surfaces `FeatureDisabled`.
+    #[test]
+    fn blosc2_name_depends_on_feature() {
+        let result = MaskMethod::from_name("blosc2");
+        #[cfg(feature = "blosc2")]
+        {
+            let m = result.expect("blosc2 must parse when the feature is on");
+            assert_eq!(m.name(), "blosc2");
+        }
+        #[cfg(not(feature = "blosc2"))]
+        {
+            match result.expect_err("blosc2 must be rejected when the feature is off") {
+                MaskError::FeatureDisabled { method } => assert_eq!(method, "blosc2"),
+                other => panic!("expected FeatureDisabled, got {other:?}"),
+            }
+        }
+    }
+
+    /// Spot-check the remaining `MaskError` Display strings so the
+    /// `#[error(...)]` format args are exercised (mutation-resistant).
+    #[test]
+    fn mask_error_display_strings() {
+        assert!(
+            MaskError::LengthMismatch {
+                expected: 10,
+                actual: 7
+            }
+            .to_string()
+            .contains("expected 10 elements, got 7")
+        );
+        assert!(
+            MaskError::Malformed("bad header".into())
+                .to_string()
+                .contains("bad header")
+        );
+        assert!(MaskError::Rle("eof".into()).to_string().contains("eof"));
+        assert!(
+            MaskError::Roaring("bad container".into())
+                .to_string()
+                .contains("bad container")
+        );
+        assert!(
+            MaskError::Codec("zstd boom".into())
+                .to_string()
+                .contains("zstd boom")
+        );
+    }
+}

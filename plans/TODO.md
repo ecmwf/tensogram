@@ -15,44 +15,6 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
 `../CHANGELOG.md` and the *Asynchronous frontends* section of
 `ARCHITECTURE.md`.  Open follow-ups:
 
-- [ ] **cpp-async follow-up: real `tgm_runtime_shutdown_blocking`**
-    `tgm_runtime_shutdown_blocking(timeout_ms)` in
-    `rust/tensogram-ffi/src/async_core.rs` is a no-op stub: it ignores
-    `timeout_ms` and returns `0` (always "zero tasks unfinished").  The
-    intended runtime-lifecycle contract is: call
-    `Runtime::shutdown_timeout(Duration::from_millis(timeout_ms))`,
-    cancel pending tasks, free every outstanding `tgm_async_file_t` /
-    `tgm_async_streaming_encoder_t` handle, and **return the count of
-    tasks that did not finish within the timeout** so callers can
-    log / abort.
-
-    Pickup notes:
-    - **Blocker:** the runtime lives in
-      `SHARED_RUNTIME: OnceLock<Result<Runtime, String>>` (lazy build,
-      build error cached and surfaced as `TGM_ERROR_IO`).
-      `Runtime::shutdown_timeout` consumes `self`, which a `OnceLock`
-      cannot hand back.  Switch the singleton to an owning container
-      that supports `take` (e.g. `Mutex<Option<Result<Runtime,
-      String>>>` or `Arc<RwLock<Option<Runtime>>>`) while keeping the
-      lazy-build + cached-build-error behaviour.
-    - **Task counting:** there is no live-task counter today.  Add one
-      at the two spawn choke points — `spawn_task` and
-      `spawn_or_set_error` in `async_core.rs` — via an `AtomicUsize`
-      (increment on spawn, decrement on completion/drop) or a
-      `tokio_util::task::TaskTracker`; `shutdown_timeout` reports the
-      residual.
-    - **Post-shutdown:** once shut down the runtime is single-shot — no
-      rebuild; every subsequent `tgm_async_*` call returns
-      `TGM_ERROR_IO` with a descriptive `tgm_last_error()`.
-    - **Test to write:** `cpp/tests/test_async_shutdown_during_flight.cpp`
-      — fire shutdown while N tasks are mid-flight, assert the returned
-      unfinished count, assert subsequent `tgm_async_*` calls return
-      `TGM_ERROR_IO`.  Acceptance: "drains in-flight
-      tasks within the supplied timeout and reports cleanly on
-      overflow."
-    - The C ABI (`u64` return) already matches; only the Rust
-      implementation behind it changes.
-
 - [ ] **cpp-async follow-up: object-store / remote streaming *writes***
     The streaming-async **write** path shipped as local-file only
     (`tokio::fs::File`).  The object-store producer path (streaming a
@@ -175,18 +137,18 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
     fpm, the `fortran-f2008-check` conformance gate, bidirectional
     Fortran↔C/C++ and Fortran↔Python parity, and the error-enum↔`tensogram.h`
     consistency check. `fortran/fpm.toml` is on the VERSION-sync list. See
-    `PLAN_FORTRAN.md` (§7 milestones, §10 decisions) and the `CHANGELOG`.
+    the `CHANGELOG` for the delivered scope.
     Remaining, demand-driven follow-ups:
     - **Async surface** — the C async path uses completion callbacks (the
       hardest part to bind and the least in demand for blocking NWP codes).
       Bind the blocking `tgm_async_task_join_*` variants before callbacks;
-      do not start without a real consumer (PLAN_FORTRAN.md §5.7).
+      do not start without a real consumer.
     - **Extra dtypes** — `int8`/`int16`/`complex`/`float16`. Fortran has no
       native unsigned or half/complex-as-pair scalar mapping, so each needs a
       deliberate representation decision.
     - **Zero-copy non-contiguous input** via `CFI_cdesc_t` / TS 29113 — only
-      worth it if a concrete need appears; the contiguous-gather path covers
-      today's usage (PLAN_FORTRAN.md §4.1, Path C).
+      worth it if a concrete need appears; the contiguous-gather path (a
+      caller-side contiguous copy before the FFI call) covers today's usage.
 
   - [ ] **typescript-wrapper (Scope C.3) — distribution & CI maturity**
     Three intertwined tasks that all touch the build, pack, and publish
@@ -308,59 +270,6 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
       flip to required-for-merge once the config has stabilised; the job
       is currently constrained by a 30-minute budget under serialised
       `MUTANTS_JOBS=2`, so bump the timeout or keep feature PRs small.
-
-- [ ] **descriptor ↔ frame-payload consistency checks on decode**:
-    - Complementary to the preallocation hardening (already shipped):
-      instead of *surviving* a pathological `num_values` via fallible
-      allocation after the fact, *reject* malformed descriptors cheaper
-      and earlier by cross-checking the descriptor's claimed output
-      size against the frame's actual payload length (known from the
-      frame header) before any decompression runs.
-    - Three tiers of strictness depending on the pipeline:
-        - **Exact** for `encoding="none" + compression="none"`:
-          `frame_payload_bytes == num_values × dtype_byte_width`
-          (and `ceil(num_values / 8)` for the `bitmask` dtype). A
-          mismatch in either direction is categorically malformed.
-        - **Exact** for `encoding="simple_packing" + compression="none"`:
-          `frame_payload_bytes == ceil(num_values × bits_per_value / 8)`.
-          The current simple_packing decoder rejects too-small payloads
-          with `InsufficientData` but silently ignores too-much data
-          — this TODO tightens the too-much-data direction too.
-        - **Plausibility ratio** for compressed codecs (`zstd`, `lz4`,
-          `szip`, `blosc2`, `zfp`, `sz3`):
-          `num_values × dtype_byte_width ≤ frame_payload_bytes ×
-          MAX_PLAUSIBLE_RATIO`. Pick a conservative cap (probably
-          around `1000×`) that accommodates pathological-but-legitimate
-          high-compression inputs (RLE on all-zero bitmasks,
-          szip on constant data) while still rejecting claims wildly
-          disproportionate to the compressed payload.
-    - Fit: `pipeline::decode_pipeline` gains a
-      `validate_descriptor_size(encoded.len(), config)` step right
-      before the `compressor.decompress(encoded, expected_size)` call.
-      `decode_range_pipeline` gets a matching check sized against
-      the sliced chunk rather than the full frame.
-    - New error: `PipelineError::DescriptorSizeMismatch { claimed_bytes,
-      payload_bytes, codec }`, marked `#[non_exhaustive]` consistent
-      with the other error enums hardened in PR #90.
-    - Why separate from the preallocation-hardening PR:
-        - Distinct mechanism (upstream structural validation vs
-          downstream fallible allocation).
-        - More specific operator-visible errors ("descriptor claims
-          4 TiB but frame is 50 bytes") than the generic
-          "failed to reserve".
-        - Distinct test matrix (one per encoding × compression ×
-          {match, too-small, too-big, ratio-plausible, ratio-implausible}).
-    - Tests (behaviour-driven):
-        - Exact tier: passthrough / bitmask / simple_packing
-          round-trips with matched sizes succeed; with off-by-one
-          payload lengths surface `DescriptorSizeMismatch`.
-        - Ratio tier: hand-craft a `.tgm` with 20-byte compressed
-          payload + descriptor claiming 4 TiB decoded size, assert
-          the typed error fires before any decompression is
-          attempted.
-        - Boundary: a descriptor claiming `compressed × 1000` bytes
-          is accepted; `compressed × 1001` is rejected (or whatever
-          ratio is picked).
 
 ## Viewer
 

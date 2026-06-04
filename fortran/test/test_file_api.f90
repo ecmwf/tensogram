@@ -8,8 +8,7 @@
 
 !> File API: create a multi-message .tgm, append messages of different
 !> dtypes/ranks, reopen, count them, and decode each by index (random access).
-!> Also exercises read_message (raw bytes) -> decode. PLAN_FORTRAN.md file-API
-!> milestone.
+!> Also exercises read_message (raw bytes) -> decode.
 program test_file_api
    use, intrinsic :: iso_c_binding
    use tensogram

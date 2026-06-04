@@ -518,7 +518,7 @@ jobs:
   # dtype/rank, file API, metadata, error, copy-guard, the error-enum
   # consistency check, and the bidirectional Fortran<->C/C++ AND
   # Fortran<->Python parity tests. The library is also built via fpm so the
-  # fpm manifest cannot drift from the CMake build (PLAN_FORTRAN.md §5.6).
+  # fpm manifest cannot drift from the CMake build.
   fortran:
     name: Fortran (Linux)
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
@@ -570,7 +570,7 @@ jobs:
       # Fortran 2008 conformance gate: the binding library must keep compiling
       # under -std=f2008 -Wall -Wextra -Werror (no assumed-rank / SELECT RANK).
       # Library only — examples/tests declare handle locals that trip gfortran's
-      # f08/0011 advisory under -std=f2008 (valid F2008; see PLAN_FORTRAN.md §5.4).
+      # f08/0011 advisory under -std=f2008 (valid F2008; see fortran/CMakeLists.txt).
       - name: Check the Fortran binding compiles under -std=f2008 (library gate)
         run: make fortran-f2008-check
 

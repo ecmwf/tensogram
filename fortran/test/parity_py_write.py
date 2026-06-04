@@ -12,7 +12,7 @@ Pairs with ``xlang_fortran fread``. Both agree on a logical field
 F(i,j) = i*1000 + j (1-based). Python encodes a C/row-major ``[NJ, NI]``
 array with ``arr[r, c] = F(c+1, r+1)``; the Fortran reader decodes it into
 ``out(ni, nj)`` and asserts ``out(i,j) == F(i,j)`` — the column-major
-contract from the Python→Fortran direction (PLAN_FORTRAN.md §8). Lossless
+contract from the Python→Fortran direction. Lossless
 zstd compression keeps it bit-exact.
 """
 

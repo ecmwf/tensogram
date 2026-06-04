@@ -6,7 +6,7 @@
 ! granted to it by virtue of its status as an intergovernmental organisation nor
 ! does it submit to any jurisdiction.
 
-! Per-rank token table for the rank-generic surface (PLAN_FORTRAN.md §5.2).
+! Per-rank token table for the rank-generic surface.
 ! Included once per (family, dtype) with TGM_BODY set to the interface-list
 ! (tgm_iface.inc) or an implementation template; emits ranks 0..7. Per rank:
 !   RSUF   name suffix (_r0.._r7)        DIMS   dummy dimension
