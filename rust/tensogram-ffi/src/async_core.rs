@@ -135,6 +135,32 @@ impl Drop for LiveTaskGuard {
     }
 }
 
+/// RAII backstop that guarantees a spawned task always leaves the
+/// `Pending` state, so a blocking `tgm_async_task_join_*` can never
+/// wait forever.
+///
+/// The future's normal path calls `complete(outcome)` itself; this
+/// guard is moved into the future and, on `Drop`, calls
+/// `complete(AsyncOutcome::Cancelled)`.  Because [`TaskShared::complete`]
+/// is idempotent (it returns early when the state is no longer
+/// `Pending`), the guard is a no-op on the happy path and only takes
+/// effect when the future is dropped *without* completing — e.g. the
+/// runtime is torn down by [`tgm_runtime_shutdown_blocking`] while the
+/// task is still pending, including before its first poll.  Without
+/// this backstop such a task would stay `Pending` forever and any
+/// joiner would deadlock on the readiness condvar.
+struct CompletionGuard {
+    shared: Arc<TaskShared>,
+}
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        // No-op if the future already completed normally; otherwise
+        // transition the stranded task to Cancelled and wake joiners.
+        self.shared.complete(AsyncOutcome::Cancelled);
+    }
+}
+
 fn runtime_config() -> &'static RuntimeConfig {
     RUNTIME_CONFIG.get_or_init(RuntimeConfig::default)
 }
@@ -428,11 +454,22 @@ where
     // does the `fetch_add`; its `Drop` does the matching `fetch_sub`.
     let live_guard = LiveTaskGuard::new();
 
+    // Backstop that forces the task out of `Pending` even if the future
+    // is dropped before it reaches the `complete(outcome)` call below
+    // (e.g. runtime teardown during shutdown).  Owns its own
+    // `Arc<TaskShared>` clone and is moved into the future; idempotent
+    // with the explicit completion on the happy path.
+    let completion_guard = CompletionGuard {
+        shared: shared.clone(),
+    };
+
     rt.spawn(async move {
-        // Bind the guard into the future so its lifetime is the
-        // future's lifetime.  `let _live = live_guard;` rather than a
-        // bare move expression so the binding is unambiguous.
+        // Bind both guards into the future so their lifetimes are the
+        // future's lifetime.  `let _x = ...` bindings (not bare moves)
+        // so the captures are unambiguous and live until the end of
+        // the block / until the future is dropped.
         let _live = live_guard;
+        let _completion = completion_guard;
         let outcome: AsyncOutcome = if timeout_ms > 0 {
             let deadline = Duration::from_millis(timeout_ms);
             tokio::select! {
@@ -1563,12 +1600,23 @@ mod tests {
             "second shutdown must be a no-op returning 0"
         );
 
-        // Free the task handle.  We must NOT *join* it — the runtime
-        // that owned its future is gone, so a join would block forever
-        // — but `tgm_async_task_free` only drops the heap-allocated
-        // handle box (one `Arc<TaskShared>` ref); it never joins or
-        // blocks.  The spawned future holds its own `Arc` clone, so
-        // this is safe and keeps the test clean under leak-sanitizer.
+        // Regression guard for the stranded-task deadlock: the task's
+        // future was dropped by the runtime teardown before it could
+        // call `complete`, so without the `CompletionGuard` backstop
+        // this join would block on the readiness condvar FOREVER.  With
+        // the backstop the task was transitioned to `Cancelled` on
+        // drop, so the join returns promptly with that outcome.  (This
+        // test would hang rather than fail if the backstop regressed.)
+        // Map the join outcome to a Debug-able tag without requiring
+        // `TaskResult: Debug` (the Ok payload is irrelevant here).
+        let join_tag: Result<(), TgmError> = join_internal(task).map(|_| ());
+        assert!(
+            matches!(join_tag, Err(TgmError::Cancelled)),
+            "a task stranded by shutdown must join as Cancelled, not deadlock; got {join_tag:?}"
+        );
+
+        // Free the heap handle.  `tgm_async_task_free` only drops the
+        // handle box; it never joins or blocks.
         tgm_async_task_free(task);
     }
 }
