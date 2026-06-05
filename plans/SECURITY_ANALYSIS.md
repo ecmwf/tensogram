@@ -234,6 +234,39 @@ no UB (ASan)** on any input.
   (exact reproducer + synthetic tiny-total sweep).
 - **Re-fuzz:** `fuzz_scan` clean over a full 90 s run after the fix.
 
+### SEC-006 — HIGH — FIXED
+
+- **Surface:** `framing.rs` `decode_metadata_only` (reached from
+  `decode_metadata`, every metadata-only read).
+- **Class:** E / B / F. `pos += frame_total` overflow with an
+  attacker-controlled frame `total_length`; a zero/sub-header
+  `frame_total` could additionally spin the loop (no progress → DoS).
+- **Discovery:** `fuzz_decode_metadata`.
+- **Mitigation:** reject `frame_total < FRAME_HEADER_SIZE`;
+  `saturating_add` on the advance + alignment so an overflow exits the
+  loop cleanly.
+- **Regression test:** `adversarial.rs::sec006_decode_metadata_huge_skip_frame_no_overflow`.
+- **Re-fuzz:** `fuzz_decode_metadata` clean over a full 90 s run.
+
+### SEC-007 — HIGH — FIXED
+
+- **Surface:** `framing.rs` `scan_file` bidirectional forward hop.
+- **Class:** E / B. `fwd_pos + total` overflow and `fwd_pos + total - 8`
+  underflow with attacker-controlled preamble `total_length` on the
+  on-disk/file-scan path. Found by auditing the file siblings of the
+  in-memory scan fixes.
+- **Mitigation:** `checked_add` + preamble+postamble minimum floor.
+- **Regression test:** `adversarial.rs::sec007_scan_file_huge_and_tiny_total_no_overflow`
+  (via `Cursor`, huge + tiny `total_length`).
+
+> **Pattern note:** SEC-001..007 are one systemic class — every
+> attacker-controlled length (preamble `total_length`, frame
+> `total_length`, mask offset/length) added to a buffer position must
+> use checked/saturating arithmetic and a structural minimum floor
+> before deriving any offset.  The whole framing layer was swept for
+> this pattern; the fixes are perf-neutral (the checks replace the same
+> additions).
+
 _(audit continuing)_
 
 ## 9. Deliverables

@@ -631,3 +631,54 @@ fn sec005_backward_scan_tiny_total_no_oob() {
         let _ = scan(&b); // must not panic
     }
 }
+
+/// SEC-006 (HIGH, found by `fuzz_decode_metadata`): the metadata-skip
+/// loop did `pos += frame_total` with an attacker-controlled
+/// `frame_total` (`u64` up to usize::MAX) → add-overflow panic.  A
+/// zero/sub-header `frame_total` could also spin the loop (no
+/// progress).  `decode_metadata` must now reject or skip cleanly
+/// without panicking or hanging.
+#[test]
+fn sec006_decode_metadata_huge_skip_frame_no_overflow() {
+    // Exact libFuzzer reproducer.
+    let crash_input: &[u8] = &[
+        84, 69, 78, 83, 79, 71, 82, 77, 0, 3, 82, 77, 0, 82, 77, 3, 71, 70, 70, 70, 139, 139, 139,
+        139, 139, 139, 139, 139, 70, 82, 0, 3, 70, 70, 70, 246, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255,
+    ];
+    let _ = decode_metadata(crash_input); // must not panic / hang
+}
+
+/// SEC-007 (HIGH): `scan_file`'s bidirectional walker added a
+/// preamble's attacker-controlled `total` to `fwd_pos` without an
+/// overflow check (`fwd_pos + total <= bwd_end`) and computed
+/// `fwd_pos + total - 8`.  A huge or tiny `total_length` in a hostile
+/// on-disk `.tgm` could overflow/underflow and panic.  `scan_file`
+/// must scan hostile files without panicking.
+#[test]
+fn sec007_scan_file_huge_and_tiny_total_no_overflow() {
+    use std::io::Cursor;
+    use tensogram::wire::{END_MAGIC, MAGIC, WIRE_VERSION};
+
+    // (a) Forward preamble with total_length = u64::MAX.
+    let mut buf = Vec::new();
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    buf.extend_from_slice(&0u16.to_be_bytes());
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf.extend_from_slice(&u64::MAX.to_be_bytes());
+    buf.resize(128, 0);
+    buf[120..].copy_from_slice(END_MAGIC); // give the backward walker bait
+    let mut cur = Cursor::new(buf);
+    let _ = tensogram::scan_file(&mut cur); // must not panic
+
+    // (b) Postamble with a tiny mirrored total_length.
+    let mut buf2 = vec![0u8; 96];
+    let n = buf2.len();
+    buf2[..MAGIC.len()].copy_from_slice(MAGIC);
+    buf2[n - 8..].copy_from_slice(END_MAGIC);
+    buf2[n - 16..n - 8].copy_from_slice(&3u64.to_be_bytes()); // tiny total
+    let mut cur2 = Cursor::new(buf2);
+    let _ = tensogram::scan_file(&mut cur2); // must not panic
+}

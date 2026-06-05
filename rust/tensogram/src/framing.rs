@@ -1139,8 +1139,19 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
                         fh.total_length
                     ))
                 })?;
-                pos += frame_total;
-                pos = (pos + 7) & !7; // align
+                // A frame must be at least a header; a zero/sub-header
+                // `frame_total` would not advance `pos` and could spin.
+                // `saturating_add` also prevents an attacker-controlled
+                // `frame_total` near usize::MAX from overflowing `pos`
+                // into a panic — a saturated `pos` exceeds `msg_end` and
+                // ends the loop cleanly.
+                if frame_total < FRAME_HEADER_SIZE {
+                    return Err(TensogramError::Framing(format!(
+                        "frame at offset {pos} total_length {frame_total} smaller than header size"
+                    )));
+                }
+                pos = pos.saturating_add(frame_total);
+                pos = pos.saturating_add(7) & !7; // align
             }
         }
     }
@@ -1709,10 +1720,16 @@ fn scan_file_bidirectional(
             && let Ok(preamble) = Preamble::read_from(&preamble_buf)
         {
             if preamble.total_length > 0 {
+                // `total` is attacker-controlled; use checked_add so
+                // `fwd_pos + total` cannot overflow, and require the
+                // preamble+postamble minimum so `… - 8` cannot underflow
+                // and the message is structurally plausible.
                 if let Ok(total) = usize::try_from(preamble.total_length)
-                    && fwd_pos + total <= bwd_end
+                    && total >= PREAMBLE_SIZE + POSTAMBLE_SIZE
+                    && let Some(msg_end) = fwd_pos.checked_add(total)
+                    && msg_end <= bwd_end
                 {
-                    let end_magic_offset = fwd_pos + total - 8;
+                    let end_magic_offset = msg_end - 8;
                     file.seek(SeekFrom::Start(end_magic_offset as u64))?;
                     let mut em = [0u8; 8];
                     if file.read_exact(&mut em).is_ok() && &em == crate::wire::END_MAGIC {
