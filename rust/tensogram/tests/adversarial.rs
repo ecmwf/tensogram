@@ -682,3 +682,26 @@ fn sec007_scan_file_huge_and_tiny_total_no_overflow() {
     let mut cur2 = Cursor::new(buf2);
     let _ = tensogram::scan_file(&mut cur2); // must not panic
 }
+
+/// SEC-008 (verified-secure invariant, kept as a no-regression guard):
+/// a CBOR recursion bomb (deeply-nested arrays) in the metadata frame
+/// must NOT exhaust the stack.  `ciborium::from_reader` applies a
+/// default recursion limit (256), so 10k-deep nesting returns a clean
+/// `Err` rather than a stack-overflow abort.  This test pins that the
+/// metadata decoder uses the recursion-limited parser path.
+#[test]
+fn sec008_cbor_recursion_bomb_is_rejected_not_stack_overflow() {
+    // `0x81` = "array of 1 item"; repeating it N times encodes an
+    // N-deep nested array.  N far exceeds ciborium's 256 limit.
+    let depth = 10_000usize;
+    let mut bomb = vec![0x81u8; depth];
+    bomb.push(0x00); // innermost value: integer 0
+    let err = tensogram::metadata::cbor_to_global_metadata(&bomb)
+        .expect_err("a 10k-deep CBOR nesting must be rejected, not overflow the stack");
+    // Any structured error is acceptable; the point is that it returns
+    // instead of crashing.  It is routed through the Metadata category.
+    assert!(
+        matches!(err, TensogramError::Metadata(_)),
+        "expected Metadata error, got: {err:?}"
+    );
+}
