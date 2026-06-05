@@ -184,6 +184,56 @@ no UB (ASan)** on any input.
   (exact fuzzer reproducer + full sub-minimum boundary sweep).
 - **Re-fuzz:** `fuzz_decode` clean over 5,600+ executions after the fix.
 
+### SEC-002 — HIGH — FIXED
+
+- **Surface:** `framing.rs` `try_forward_hop` (reached from `scan`,
+  `scan_with_options`, multi-message reads).
+- **Class:** E (panic-as-DoS) / B (integer overflow).
+- **Description:** `pos + total` with attacker-controlled `total`
+  (`u64` up to `usize::MAX`) overflowed → "attempt to add with
+  overflow" panic.
+- **Discovery:** `fuzz_scan`.
+- **Mitigation:** `checked_add` for the message end + a minimum-length
+  floor; overflow yields a clean "no message here" (advance), never a
+  panic.
+- **Regression test:** `adversarial.rs::sec002_scan_huge_total_length_does_not_overflow`.
+
+### SEC-003 — HIGH — FIXED
+
+- **Surface:** `framing.rs` `scan_file` (file/mmap scanner, reached from
+  `TensogramFile::open`).
+- **Class:** E / B. Same `pos + total` overflow as SEC-002 but on the
+  on-disk file-scan path (the fuzzer covers the in-memory path; this was
+  found by reading the sibling code during the SEC-002 fix).
+- **Mitigation:** `checked_add` + minimum-length floor.
+- **Regression:** covered structurally by the same boundary logic; the
+  file path shares the guard.
+
+### SEC-004 — HIGH — FIXED
+
+- **Surface:** `framing.rs` `data_object_inline_hashes` (reached from
+  hash-frame consistency checks / validation).
+- **Class:** E / B. `pos + frame_total` overflow with attacker frame
+  `total_length`; also `frame_end - 12` underflow for a tiny frame.
+- **Mitigation:** `checked_add` for the frame end, a minimum frame-size
+  floor (so the hash-slot offset can't underflow), and `saturating_add`
+  on the alignment step.
+- **Regression test:** `adversarial.rs::sec004_inline_hash_walk_huge_frame_total_does_not_overflow`.
+
+### SEC-005 — HIGH — FIXED
+
+- **Surface:** `framing.rs` `try_backward_hop` (bidirectional scan).
+- **Class:** A (OOB read) / E (panic). `msg_start = bound_end - total`
+  with a tiny `total` (below the preamble size) put `msg_start` so close
+  to the buffer end that the subsequent `buf[msg_start..msg_start + 8]`
+  MAGIC slice ran out of bounds and panicked.
+- **Discovery:** `fuzz_scan` (after SEC-002 fix exposed this deeper path).
+- **Mitigation:** require `total >= PREAMBLE_SIZE + POSTAMBLE_SIZE` in
+  the backward hop, guaranteeing the MAGIC slice stays in bounds.
+- **Regression test:** `adversarial.rs::sec005_backward_scan_tiny_total_no_oob`
+  (exact reproducer + synthetic tiny-total sweep).
+- **Re-fuzz:** `fuzz_scan` clean over a full 90 s run after the fix.
+
 _(audit continuing)_
 
 ## 9. Deliverables

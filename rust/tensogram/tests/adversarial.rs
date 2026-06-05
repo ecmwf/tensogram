@@ -527,3 +527,107 @@ fn sec001_undersized_total_length_is_rejected_not_panic() {
         );
     }
 }
+
+/// SEC-002 (HIGH, found by `fuzz_scan`): the in-memory scanner computed
+/// `pos + total` where `total` is an attacker-controlled `u64`.  A
+/// near-`usize::MAX` `total_length` overflowed the addition and
+/// panicked ("attempt to add with overflow") — a DoS in `scan`,
+/// reachable from any multi-message read.  It must now scan cleanly
+/// (returning no spurious message) without panicking.
+#[test]
+fn sec002_scan_huge_total_length_does_not_overflow() {
+    use tensogram::wire::{MAGIC, WIRE_VERSION};
+    let mut buf = Vec::new();
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+    buf.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    buf.extend_from_slice(&u64::MAX.to_be_bytes()); // total_length = usize::MAX-ish
+    buf.resize(64, 0); // some trailing bytes
+    // Must not panic; a hostile total_length yields no valid message.
+    let found = scan(&buf);
+    assert!(
+        found.is_empty(),
+        "a preamble with total_length=u64::MAX must not yield a message"
+    );
+
+    // Sweep a range of large values near the overflow boundary.
+    for total in [
+        u64::MAX,
+        u64::MAX - 1,
+        u64::MAX - 7,
+        (usize::MAX as u64) - 3,
+    ] {
+        let mut b = Vec::new();
+        b.extend_from_slice(MAGIC);
+        b.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+        b.extend_from_slice(&0u16.to_be_bytes());
+        b.extend_from_slice(&0u32.to_be_bytes());
+        b.extend_from_slice(&total.to_be_bytes());
+        b.resize(64, 0);
+        let _ = scan(&b); // must not panic for any of these
+    }
+}
+
+/// SEC-004 (HIGH, same class as SEC-002): `data_object_inline_hashes`
+/// walked frames with `pos + frame_total` where `frame_total` is an
+/// attacker-controlled `u64`.  A near-`usize::MAX` frame `total_length`
+/// overflowed and panicked.  It must now return a structured error
+/// instead.
+#[test]
+fn sec004_inline_hash_walk_huge_frame_total_does_not_overflow() {
+    use tensogram::wire::{
+        FRAME_HEADER_SIZE, FRAME_MAGIC, MAGIC, POSTAMBLE_SIZE, PREAMBLE_SIZE, WIRE_VERSION,
+    };
+    // Build a message whose preamble total_length is valid (so the
+    // hash walk runs) but whose first frame claims a huge total_length.
+    let msg_total = (PREAMBLE_SIZE + FRAME_HEADER_SIZE + POSTAMBLE_SIZE) as u64;
+    let mut buf = Vec::new();
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    buf.extend_from_slice(&((1u16) << 7).to_be_bytes()); // HASHES_PRESENT advisory
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf.extend_from_slice(&msg_total.to_be_bytes());
+    // One frame header with a hostile total_length = u64::MAX.
+    buf.extend_from_slice(FRAME_MAGIC);
+    buf.extend_from_slice(&9u16.to_be_bytes()); // NTensorFrame
+    buf.extend_from_slice(&1u16.to_be_bytes()); // version
+    buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+    buf.extend_from_slice(&u64::MAX.to_be_bytes()); // frame total_length
+    buf.resize(msg_total as usize, 0);
+    // Must not panic — a structured error or a clean empty result.
+    let _ = tensogram::data_object_inline_hashes(&buf);
+}
+
+/// SEC-005 (HIGH, found by `fuzz_scan`): the bidirectional scanner's
+/// backward hop computed `msg_start = bound_end - total` and then
+/// sliced `buf[msg_start..msg_start + MAGIC.len()]`.  A tiny postamble
+/// `total_length` (below the preamble size) put `msg_start` too close
+/// to the end, so the 8-byte MAGIC slice ran out of bounds and
+/// panicked.  Scanning must now be panic-free.
+#[test]
+fn sec005_backward_scan_tiny_total_no_oob() {
+    // Exact libFuzzer reproducer.
+    let crash_input: &[u8] = &[
+        164, 164, 164, 164, 195, 195, 195, 195, 195, 195, 195, 195, 195, 0, 0, 0, 0, 84, 69, 78,
+        83, 79, 71, 82, 77, 0, 3, 0, 0, 237, 197, 197, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42,
+        0, 0, 0, 0, 0, 71, 51, 57, 50, 55, 55, 55, 55, 55, 197, 0, 0, 0, 0, 0, 0, 0, 69, 78, 83,
+        79, 71, 197, 0, 3, 237, 82, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        2, 37, 0, 0, 0, 0, 0, 0, 0, 4, 51, 57, 50,
+    ];
+    // Must not panic.
+    let _ = scan(crash_input);
+
+    // Also directly stress a synthetic buffer ending in END_MAGIC with a
+    // tiny mirrored total_length in the postamble.
+    use tensogram::wire::{END_MAGIC, POSTAMBLE_SIZE};
+    for tiny_total in [1u64, 2, 7, 8, 23, (POSTAMBLE_SIZE as u64) - 1] {
+        let mut b = vec![0u8; 128];
+        // Put END_MAGIC at the very end and a tiny total_length 8 bytes
+        // before it (postamble layout: [first_footer(8)][total(8)][magic(8)]).
+        let n = b.len();
+        b[n - 8..].copy_from_slice(END_MAGIC);
+        b[n - 16..n - 8].copy_from_slice(&tiny_total.to_be_bytes());
+        let _ = scan(&b); // must not panic
+    }
+}

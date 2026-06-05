@@ -1218,22 +1218,36 @@ pub fn data_object_inline_hashes(buf: &[u8]) -> Result<Vec<Option<u64>>> {
                 fh.total_length
             ))
         })?;
-        if pos + frame_total > buf.len() {
+        // `frame_total` is attacker-controlled (up to usize::MAX).
+        // Compute the frame end with `checked_add` so a hostile value
+        // cannot overflow `pos + frame_total` into a panic, and require
+        // at least the common-footer minimum so `frame_end - 12` (the
+        // hash slot) cannot underflow.
+        let frame_end = pos.checked_add(frame_total).filter(|&e| e <= buf.len());
+        let Some(frame_end) = frame_end else {
             return Err(TensogramError::Framing(format!(
-                "frame at offset {pos} extends past buffer end ({} > {})",
-                pos + frame_total,
+                "frame at offset {pos} extends past buffer end (total_length={frame_total}, \
+                 buffer={})",
                 buf.len()
+            )));
+        };
+        if frame_total < FRAME_HEADER_SIZE + crate::wire::FRAME_COMMON_FOOTER_SIZE {
+            return Err(TensogramError::Framing(format!(
+                "frame at offset {pos} total_length {frame_total} smaller than minimum frame size"
             )));
         }
         if fh.frame_type.is_data_object() {
             // Hash slot sits at `frame_end - 12` regardless of
             // frame type (v3 §2.2 common tail).
-            let slot_start = pos + frame_total - crate::wire::FRAME_COMMON_FOOTER_SIZE;
+            let slot_start = frame_end - crate::wire::FRAME_COMMON_FOOTER_SIZE;
             let slot = crate::wire::read_u64_be(buf, slot_start);
             hashes.push(if slot == 0 { None } else { Some(slot) });
         }
-        pos += frame_total;
-        pos = (pos + 7) & !7; // 8-byte alignment padding
+        // `frame_end <= buf.len()`, and aligning up adds at most 7;
+        // saturate so the `(pos + 7) & !7` cannot overflow at the very
+        // top of the address space.  A saturated `pos` is `>= msg_end`,
+        // ending the loop cleanly.
+        pos = frame_end.saturating_add(7) & !7; // 8-byte alignment padding
     }
     Ok(hashes)
 }
@@ -1327,11 +1341,20 @@ fn try_forward_hop(buf: &[u8], pos: usize, bound_end: usize) -> Option<(usize, u
     let preamble = Preamble::read_from(&buf[pos..]).ok()?;
     if preamble.total_length > 0 {
         let total = usize::try_from(preamble.total_length).ok()?;
-        if pos + total > bound_end {
+        // `pos + total` is attacker-controlled (`total` up to usize::MAX)
+        // and must not overflow.  `checked_add` turns an overflow into a
+        // "no valid message here" (None → advance one byte), never a
+        // panic.  A message also cannot be smaller than the fixed
+        // preamble+postamble, so reject `total < PREAMBLE+POSTAMBLE`
+        // before computing the END_MAGIC offset (`pos + total - 8`
+        // would otherwise be meaningless / could precede `pos`).
+        let msg_end = pos.checked_add(total)?;
+        if msg_end > bound_end || total < PREAMBLE_SIZE + POSTAMBLE_SIZE {
             return None;
         }
-        // Validate END_MAGIC lives where the preamble claims.
-        let end_magic_offset = pos + total - 8;
+        // Validate END_MAGIC lives where the preamble claims.  `msg_end
+        // >= PREAMBLE + POSTAMBLE > 8`, so `msg_end - 8` cannot underflow.
+        let end_magic_offset = msg_end - 8;
         if &buf[end_magic_offset..end_magic_offset + 8] == crate::wire::END_MAGIC {
             return Some((pos, total));
         }
@@ -1423,7 +1446,12 @@ fn try_backward_hop(
         Ok(t) => t,
         Err(_) => return BackwardHop::None,
     };
-    if total > bound_end - range_start {
+    // `total` must be at least a full preamble+postamble.  Without this
+    // floor a tiny `total` (e.g. 3) puts `msg_start = bound_end - total`
+    // so close to the end that `msg_start + MAGIC.len()` slices past the
+    // buffer — an out-of-bounds panic.  Requiring the message minimum
+    // guarantees `msg_start + PREAMBLE_SIZE <= bound_end <= buf.len()`.
+    if total < PREAMBLE_SIZE + POSTAMBLE_SIZE || total > bound_end - range_start {
         return BackwardHop::None;
     }
     let msg_start = bound_end - total;
@@ -1557,9 +1585,17 @@ fn scan_file_forward(
                     pos += 1;
                     continue;
                 };
-                if pos + total <= range_end {
+                // `pos + total` is attacker-controlled and must not
+                // overflow `usize` (panic / DoS).  Also reject any
+                // `total` below the fixed preamble+postamble minimum so
+                // `pos + total - 8` is meaningful and cannot underflow.
+                let msg_end = pos.checked_add(total);
+                if let Some(msg_end) = msg_end
+                    && msg_end <= range_end
+                    && total >= PREAMBLE_SIZE + POSTAMBLE_SIZE
+                {
                     // Read end magic to validate
-                    let end_magic_offset = pos + total - 8;
+                    let end_magic_offset = msg_end - 8;
                     file.seek(SeekFrom::Start(end_magic_offset as u64))?;
                     let mut end_buf = [0u8; 8];
                     if file.read_exact(&mut end_buf).is_ok() && &end_buf == crate::wire::END_MAGIC {
