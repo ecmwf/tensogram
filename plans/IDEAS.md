@@ -163,9 +163,9 @@ into committed work move up to `TODO.md`.
 ## Languages
 
 - [ ] Go interface over Rust
-- (promoted) ~~Fortran interface over Rust~~ — accepted into `TODO.md`
-  (*Multi-Language Support*); full analysis and staged roadmap in
-  `PLAN_FORTRAN.md` at the repo root.
+- (promoted) ~~Fortran interface over Rust~~ — delivered; the
+  synchronous binding ships in `fortran/` (see `TODO.md`
+  *Multi-Language Support* for the remaining demand-driven follow-ups).
 - [ ] Mojo integration (one already available through python, but we could have a direct one)
 
 ## encoding / decoding

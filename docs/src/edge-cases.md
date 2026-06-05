@@ -16,6 +16,40 @@ let offsets = scan(&file_bytes);
 
 **Edge case within edge case:** If a random byte sequence inside a valid payload happens to match `TENSOGRM`, the scanner might try to parse a "message" starting mid-payload. The postamble cross-check catches this: the false start's postamble won't contain the expected `39277777` end magic.
 
+## Descriptor Size Inconsistent with Payload
+
+A data object's CBOR descriptor declares a tensor shape and dtype, from
+which the decoder can compute the exact decoded byte count. For
+pipelines with no compression and no filter, that count must equal the
+frame's actual payload length.
+
+**What happens:** Before any decode work, the decoder checks the
+descriptor-implied size against the payload length for the two
+uncompressed pipelines where the size is known exactly:
+
+- `encoding=none`: `num_values × dtype_width` (or `ceil(num_values / 8)`
+  for the `bitmask` dtype).
+- `encoding=simple_packing`: `ceil(num_values × bits_per_value / 8)`.
+
+A mismatch in **either** direction — payload too short (truncation) or
+too long (trailing junk / wrong descriptor) — is categorically malformed
+input and is rejected with a clear error naming the claimed and actual
+byte counts. This also means a `simple_packing` payload with extra
+trailing bytes is now rejected rather than silently tolerated.
+
+**Hostile descriptors:** A tiny payload paired with a descriptor
+claiming a terabyte-scale tensor is caught here structurally — no
+allocation is attempted, so there is no risk of an out-of-memory abort.
+
+**Compressed objects:** Codecs such as `zstd`, `szip`, `blosc2`, `zfp`,
+and `sz3` are *not* subject to this exact check — their on-disk length is
+the compressed length, which the descriptor does not determine. No fixed
+compression-ratio ceiling is imposed (it would risk false-rejecting
+legitimately highly-compressible scientific data). A malformed
+compressed descriptor instead fails gracefully at the fallible
+decompression allocation, surfacing a structured error rather than
+aborting the process.
+
 ## NaN in Simple Packing
 
 Simple packing cannot represent NaN. The quantization formula maps the range `[min, max]` onto integers, and NaN has no defined place in this range.

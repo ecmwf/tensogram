@@ -5,6 +5,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed — graceful async runtime shutdown (`tgm_runtime_shutdown_blocking`)
+
+`tgm_runtime_shutdown_blocking(timeout_ms)` (and the C++ wrapper
+`tac::runtime_shutdown_blocking`) is now a real graceful shutdown rather
+than a no-op stub. It blocks for up to `timeout_ms` while in-flight tasks
+drain on the shared async runtime, then returns the count of tasks that
+had not finished by the deadline (`0` on a clean drain) so callers can
+log or abort. The runtime is single-shot: once shut down it is never
+rebuilt, every subsequent `tgm_async_*` call fails fast with
+`TGM_ERROR_IO` ("runtime has been shut down"), and a second shutdown is
+an idempotent no-op. The C ABI is unchanged. Internally the runtime
+singleton moved from a `OnceLock` to a takeable state machine (so
+`shutdown_timeout` can consume the owned runtime), and a live-task
+counter tracks not-yet-drained work. See the
+[C++ Async API](docs/src/guide/cpp-async.md) "Runtime configuration"
+section.
+
+### Changed — structural descriptor/payload size check on decode
+
+The decode pipeline now rejects a data object whose descriptor claims a
+decoded size that is structurally inconsistent with the frame's on-disk
+payload, **before** any decompression or allocation runs. The check is
+exact (equality in both directions) for the two pipelines whose decoded
+size is fully determined by the descriptor: uncompressed `encoding=none`
+(`num_values × dtype_width`, or `ceil(num_values / 8)` for the bitmask
+dtype) and uncompressed `encoding=simple_packing`
+(`ceil(num_values × bits_per_value / 8)`). A mismatch surfaces as a new
+`PipelineError::DescriptorSizeMismatch` naming the claimed vs. payload
+byte counts — a precise, operator-legible error instead of a downstream
+"failed to reserve" or a silently-tolerated trailing-byte payload. This
+also closes the gap where the `simple_packing` decoder previously
+ignored *too-much* payload data.
+
+Compressed codecs are deliberately not gated by a size heuristic: their
+decoded size cannot be derived from the payload without decompressing,
+and any fixed expansion-ratio ceiling would risk false-rejecting
+legitimately highly-compressible scientific data. A hostile compressed
+descriptor continues to fail gracefully at the fallible decompression
+allocation (a structured error, never a process abort).
+
 ### Added — Fortran interface (synchronous core)
 
 A Fortran 2008 binding (`fortran/`) over the existing `libtensogram`
@@ -66,8 +106,7 @@ CMake is the build system of record (pkg-config discovery of
 `tensogram.pc`); an `fpm` manifest is retained as a Fortran-native
 devloop. New `examples/fortran/encode_decode.f90`, the user guide
 `docs/src/guide/fortran-api.md`, and `make fortran-build` /
-`fortran-test` targets. The full staged roadmap lives in
-`PLAN_FORTRAN.md`.
+`fortran-test` targets.
 
 ### Added — Asynchronous C++ API
 

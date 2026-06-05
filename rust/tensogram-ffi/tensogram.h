@@ -1243,19 +1243,30 @@ tgm_error tgm_runtime_configure(uint32_t workers,
                                 uint64_t multipart_part_size_bytes);
 
 /**
- * Reserved ABI for graceful shutdown.  Currently a no-op that
- * always returns `0`.
+ * Shut the shared async runtime down, blocking for up to
+ * `timeout_ms` while in-flight tasks drain.
  *
- * **Status (v1):** the shared runtime lives behind a `OnceLock` and
- * cannot be torn down without leaking the slot.  Process exit is
- * abrupt by design; in-flight
- * tasks are dropped by tokio at process teardown.
+ * Returns the number of tasks that had **not** finished when the
+ * timeout elapsed (`0` on a clean drain).  After this call the
+ * runtime is permanently shut down: every subsequent `tgm_async_*`
+ * entry point fails fast with `TGM_ERROR_IO` and a descriptive
+ * `tgm_last_error()` (`"runtime has been shut down"`).  The runtime
+ * is single-shot — there is no rebuild.
  *
- * The signature is reserved here so a future implementation can
- * switch the singleton to an owning container, drain tasks
- * cooperatively, and return the count that did not finish within
- * `timeout_ms` — without breaking the C ABI.  The argument is
- * accepted but ignored today.
+ * Behaviour by prior state:
+ *   * **never built** (no async op ran) → transitions straight to
+ *     `ShutDown` and returns `0`; nothing was ever spawned.
+ *   * **build previously failed** → transitions to `ShutDown` and
+ *     returns `0`; there was no runtime to drain.
+ *   * **already shut down** → idempotent no-op returning `0`.
+ *   * **live** → takes ownership of the runtime, drains in-flight
+ *     tasks up to `timeout_ms`, tears the runtime down, and reports
+ *     the count of tasks that had not finished by the deadline.
+ *
+ * Must not be called from inside an async callback running on the
+ * runtime's own worker threads (tokio forbids dropping a runtime
+ * from within itself).  The intended caller is the application's
+ * main/teardown thread.
  */
 uint64_t tgm_runtime_shutdown_blocking(uint64_t timeout_ms);
 

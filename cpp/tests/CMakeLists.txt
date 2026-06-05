@@ -49,6 +49,26 @@ target_link_libraries(tensogram_tests PRIVATE
 include(GoogleTest)
 gtest_discover_tests(tensogram_tests)
 
+# Async runtime-shutdown test.  Built as its own executable because
+# tgm_runtime_shutdown_blocking permanently tears down the process-global
+# async runtime — running it in the shared `tensogram_tests` binary would
+# poison the other async tests when the suite is run as a single process.
+if(TENSOGRAM_ASYNC)
+    add_executable(tensogram_async_shutdown_tests
+        test_async_shutdown_during_flight.cpp)
+    target_include_directories(tensogram_async_shutdown_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(MSVC)
+        target_compile_options(tensogram_async_shutdown_tests PRIVATE /W4)
+    else()
+        target_compile_options(tensogram_async_shutdown_tests PRIVATE
+            -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+    endif()
+    target_link_libraries(tensogram_async_shutdown_tests PRIVATE
+        tensogram GTest::gtest GTest::gtest_main)
+    gtest_discover_tests(tensogram_async_shutdown_tests)
+endif()
+
 # Optional C++20 coroutine test executable.  Compiled separately because
 # the rest of the suite is C++17.  Set TENSOGRAM_ASYNC_CORO_TESTS=OFF to
 # skip if your compiler doesn't support C++20 coroutines.

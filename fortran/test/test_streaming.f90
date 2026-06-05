@@ -9,7 +9,7 @@
 !> Streaming encoder: write a single multi-object message progressively (one
 !> data object at a time, mixed dtype/rank, with lossless compression on one),
 !> finish, then reopen and decode all objects and assert a bit-identical
-!> round-trip. PLAN_FORTRAN.md streaming milestone.
+!> round-trip.
 program test_streaming
    use, intrinsic :: iso_c_binding
    use tensogram

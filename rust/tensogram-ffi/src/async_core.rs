@@ -21,6 +21,7 @@
 
 use std::ffi::{CStr, CString, c_void};
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -74,8 +75,91 @@ fn num_cpus_or_default() -> u32 {
 }
 
 static RUNTIME_CONFIG: OnceLock<RuntimeConfig> = OnceLock::new();
-static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
 static DISPATCHER: OnceLock<DispatcherPool> = OnceLock::new();
+
+/// Lifecycle state of the process-global tokio runtime.
+///
+/// The runtime is single-shot: built lazily on first use, and once
+/// [`tgm_runtime_shutdown_blocking`] runs it transitions to
+/// [`RuntimeState::ShutDown`] permanently — there is no rebuild.  A
+/// build failure is cached so every subsequent call surfaces the same
+/// diagnostic rather than retrying a doomed build.
+///
+/// `shutdown_timeout` consumes the owned [`tokio::runtime::Runtime`],
+/// which is why this lives behind a `Mutex<…>` we can `take` from,
+/// rather than the previous `OnceLock` (which can never hand `self`
+/// back).
+enum RuntimeState {
+    /// No runtime built yet.
+    Uninit,
+    /// Runtime built and live.
+    Built(tokio::runtime::Runtime),
+    /// A previous build attempt failed; the error is cached and
+    /// re-reported on every call.
+    BuildFailed(String),
+    /// The runtime has been shut down.  All async entry points fail
+    /// fast from here on.
+    ShutDown,
+}
+
+static RUNTIME: Mutex<RuntimeState> = Mutex::new(RuntimeState::Uninit);
+
+/// Count of tasks spawned on the shared runtime that have not yet run
+/// their completion path.  Incremented at the single spawn choke
+/// point ([`spawn_task`]) and decremented by a drop-guard inside the
+/// spawned future, so it covers normal completion, inner error,
+/// cancellation, timeout, and a dropped/aborted task uniformly.
+/// Read by [`tgm_runtime_shutdown_blocking`] to report how many tasks
+/// did not drain within the timeout.
+static LIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII guard pairing one [`LIVE_TASKS`] increment with exactly one
+/// decrement.  [`new`](Self::new) increments on construction; `Drop`
+/// decrements when the guard is dropped — whichever branch the owning
+/// future exits through, **including** being dropped before its first
+/// poll (e.g. when the runtime is torn down while the task is still
+/// queued).  Encapsulating both halves in one type makes it impossible
+/// to increment without arranging the matching decrement.
+struct LiveTaskGuard;
+
+impl LiveTaskGuard {
+    fn new() -> Self {
+        LIVE_TASKS.fetch_add(1, Ordering::SeqCst);
+        LiveTaskGuard
+    }
+}
+
+impl Drop for LiveTaskGuard {
+    fn drop(&mut self) {
+        LIVE_TASKS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// RAII backstop that guarantees a spawned task always leaves the
+/// `Pending` state, so a blocking `tgm_async_task_join_*` can never
+/// wait forever.
+///
+/// The future's normal path calls `complete(outcome)` itself; this
+/// guard is moved into the future and, on `Drop`, calls
+/// `complete(AsyncOutcome::Cancelled)`.  Because [`TaskShared::complete`]
+/// is idempotent (it returns early when the state is no longer
+/// `Pending`), the guard is a no-op on the happy path and only takes
+/// effect when the future is dropped *without* completing — e.g. the
+/// runtime is torn down by [`tgm_runtime_shutdown_blocking`] while the
+/// task is still pending, including before its first poll.  Without
+/// this backstop such a task would stay `Pending` forever and any
+/// joiner would deadlock on the readiness condvar.
+struct CompletionGuard {
+    shared: Arc<TaskShared>,
+}
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        // No-op if the future already completed normally; otherwise
+        // transition the stranded task to Cancelled and wake joiners.
+        self.shared.complete(AsyncOutcome::Cancelled);
+    }
+}
 
 fn runtime_config() -> &'static RuntimeConfig {
     RUNTIME_CONFIG.get_or_init(RuntimeConfig::default)
@@ -171,18 +255,45 @@ fn dispatch_to_pool(cb: extern "C" fn(*mut c_void), userdata: *mut c_void) {
     }
 }
 
-fn runtime() -> Result<&'static tokio::runtime::Runtime, &'static str> {
-    let cfg = runtime_config();
-    match RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(cfg.workers as usize)
-            .enable_all()
-            .thread_name("tensogram-async")
-            .build()
-            .map_err(|e| format!("failed to build tokio runtime: {e}"))
-    }) {
-        Ok(rt) => Ok(rt),
-        Err(s) => Err(s.as_str()),
+/// Resolve the shared runtime to a spawnable [`tokio::runtime::Handle`].
+///
+/// Builds the runtime lazily on first call.  The returned `Handle` is
+/// a cheap clone of the runtime's handle, so callers spawn through it
+/// **without** holding the runtime mutex across the spawn.  The mutex
+/// is held only briefly to read/transition the [`RuntimeState`].
+///
+/// Errors:
+///   * `Err("…")` with the cached build error if the runtime failed to
+///     build (sticky — same message every call).
+///   * `Err("runtime has been shut down")` once
+///     [`tgm_runtime_shutdown_blocking`] has run — the runtime is
+///     single-shot and never rebuilt.
+fn runtime() -> Result<tokio::runtime::Handle, String> {
+    let mut guard = RUNTIME.lock().expect("runtime mutex poisoned");
+    match &*guard {
+        RuntimeState::Built(rt) => Ok(rt.handle().clone()),
+        RuntimeState::BuildFailed(e) => Err(e.clone()),
+        RuntimeState::ShutDown => Err("runtime has been shut down".to_string()),
+        RuntimeState::Uninit => {
+            let cfg = runtime_config();
+            match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(cfg.workers as usize)
+                .enable_all()
+                .thread_name("tensogram-async")
+                .build()
+            {
+                Ok(rt) => {
+                    let handle = rt.handle().clone();
+                    *guard = RuntimeState::Built(rt);
+                    Ok(handle)
+                }
+                Err(e) => {
+                    let msg = format!("failed to build tokio runtime: {e}");
+                    *guard = RuntimeState::BuildFailed(msg.clone());
+                    Err(msg)
+                }
+            }
+        }
     }
 }
 
@@ -213,7 +324,7 @@ pub(crate) enum TaskResult {
     Void,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum TaskState {
     Pending,
     Ready,
@@ -331,7 +442,34 @@ where
     // token was never cancelled (the common case).
     let external_token = shared.external.clone();
 
+    // Count this task as live before it is spawned.  The guard is
+    // constructed *here*, outside the async block, and moved into the
+    // future so it is owned by the future itself — not merely created
+    // on first poll.  This decrements `LIVE_TASKS` on every exit path
+    // (completion, inner error, cancel, timeout) AND when the future
+    // is dropped before it is ever polled (e.g. the runtime is torn
+    // down with the task still queued).  Constructing it inside the
+    // async block would skip the decrement in that drop-before-poll
+    // case, permanently inflating the counter.  `LiveTaskGuard::new`
+    // does the `fetch_add`; its `Drop` does the matching `fetch_sub`.
+    let live_guard = LiveTaskGuard::new();
+
+    // Backstop that forces the task out of `Pending` even if the future
+    // is dropped before it reaches the `complete(outcome)` call below
+    // (e.g. runtime teardown during shutdown).  Owns its own
+    // `Arc<TaskShared>` clone and is moved into the future; idempotent
+    // with the explicit completion on the happy path.
+    let completion_guard = CompletionGuard {
+        shared: shared.clone(),
+    };
+
     rt.spawn(async move {
+        // Bind both guards into the future so their lifetimes are the
+        // future's lifetime.  `let _x = ...` bindings (not bare moves)
+        // so the captures are unambiguous and live until the end of
+        // the block / until the future is dropped.
+        let _live = live_guard;
+        let _completion = completion_guard;
         let outcome: AsyncOutcome = if timeout_ms > 0 {
             let deadline = Duration::from_millis(timeout_ms);
             tokio::select! {
@@ -1231,23 +1369,110 @@ pub extern "C" fn tgm_runtime_configure(
     TgmError::Ok
 }
 
-/// Reserved ABI for graceful shutdown.  Currently a no-op that
-/// always returns `0`.
+/// Shut the shared async runtime down, blocking for up to
+/// `timeout_ms` while in-flight tasks drain.
 ///
-/// **Status (v1):** the shared runtime lives behind a `OnceLock` and
-/// cannot be torn down without leaking the slot.  Process exit is
-/// abrupt by design; in-flight
-/// tasks are dropped by tokio at process teardown.
+/// Returns the number of tasks that had **not** finished when the
+/// timeout elapsed (`0` on a clean drain).  After this call the
+/// runtime is permanently shut down: every subsequent `tgm_async_*`
+/// entry point fails fast with `TGM_ERROR_IO` and a descriptive
+/// `tgm_last_error()` (`"runtime has been shut down"`).  The runtime
+/// is single-shot — there is no rebuild.
 ///
-/// The signature is reserved here so a future implementation can
-/// switch the singleton to an owning container, drain tasks
-/// cooperatively, and return the count that did not finish within
-/// `timeout_ms` — without breaking the C ABI.  The argument is
-/// accepted but ignored today.
+/// Behaviour by prior state:
+///   * **never built** (no async op ran) → transitions straight to
+///     `ShutDown` and returns `0`; nothing was ever spawned.
+///   * **build previously failed** → transitions to `ShutDown` and
+///     returns `0`; there was no runtime to drain.
+///   * **already shut down** → idempotent no-op returning `0`.
+///   * **live** → takes ownership of the runtime, drains in-flight
+///     tasks up to `timeout_ms`, tears the runtime down, and reports
+///     the count of tasks that had not finished by the deadline.
+///
+/// Must not be called from inside an async callback running on the
+/// runtime's own worker threads (tokio forbids dropping a runtime
+/// from within itself).  The intended caller is the application's
+/// main/teardown thread.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_runtime_shutdown_blocking(timeout_ms: u64) -> u64 {
-    let _ = timeout_ms;
-    0
+    // Take the runtime out under the lock and mark the singleton
+    // shut down, then release the lock *before* the (potentially
+    // long) blocking drain so concurrent `tgm_async_*` callers see
+    // `ShutDown` immediately and fail fast rather than blocking on
+    // the mutex.
+    let taken = {
+        let mut guard = RUNTIME.lock().expect("runtime mutex poisoned");
+        match std::mem::replace(&mut *guard, RuntimeState::ShutDown) {
+            RuntimeState::Built(rt) => Some(rt),
+            // Uninit / BuildFailed / ShutDown: nothing to drain.
+            _ => None,
+        }
+    };
+
+    let Some(rt) = taken else {
+        return 0;
+    };
+
+    // Cooperative drain.  Poll `LIVE_TASKS` until it reaches zero or
+    // the deadline elapses, then capture the residual *before* the
+    // forced teardown below.  Reading the count here — rather than
+    // after `shutdown_timeout` — is what makes the result accurate:
+    // dropping the runtime drops every still-pending future, which
+    // runs each `LiveTaskGuard` and would otherwise drive the count
+    // to zero regardless of whether those tasks actually finished.
+    // Cooperatively drain in-flight tasks up to the timeout, then
+    // capture the residual count.  The loop logic lives in
+    // `drain_until` so it can be unit-tested deterministically with an
+    // injected counter and clock (the real call reads `LIVE_TASKS` and
+    // sleeps on the wall clock).
+    let unfinished = drain_until(
+        || LIVE_TASKS.load(Ordering::SeqCst),
+        Duration::from_millis(timeout_ms),
+        Duration::from_millis(5),
+        std::thread::sleep,
+    );
+
+    // Force the runtime down now.  Any tasks still in flight are
+    // abandoned; we already captured their count above.  `ZERO`
+    // because the cooperative wait already happened — this call is
+    // just the teardown.
+    rt.shutdown_timeout(Duration::ZERO);
+
+    unfinished
+}
+
+/// Poll `live_count` until it reports `0` or `timeout` elapses,
+/// sleeping `min(poll_interval, remaining)` between polls; return the
+/// final count.
+///
+/// Pure and dependency-injected — the clock is `Instant::elapsed`
+/// internally but the sleep is supplied by the caller so unit tests
+/// can drive it without real time.  Overflow-safe: it never adds a
+/// `Duration` to an `Instant`, comparing `start.elapsed()` against the
+/// timeout instead, so any `u64` millisecond budget is safe.
+///
+/// Separated from [`tgm_runtime_shutdown_blocking`] so the break /
+/// timeout / remaining-budget arithmetic is testable without the
+/// single-shot, process-global runtime.
+fn drain_until<C, S>(live_count: C, timeout: Duration, poll_interval: Duration, mut sleep: S) -> u64
+where
+    C: Fn() -> usize,
+    S: FnMut(Duration),
+{
+    let start = std::time::Instant::now();
+    loop {
+        if live_count() == 0 {
+            break;
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            break;
+        }
+        // Sleep the shorter of the poll interval and the remaining
+        // budget so we do not overshoot the deadline.
+        sleep(poll_interval.min(timeout - elapsed));
+    }
+    live_count() as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,5 +1565,286 @@ fn dtype_name(d: tensogram::dtype::Dtype) -> &'static str {
         Dtype::Uint32 => "uint32",
         Dtype::Uint64 => "uint64",
         Dtype::Bitmask => "bitmask",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    // ----- drain_until: the cooperative-drain loop logic -----
+    //
+    // These exercise drain_until directly with an injected counter and
+    // sleep so the break / timeout / remaining-budget arithmetic is
+    // pinned without the single-shot process-global runtime.
+
+    /// A count that is already zero breaks on the first iteration — no
+    /// sleeps, residual 0.  Kills the `== 0` → `!= 0` mutation: under
+    /// the flip, a zero count would NOT break and the loop would sleep
+    /// toward the timeout.
+    #[test]
+    fn drain_until_zero_count_breaks_immediately_without_sleeping() {
+        let sleeps = RefCell::new(0usize);
+        // The sleep panics if ever reached.  Correct code breaks on the
+        // first `count == 0` check, so it is never called; the
+        // `== 0` → `!= 0` mutation would fall through to the sleep and
+        // panic here — failing the test *fast* rather than spinning to
+        // the (deliberately large) timeout.
+        let residual = drain_until(
+            || 0,
+            Duration::from_secs(3600),
+            Duration::from_millis(5),
+            |_| {
+                *sleeps.borrow_mut() += 1;
+                panic!("zero count must break before any sleep");
+            },
+        );
+        assert_eq!(residual, 0, "zero count must report zero unfinished");
+        assert_eq!(
+            *sleeps.borrow(),
+            0,
+            "a zero count must break before any sleep"
+        );
+    }
+
+    /// A count that drops to zero after two polls terminates via the
+    /// count==0 path and returns 0.  Confirms the loop actually
+    /// re-reads the counter and that a positive count does NOT break
+    /// early (also guards the `== 0` predicate from the other side).
+    #[test]
+    fn drain_until_terminates_when_count_reaches_zero() {
+        let calls = RefCell::new(0usize);
+        let sleeps = RefCell::new(0usize);
+        let residual = drain_until(
+            || {
+                let mut c = calls.borrow_mut();
+                *c += 1;
+                // 1st and 2nd reads: still busy; 3rd read: drained.
+                if *c >= 3 { 0 } else { 1 }
+            },
+            Duration::from_secs(3600),
+            Duration::from_millis(1),
+            |_| *sleeps.borrow_mut() += 1,
+        );
+        assert_eq!(residual, 0);
+        assert_eq!(*sleeps.borrow(), 2, "should sleep once per busy poll");
+    }
+
+    /// A never-zero count with an already-elapsed budget terminates via
+    /// the timeout branch and reports the residual.  Kills the
+    /// `>= timeout` → `< timeout` mutation: under the flip the loop
+    /// would never break here (the test would hang, which cargo-mutants
+    /// records as the mutant being caught).  A zero poll-interval keeps
+    /// the wall-clock test fast.
+    #[test]
+    fn drain_until_breaks_on_timeout_and_reports_residual() {
+        let residual = drain_until(
+            || 4,
+            Duration::ZERO, // already "elapsed" → must break at once
+            Duration::from_millis(5),
+            |_| {},
+        );
+        assert_eq!(
+            residual, 4,
+            "a never-draining count must report its residual"
+        );
+    }
+
+    /// The inter-poll sleep is `min(poll_interval, remaining)`.  With a
+    /// poll interval larger than the whole budget, the first sleep must
+    /// be clamped to the remaining budget — exercising `timeout -
+    /// elapsed`.  Kills the `-` → `+` mutation: `timeout + elapsed`
+    /// would exceed `poll_interval`, so the recorded sleep would equal
+    /// the (large) poll interval instead of the clamped remainder.
+    #[test]
+    fn drain_until_clamps_sleep_to_remaining_budget() {
+        let recorded: RefCell<Vec<Duration>> = RefCell::new(Vec::new());
+        let polls = RefCell::new(0usize);
+        let _ = drain_until(
+            || {
+                // Busy for the first poll, then drained, so exactly one
+                // sleep is recorded.
+                let mut p = polls.borrow_mut();
+                *p += 1;
+                if *p >= 2 { 0 } else { 1 }
+            },
+            Duration::from_millis(20),
+            Duration::from_secs(10), // poll interval >> budget
+            |d| recorded.borrow_mut().push(d),
+        );
+        let recorded = recorded.borrow();
+        assert_eq!(recorded.len(), 1, "exactly one busy poll → one sleep");
+        // With `min(10s, 20ms - elapsed)`, the clamp must keep the sleep
+        // at or below the 20 ms budget — far below the 10 s interval.
+        // Under `timeout + elapsed` the value would be ≈10s.
+        assert!(
+            recorded[0] <= Duration::from_millis(20),
+            "sleep must be clamped to the remaining budget, got {:?}",
+            recorded[0]
+        );
+    }
+
+    // ----- LiveTaskGuard: the LIVE_TASKS accounting -----
+
+    /// Dropping a `CompletionGuard` over a still-`Pending` task
+    /// transitions it to `Ready` with a `Cancelled` outcome — directly,
+    /// without the runtime.  Kills the
+    /// `<impl Drop for CompletionGuard>::drop with ()` mutation fast
+    /// (the runtime-driven path only catches it via a join deadlock /
+    /// timeout).
+    #[test]
+    fn completion_guard_drop_cancels_pending_task() {
+        let shared = TaskShared::new(None);
+        {
+            let _guard = CompletionGuard {
+                shared: shared.clone(),
+            };
+            // Still pending while the guard is alive.
+            assert_eq!(
+                shared.state.lock().unwrap().state,
+                TaskState::Pending,
+                "task should still be Pending before the guard drops"
+            );
+        } // guard drops here → complete(Cancelled)
+
+        let inner = shared.state.lock().unwrap();
+        assert_eq!(
+            inner.state,
+            TaskState::Ready,
+            "dropping the guard must move the task out of Pending"
+        );
+        assert!(
+            matches!(inner.result, Some(AsyncOutcome::Cancelled)),
+            "a guard-cancelled task must carry the Cancelled outcome"
+        );
+    }
+
+    /// A `CompletionGuard` dropped over an already-completed task is a
+    /// no-op (idempotent `complete`): the original outcome is preserved,
+    /// not overwritten with `Cancelled`.
+    #[test]
+    fn completion_guard_drop_is_noop_when_already_completed() {
+        let shared = TaskShared::new(None);
+        // Simulate the happy path: the future completed normally first.
+        shared.complete(AsyncOutcome::Ok(TaskResult::Void));
+        {
+            let _guard = CompletionGuard {
+                shared: shared.clone(),
+            };
+        } // guard drops → complete(Cancelled) must be a no-op here
+
+        let inner = shared.state.lock().unwrap();
+        assert!(
+            matches!(inner.result, Some(AsyncOutcome::Ok(TaskResult::Void))),
+            "the guard must not overwrite an already-set outcome"
+        );
+    }
+
+    /// `LiveTaskGuard::new` increments and `Drop` decrements
+    /// `LIVE_TASKS` by exactly one.  Kills the
+    /// `<impl Drop for LiveTaskGuard>::drop with ()` mutation: under
+    /// the flip the decrement would not run and the post-drop count
+    /// would stay inflated.
+    #[test]
+    fn live_task_guard_increments_then_decrements() {
+        let before = LIVE_TASKS.load(Ordering::SeqCst);
+        {
+            let _g = LiveTaskGuard::new();
+            assert_eq!(
+                LIVE_TASKS.load(Ordering::SeqCst),
+                before + 1,
+                "new() must increment LIVE_TASKS"
+            );
+        }
+        assert_eq!(
+            LIVE_TASKS.load(Ordering::SeqCst),
+            before,
+            "drop must decrement LIVE_TASKS back to the starting value"
+        );
+    }
+
+    /// Full single-shot shutdown lifecycle, in one test because the
+    /// runtime is process-global and shutdown is irreversible — a
+    /// second test calling shutdown would observe an already-torn-down
+    /// runtime.  Determinism comes from spawning a task that sleeps far
+    /// longer than the shutdown timeout, so it is guaranteed to still
+    /// be in flight when we drain.
+    ///
+    /// Asserts:
+    ///   1. a task in flight past the drain deadline is reported as
+    ///      unfinished (count ≥ 1);
+    ///   2. after shutdown the runtime is `ShutDown` and `spawn_task`
+    ///      fails with the documented diagnostic;
+    ///   3. a second shutdown is an idempotent no-op returning 0.
+    #[test]
+    fn shutdown_blocking_drains_and_reports_unfinished() {
+        // Spawn a task that outlives any reasonable drain window.
+        let task = spawn_task(
+            async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok(TaskResult::Void)
+            },
+            None,
+            0,
+        )
+        .expect("spawn before shutdown should succeed");
+
+        // Drain for far less than the task's sleep, so it is still
+        // in flight at the deadline and must be counted.
+        let unfinished = tgm_runtime_shutdown_blocking(50);
+        assert!(
+            unfinished >= 1,
+            "a task sleeping for an hour must be reported unfinished after a 50 ms drain, got {unfinished}"
+        );
+
+        // The runtime is now single-shot: further spawns fail with the
+        // documented diagnostic (which the FFI maps to TGM_ERROR_IO).
+        let err = spawn_task(async { Ok(TaskResult::Void) }, None, 0)
+            .expect_err("spawn after shutdown must fail");
+        assert!(
+            err.contains("shut down"),
+            "post-shutdown spawn error should mention shutdown, got: {err}"
+        );
+
+        // Second shutdown is an idempotent no-op.
+        assert_eq!(
+            tgm_runtime_shutdown_blocking(10),
+            0,
+            "second shutdown must be a no-op returning 0"
+        );
+
+        // Regression guard for the stranded-task deadlock: the task's
+        // future was dropped by the runtime teardown before it could
+        // call `complete`, so without the `CompletionGuard` backstop
+        // the task would stay `Pending` forever.  Poll the
+        // *non-blocking* readiness flag with a bounded budget rather
+        // than calling the blocking join directly — that way a
+        // regression (or a mutated-out guard) fails this assertion
+        // quickly instead of hanging the whole test binary.
+        let mut ready = false;
+        for _ in 0..200 {
+            if tgm_async_task_is_ready(task) {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            ready,
+            "the CompletionGuard backstop must move a shutdown-stranded task out of Pending"
+        );
+        // Now that it is ready, the join cannot block; it must report
+        // the Cancelled outcome the backstop installed.  (Debug-able tag
+        // avoids requiring `TaskResult: Debug`.)
+        let join_tag: Result<(), TgmError> = join_internal(task).map(|_| ());
+        assert!(
+            matches!(join_tag, Err(TgmError::Cancelled)),
+            "a task stranded by shutdown must join as Cancelled; got {join_tag:?}"
+        );
+
+        // Free the heap handle.  `tgm_async_task_free` only drops the
+        // handle box; it never joins or blocks.
+        tgm_async_task_free(task);
     }
 }

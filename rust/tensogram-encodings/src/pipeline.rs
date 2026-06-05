@@ -100,6 +100,37 @@ pub enum PipelineError {
     /// Strict-input contract: bad config does not silently default.
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+    /// The descriptor's claimed decoded size is structurally
+    /// inconsistent with the on-disk payload length, detected
+    /// *before* any decompression runs.
+    ///
+    /// Raised only for pipelines where the decoded size is known
+    /// exactly from the descriptor and the payload length —
+    /// uncompressed `encoding=none` and uncompressed
+    /// `encoding=simple_packing`.  In both cases the equality is
+    /// categorical: a mismatch in **either** direction (claim too
+    /// large *or* too small relative to the payload) is malformed
+    /// input, never a legitimate message.
+    ///
+    /// Compressed codecs are deliberately *not* guarded here — their
+    /// decoded size cannot be derived from the payload without
+    /// decompressing, and any fixed expansion-ratio ceiling would
+    /// risk false-rejecting legitimately highly-compressible
+    /// scientific data.  A hostile compressed descriptor instead
+    /// fails gracefully at the fallible allocation step (see
+    /// [`Compressor::decompress`](crate::compression::Compressor)),
+    /// which surfaces a structured allocation error rather than
+    /// aborting the process.
+    #[error(
+        "descriptor claims {claimed_bytes} decoded byte(s) but frame payload is \
+         {payload_bytes} byte(s) (encoding {encoding}, dtype width {dtype_byte_width})"
+    )]
+    DescriptorSizeMismatch {
+        claimed_bytes: u128,
+        payload_bytes: usize,
+        encoding: String,
+        dtype_byte_width: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -677,6 +708,12 @@ pub fn decode_pipeline(
     config: &PipelineConfig,
     native_byte_order: bool,
 ) -> Result<Vec<u8>, PipelineError> {
+    // Step 0: Reject descriptors whose claimed decoded size is
+    // structurally inconsistent with the on-disk payload, before any
+    // decompression runs.  No-op for filtered / compressed pipelines
+    // (see `validate_descriptor_size`).
+    validate_descriptor_size(encoded.len(), config)?;
+
     // Step 1: Decompress — Cow avoids cloning when no compression
     let decompressed: Cow<'_, [u8]> = match build_compressor(&config.compression, config)? {
         None => Cow::Borrowed(encoded),
@@ -759,6 +796,14 @@ pub fn decode_range_pipeline(
             "partial range decode is not supported with shuffle filter".to_string(),
         ));
     }
+
+    // Reject a descriptor whose full-tensor decoded size is
+    // structurally inconsistent with the payload before slicing.
+    // No-op for compressed pipelines (random-access range decode runs
+    // only on compressors with block offsets); meaningful for the
+    // uncompressed `encoding=none` / `simple_packing` paths, where the
+    // full payload is present and `num_values × width` must match.
+    validate_descriptor_size(encoded.len(), config)?;
 
     // Phase 1: Compute byte range needed from the (possibly compressed) stream
     let (byte_start, byte_size, bit_offset_in_chunk) = match &config.encoding {
@@ -860,24 +905,86 @@ pub fn decode_range_pipeline(
     }
 }
 
-fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
+/// Exact number of decoded payload bytes implied by the descriptor,
+/// computed in `u128` so the multiplication never wraps.
+///
+/// This is the single source of truth for the descriptor-implied
+/// decoded size.  Both [`estimate_decompressed_size`] (the
+/// decompression pre-allocation hint) and [`validate_descriptor_size`]
+/// (the structural consistency gate) derive from it, so the two can
+/// never drift apart.
+///
+/// For `encoding=none` this is `num_values × dtype_byte_width`
+/// (`ceil(num_values / 8)` for the bitmask dtype, whose
+/// `dtype_byte_width` is reported as `0`).  For
+/// `encoding=simple_packing` it is `ceil(num_values × bits_per_value
+/// / 8)` — the bit-packed width, independent of `dtype_byte_width`.
+fn exact_decoded_bytes(config: &PipelineConfig) -> u128 {
     match &config.encoding {
         EncodingType::None => {
             // `Dtype::Bitmask` reports `byte_width = 0` because its
-            // elements are 1 bit each.  The decompressed byte count
-            // for a bitmask payload is `ceil(num_values / 8)`.
+            // elements are 1 bit each.  The decoded byte count for a
+            // bitmask payload is `ceil(num_values / 8)`.
             if config.dtype_byte_width == 0 {
-                config.num_values.div_ceil(8)
+                (config.num_values as u128).div_ceil(8)
             } else {
-                config.num_values.saturating_mul(config.dtype_byte_width)
+                (config.num_values as u128) * (config.dtype_byte_width as u128)
             }
         }
         EncodingType::SimplePacking(params) => {
-            let total_bits =
-                (config.num_values as u128).saturating_mul(params.bits_per_value as u128);
-            total_bits.div_ceil(8).min(usize::MAX as u128) as usize
+            let total_bits = (config.num_values as u128) * (params.bits_per_value as u128);
+            total_bits.div_ceil(8)
         }
     }
+}
+
+fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
+    // Clamp the exact (un-saturating) size down to `usize` for the
+    // pre-allocation hint.  Over-large values clamp to `usize::MAX`,
+    // which the fallible reservation downstream then rejects
+    // gracefully.
+    exact_decoded_bytes(config).min(usize::MAX as u128) as usize
+}
+
+/// Structural consistency gate run *before* any decompression.
+///
+/// For pipelines whose decoded size is known **exactly** from the
+/// descriptor — uncompressed `encoding=none` and uncompressed
+/// `encoding=simple_packing` — the encoded payload length must equal
+/// that exact size.  A mismatch in either direction is categorically
+/// malformed input (truncation, corruption, or a hostile descriptor)
+/// and is rejected with [`PipelineError::DescriptorSizeMismatch`].
+///
+/// Pipelines that apply a [`filter`](FilterType) (shuffle) or any
+/// compression are **not** gated here: a filter is size-preserving
+/// but the check is only wired for the uncompressed-no-filter case to
+/// keep the equality exact, and compressed payloads have no
+/// descriptor-derivable on-disk length (see the
+/// `DescriptorSizeMismatch` docs for why no ratio heuristic is
+/// imposed).  Those paths fail gracefully at the fallible
+/// decompression allocation instead.
+fn validate_descriptor_size(
+    payload_len: usize,
+    config: &PipelineConfig,
+) -> Result<(), PipelineError> {
+    // Only the uncompressed, unfiltered pipelines have an exactly
+    // known on-disk payload length.
+    if !matches!(config.compression, CompressionType::None)
+        || !matches!(config.filter, FilterType::None)
+    {
+        return Ok(());
+    }
+
+    let claimed = exact_decoded_bytes(config);
+    if claimed != payload_len as u128 {
+        return Err(PipelineError::DescriptorSizeMismatch {
+            claimed_bytes: claimed,
+            payload_bytes: payload_len,
+            encoding: config.encoding.to_string(),
+            dtype_byte_width: config.dtype_byte_width,
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn try_clone_bytes(src: &[u8]) -> Result<Vec<u8>, PipelineError> {
@@ -1668,13 +1775,13 @@ mod tests {
         };
         let err = decode_pipeline(&payload, &hostile, false)
             .expect_err("pathological num_values on simple_packing must surface as an error");
-        let msg = format!("{err}");
+        // With the structural descriptor-size gate in place, an
+        // uncompressed simple_packing pipeline is now rejected *before*
+        // any decode work, with the precise size-mismatch error rather
+        // than a downstream overflow / allocation failure.
         assert!(
-            msg.contains("overflow")
-                || msg.contains("failed to reserve")
-                || msg.contains("Insufficient")
-                || msg.contains("insufficient"),
-            "error should report a guard-check failure, got: {msg}"
+            matches!(err, PipelineError::DescriptorSizeMismatch { .. }),
+            "expected DescriptorSizeMismatch, got: {err}"
         );
     }
 
@@ -1711,5 +1818,264 @@ mod tests {
             msg.contains("failed to reserve"),
             "error should report allocation failure, got: {msg}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Structural descriptor ↔ payload size consistency gate
+    // (`validate_descriptor_size`).  Exact-equality tiers only:
+    // uncompressed `encoding=none` and uncompressed `simple_packing`.
+    // A mismatch in either direction is categorically malformed input
+    // and must be rejected before any decode work.
+    // -----------------------------------------------------------------------
+
+    /// none / none config over `num_values` 1-byte elements.
+    fn sizecheck_none_config(num_values: usize, dtype_byte_width: usize) -> PipelineConfig {
+        PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width,
+            swap_unit_size: dtype_byte_width,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        }
+    }
+
+    #[test]
+    fn descriptor_size_none_exact_match_succeeds() {
+        // 4 elements × 4 bytes = 16-byte payload — exact, must decode.
+        let payload = vec![0u8; 16];
+        let cfg = sizecheck_none_config(4, 4);
+        let out = decode_pipeline(&payload, &cfg, false).expect("exact size must decode");
+        assert_eq!(out.len(), 16);
+    }
+
+    #[test]
+    fn descriptor_size_none_too_small_payload_rejected() {
+        // Descriptor claims 4×4 = 16 bytes but payload is 15 (truncation).
+        let payload = vec![0u8; 15];
+        let cfg = sizecheck_none_config(4, 4);
+        let err =
+            decode_pipeline(&payload, &cfg, false).expect_err("short payload must be rejected");
+        match err {
+            PipelineError::DescriptorSizeMismatch {
+                claimed_bytes,
+                payload_bytes,
+                ..
+            } => {
+                assert_eq!(claimed_bytes, 16);
+                assert_eq!(payload_bytes, 15);
+            }
+            other => panic!("expected DescriptorSizeMismatch, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn descriptor_size_none_too_large_payload_rejected() {
+        // Descriptor claims 16 bytes but payload is 17 (trailing junk /
+        // wrong descriptor).  The too-much-data direction is malformed too.
+        let payload = vec![0u8; 17];
+        let cfg = sizecheck_none_config(4, 4);
+        let err =
+            decode_pipeline(&payload, &cfg, false).expect_err("over-long payload must be rejected");
+        assert!(
+            matches!(
+                err,
+                PipelineError::DescriptorSizeMismatch {
+                    claimed_bytes: 16,
+                    payload_bytes: 17,
+                    ..
+                }
+            ),
+            "expected 16-vs-17 mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn descriptor_size_bitmask_uses_ceil_div_8() {
+        // Bitmask dtype reports byte_width 0; decoded size is ceil(N/8).
+        // 17 bits → ceil(17/8) = 3 bytes.
+        let cfg_ok = sizecheck_none_config(17, 0);
+        assert!(decode_pipeline(&[0u8; 3], &cfg_ok, false).is_ok());
+        // 2 bytes is too small for 17 bits.
+        let err = decode_pipeline(&[0u8; 2], &cfg_ok, false)
+            .expect_err("bitmask short payload must be rejected");
+        assert!(
+            matches!(
+                err,
+                PipelineError::DescriptorSizeMismatch {
+                    claimed_bytes: 3,
+                    payload_bytes: 2,
+                    ..
+                }
+            ),
+            "expected 3-vs-2 mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn descriptor_size_none_hostile_num_values_rejected_before_alloc() {
+        // The headline case: a tiny payload with a descriptor claiming a
+        // terabyte-scale tensor.  Must be rejected structurally — no
+        // allocation, no panic — with the precise size-mismatch error.
+        let payload = vec![0u8; 8];
+        let cfg = sizecheck_none_config(usize::MAX, 8);
+        let err = decode_pipeline(&payload, &cfg, false)
+            .expect_err("hostile num_values must be rejected");
+        assert!(
+            matches!(err, PipelineError::DescriptorSizeMismatch { .. }),
+            "expected DescriptorSizeMismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn descriptor_size_simple_packing_exact_and_mismatch() {
+        // Honest round-trip first to obtain a real packed payload.
+        let values: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let params = simple_packing::compute_params(&values, 16, 0).unwrap();
+        let cfg = PipelineConfig {
+            encoding: EncodingType::SimplePacking(params),
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let payload = encode_pipeline(&data, &cfg).unwrap().encoded_bytes;
+        // 10 values × 16 bits = 160 bits = 20 bytes.
+        assert_eq!(payload.len(), 20);
+        // Exact match decodes.
+        assert!(decode_pipeline(&payload, &cfg, false).is_ok());
+
+        // Append one trailing byte → too-much-data, now rejected (this
+        // closes the gap where the simple_packing decoder previously
+        // tolerated extra trailing bytes).
+        let mut over = payload.clone();
+        over.push(0);
+        let err = decode_pipeline(&over, &cfg, false)
+            .expect_err("trailing-byte payload must be rejected");
+        assert!(
+            matches!(
+                err,
+                PipelineError::DescriptorSizeMismatch {
+                    claimed_bytes: 20,
+                    payload_bytes: 21,
+                    ..
+                }
+            ),
+            "expected 20-vs-21 mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn descriptor_size_gate_is_noop_for_compressed() {
+        // A compressed pipeline must NOT be gated by the exact-size
+        // check (its on-disk length is the compressed length, not the
+        // descriptor-derived decoded size).  An honest zstd round-trip
+        // whose payload length differs from num_values × width must
+        // still decode cleanly.
+        #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
+        {
+            // Use a large, trivially-compressible buffer (all zeros) so
+            // the compressed payload is *guaranteed* shorter than the
+            // decoded length on any zstd version — this deterministically
+            // exercises the "compressed length != descriptor-derived
+            // decoded length" case without relying on incidental codec
+            // sizing for a small mixed input.
+            let data: Vec<u8> = vec![0u8; 64 * 1024];
+            let cfg = PipelineConfig {
+                encoding: EncodingType::None,
+                filter: FilterType::None,
+                compression: CompressionType::Zstd { level: 3 },
+                num_values: data.len(),
+                byte_order: ByteOrder::Little,
+                dtype_byte_width: 1,
+                swap_unit_size: 1,
+                compression_backend: CompressionBackend::default(),
+                intra_codec_threads: 0,
+                compute_hash: false,
+            };
+            let payload = encode_pipeline(&data, &cfg).unwrap().encoded_bytes;
+            // 64 KiB of zeros compresses far below 64 KiB under any zstd
+            // build, so the on-disk length provably differs from the
+            // descriptor-derived decoded length — yet the gate must not
+            // fire and the object must round-trip.
+            assert!(
+                payload.len() < data.len(),
+                "64 KiB of zeros must compress smaller; got {} >= {}",
+                payload.len(),
+                data.len()
+            );
+            let out = decode_pipeline(&payload, &cfg, false).expect("compressed must decode");
+            assert_eq!(out, data);
+        }
+    }
+
+    #[test]
+    fn descriptor_size_gate_is_noop_for_shuffle_filter() {
+        // A shuffle filter is size-preserving but the gate intentionally
+        // skips any filtered pipeline.  An honest shuffle round-trip must
+        // still decode (proving the gate didn't false-reject it).
+        let values: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let cfg = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::Shuffle { element_size: 4 },
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 4,
+            swap_unit_size: 4,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let payload = encode_pipeline(&data, &cfg).unwrap().encoded_bytes;
+        let out = decode_pipeline(&payload, &cfg, false).expect("shuffle must decode");
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn descriptor_size_range_path_rejects_mismatch() {
+        // The range decoder runs the same structural gate.  A
+        // none/none descriptor claiming more elements than the payload
+        // holds is rejected before any slicing, even though the
+        // requested range itself is small.
+        let cfg = sizecheck_none_config(/*num_values=*/ 100, /*width=*/ 4);
+        // Payload only holds 4 elements (16 bytes), not the claimed 100.
+        let payload = vec![0u8; 16];
+        let err = decode_range_pipeline(&payload, &cfg, &[], 0, 2, false)
+            .expect_err("range decode must reject a descriptor/payload size mismatch");
+        assert!(
+            matches!(
+                err,
+                PipelineError::DescriptorSizeMismatch {
+                    claimed_bytes: 400,
+                    payload_bytes: 16,
+                    ..
+                }
+            ),
+            "expected 400-vs-16 mismatch from the range path, got: {err}"
+        );
+    }
+
+    #[test]
+    fn descriptor_size_range_path_accepts_exact_match() {
+        // Counterpart: when the payload exactly matches the descriptor,
+        // the range path decodes the requested slice normally.
+        let cfg = sizecheck_none_config(/*num_values=*/ 4, /*width=*/ 4);
+        let payload: Vec<u8> = (0..16).collect();
+        let out = decode_range_pipeline(&payload, &cfg, &[], 1, 2, false)
+            .expect("exact-size range decode must succeed");
+        // 2 elements × 4 bytes, starting at element 1.
+        assert_eq!(out, payload[4..12]);
     }
 }

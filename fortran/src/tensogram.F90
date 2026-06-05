@@ -23,7 +23,7 @@
 !> Shallow binding: a private `bind(C)` interface block mirrors the synchronous
 !> subset of `tensogram.h`; the public `tensogram_*` procedures add idiomatic
 !> Fortran strings, ownership (finalizers), the memory-order contract, and a
-!> non-copyable handle guard. See PLAN_FORTRAN.md for the full design.
+!> non-copyable handle guard.
 !>
 !> GENERIC ENCODE / DECODE
 !>   `tensogram_encode` and `tensogram_to_array` are generic over dtype
@@ -34,13 +34,13 @@
 !>   documented follow-ups; Fortran has no native unsigned or half/complex-as-
 !>   pairs scalar mapping.)
 !>
-!> MEMORY-ORDER CONTRACT (PLAN_FORTRAN.md §5.1)
+!> MEMORY-ORDER CONTRACT
 !>   A Fortran array `a(ni, nj, ...)` is written with the on-wire descriptor
 !>   shape and strides REVERSED to C/row-major order. Consequences:
 !>     * Round-trips Fortran <-> Fortran are bit-identical.
 !>     * A NumPy / C reader sees the reversed (transposed) shape.
 !>
-!> OWNERSHIP / LIFETIMES (PLAN_FORTRAN.md §5.4 — approach "A+")
+!> OWNERSHIP / LIFETIMES (non-copyable owning-handle approach)
 !>   `tensogram_buffer`  owns Rust-allocated encoded bytes (tgm_bytes_free).
 !>   `tensogram_message` owns a decoded message handle  (tgm_message_free).
 !>   Both free in a `final` procedure and via an idempotent `free` binding.
@@ -172,7 +172,7 @@ module tensogram
 
    ! ---- Generic encode / decode / append over dtype ------------------------
    ! Generic over dtype x rank 0..7, expanded from tgm_iface.inc via the
-   ! per-rank table tgm_ranks.inc (PLAN_FORTRAN.md §5.2). The matching
+   ! per-rank table tgm_ranks.inc. The matching
    ! implementations (tgm_encode.inc) are expanded in the CONTAINS section.
    interface tensogram_encode
 #define FAM encode_
@@ -592,7 +592,7 @@ contains
 
    !> Build the one-object descriptor JSON. `fshape` is the Fortran
    !> (column-major) extents; the on-wire shape and C-contiguous strides are
-   !> the REVERSE (PLAN_FORTRAN.md §5.1). `extra`, if present, is raw JSON of
+   !> the REVERSE (see the memory-order contract above). `extra`, if present, is raw JSON of
    !> additional top-level keys appended verbatim.
    !> Build a single DataObjectDescriptor object `{...}` with the on-wire
    !> shape and C-contiguous strides REVERSED from the Fortran extents

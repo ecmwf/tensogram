@@ -9,7 +9,7 @@
 """Cross-language parity consumer for the Fortran binding.
 
 Decodes the ``.tgm`` written by ``xlang_fortran fwrite`` and asserts the
-column-major contract (PLAN_FORTRAN.md §5.1, §8): a Fortran ``a(ni, nj)`` is
+column-major contract: a Fortran ``a(ni, nj)`` is
 encoded with the on-wire shape reversed, so NumPy sees the transpose
 ``(nj, ni)`` with ``arr[j-1, i-1] == field(i, j)``.
 """
