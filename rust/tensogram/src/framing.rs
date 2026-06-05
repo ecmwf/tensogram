@@ -885,6 +885,19 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 buf.len()
             )));
         }
+        // A claimed `total_length` smaller than the fixed preamble +
+        // postamble cannot describe a real message and would underflow
+        // the `total_len - POSTAMBLE_SIZE` arithmetic below.  Reject it
+        // before computing any offset.  (Without this guard a hostile
+        // 42-byte message with `total_length = 10` panics with
+        // "attempt to subtract with overflow" — a DoS under
+        // `panic = "abort"`.)
+        if total_len < PREAMBLE_SIZE + POSTAMBLE_SIZE {
+            return Err(TensogramError::Framing(format!(
+                "total_length {total_len} smaller than the minimum message size {}",
+                PREAMBLE_SIZE + POSTAMBLE_SIZE
+            )));
+        }
 
         // Validate postamble.  In v3 the postamble carries a mirrored
         // `total_length` that — when non-zero — must match the
@@ -903,8 +916,19 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
 
     let mut pos = PREAMBLE_SIZE;
     let msg_end = if preamble.total_length > 0 {
-        // Safe: validated above that total_length fits in usize
-        preamble.total_length as usize - POSTAMBLE_SIZE
+        // Safe: the `total_length > 0` branch above validated that the
+        // value fits in usize AND is ≥ PREAMBLE_SIZE + POSTAMBLE_SIZE,
+        // so this subtraction cannot underflow.  `checked_sub` is kept
+        // as belt-and-braces: a future refactor that weakens the guard
+        // surfaces a structured error here instead of an under/overflow.
+        (preamble.total_length as usize)
+            .checked_sub(POSTAMBLE_SIZE)
+            .ok_or_else(|| {
+                TensogramError::Framing(format!(
+                    "total_length {} smaller than postamble size {POSTAMBLE_SIZE}",
+                    preamble.total_length
+                ))
+            })?
     } else {
         buf.len().checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
             TensogramError::Framing(format!(

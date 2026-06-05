@@ -161,7 +161,30 @@ no UB (ASan)** on any input.
 > Updated as the audit proceeds. Each entry: ID, severity, surface,
 > description, attack, status, mitigation commit, regression test.
 
-_(none recorded yet — audit starting)_
+### SEC-001 — HIGH — FIXED
+
+- **Surface:** `framing.rs` `decode_message` (reached from `decode`,
+  `decode_object`, `decode_range`, `validate_buffer`, and every binding).
+- **Class:** E (panic-as-DoS) / B (integer underflow).
+- **Description:** When the preamble `total_length` is non-zero but
+  smaller than `PREAMBLE_SIZE + POSTAMBLE_SIZE` (48), the postamble
+  offset `total_len - POSTAMBLE_SIZE` underflowed. In debug this panics
+  ("attempt to subtract with overflow"); in release it wraps to a huge
+  `usize` and then slices out of bounds. Under `panic = "abort"` this is
+  a process-killing DoS triggerable by a **42-byte** hostile message.
+- **Attack:** any consumer calling `decode`/`decode_object`/
+  `decode_range`/`validate` on a downloaded `.tgm` with a crafted
+  `total_length` (e.g. `10`).
+- **Discovery:** `fuzz_decode` (libFuzzer + ASan) — found in < 5 s.
+- **Mitigation:** reject `total_len < PREAMBLE_SIZE + POSTAMBLE_SIZE`
+  with a structured `Framing` error before any offset arithmetic; the
+  `msg_end` subtraction also switched to `checked_sub` for defence in
+  depth.
+- **Regression test:** `adversarial.rs::sec001_undersized_total_length_is_rejected_not_panic`
+  (exact fuzzer reproducer + full sub-minimum boundary sweep).
+- **Re-fuzz:** `fuzz_decode` clean over 5,600+ executions after the fix.
+
+_(audit continuing)_
 
 ## 9. Deliverables
 

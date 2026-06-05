@@ -477,3 +477,53 @@ fn frame_type_4_is_rejected() {
         "expected 'obsolete v2' in the error, got: {msg}"
     );
 }
+
+/// SEC-001 (HIGH, found by `fuzz_decode`): a message whose preamble
+/// `total_length` is non-zero but smaller than `PREAMBLE_SIZE +
+/// POSTAMBLE_SIZE` used to underflow `total_len - POSTAMBLE_SIZE`,
+/// panicking with "attempt to subtract with overflow" — a process-
+/// killing DoS under `panic = "abort"`.  It must now be a clean
+/// structured error.
+///
+/// The bytes below are the exact reproducer libFuzzer minimised: valid
+/// `TENSOGRM` magic, version 3, and `total_length = 10` (< 48).
+#[test]
+fn sec001_undersized_total_length_is_rejected_not_panic() {
+    let crash_input: &[u8] = &[
+        84, 69, 78, 83, 79, 71, 82, 77, // "TENSOGRM"
+        0, 3, // version = 3
+        0, 0, // flags
+        82, 77, 0, 3, // reserved (irrelevant)
+        0, 0, 0, 0, 0, 0, 0, 10, // total_length = 10  (< 48)
+        // trailing junk from the original reproducer
+        0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 24, 10,
+    ];
+    // Must not panic; must return a structured framing error.
+    let err = decode(crash_input, &DecodeOptions::default())
+        .expect_err("undersized total_length must be rejected");
+    assert!(
+        matches!(err, TensogramError::Framing(_)),
+        "expected a Framing error, got: {err:?}"
+    );
+
+    // Sweep every non-zero total_length below the minimum to pin the
+    // whole boundary, not just the one fuzzer sample.  None may panic.
+    use tensogram::wire::{MAGIC, POSTAMBLE_SIZE, PREAMBLE_SIZE, WIRE_VERSION};
+    for bad_total in 1..(PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64 {
+        let mut buf = Vec::with_capacity(PREAMBLE_SIZE + POSTAMBLE_SIZE);
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+        buf.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        buf.extend_from_slice(&bad_total.to_be_bytes()); // total_length
+        // Pad the buffer so the failure is the length check, not a
+        // generic too-short-buffer error.
+        buf.resize(PREAMBLE_SIZE + POSTAMBLE_SIZE, 0);
+        let err = decode(&buf, &DecodeOptions::default())
+            .expect_err("total_length below minimum must be rejected");
+        assert!(
+            matches!(err, TensogramError::Framing(_)),
+            "total_length={bad_total} expected Framing error, got: {err:?}"
+        );
+    }
+}
