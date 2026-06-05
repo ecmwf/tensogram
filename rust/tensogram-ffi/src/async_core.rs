@@ -324,7 +324,7 @@ pub(crate) enum TaskResult {
     Void,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum TaskState {
     Pending,
     Ready,
@@ -1686,6 +1686,60 @@ mod tests {
     }
 
     // ----- LiveTaskGuard: the LIVE_TASKS accounting -----
+
+    /// Dropping a `CompletionGuard` over a still-`Pending` task
+    /// transitions it to `Ready` with a `Cancelled` outcome — directly,
+    /// without the runtime.  Kills the
+    /// `<impl Drop for CompletionGuard>::drop with ()` mutation fast
+    /// (the runtime-driven path only catches it via a join deadlock /
+    /// timeout).
+    #[test]
+    fn completion_guard_drop_cancels_pending_task() {
+        let shared = TaskShared::new(None);
+        {
+            let _guard = CompletionGuard {
+                shared: shared.clone(),
+            };
+            // Still pending while the guard is alive.
+            assert_eq!(
+                shared.state.lock().unwrap().state,
+                TaskState::Pending,
+                "task should still be Pending before the guard drops"
+            );
+        } // guard drops here → complete(Cancelled)
+
+        let inner = shared.state.lock().unwrap();
+        assert_eq!(
+            inner.state,
+            TaskState::Ready,
+            "dropping the guard must move the task out of Pending"
+        );
+        assert!(
+            matches!(inner.result, Some(AsyncOutcome::Cancelled)),
+            "a guard-cancelled task must carry the Cancelled outcome"
+        );
+    }
+
+    /// A `CompletionGuard` dropped over an already-completed task is a
+    /// no-op (idempotent `complete`): the original outcome is preserved,
+    /// not overwritten with `Cancelled`.
+    #[test]
+    fn completion_guard_drop_is_noop_when_already_completed() {
+        let shared = TaskShared::new(None);
+        // Simulate the happy path: the future completed normally first.
+        shared.complete(AsyncOutcome::Ok(TaskResult::Void));
+        {
+            let _guard = CompletionGuard {
+                shared: shared.clone(),
+            };
+        } // guard drops → complete(Cancelled) must be a no-op here
+
+        let inner = shared.state.lock().unwrap();
+        assert!(
+            matches!(inner.result, Some(AsyncOutcome::Ok(TaskResult::Void))),
+            "the guard must not overwrite an already-set outcome"
+        );
+    }
 
     /// `LiveTaskGuard::new` increments and `Drop` decrements
     /// `LIVE_TASKS` by exactly one.  Kills the
