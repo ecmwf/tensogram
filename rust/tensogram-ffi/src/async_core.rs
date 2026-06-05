@@ -1420,29 +1420,17 @@ pub extern "C" fn tgm_runtime_shutdown_blocking(timeout_ms: u64) -> u64 {
     // dropping the runtime drops every still-pending future, which
     // runs each `LiveTaskGuard` and would otherwise drive the count
     // to zero regardless of whether those tasks actually finished.
-    // Cooperative drain via elapsed-time comparison rather than an
-    // absolute `Instant` deadline.  `Instant + Duration` panics on
-    // overflow, and this is a non-panicking FFI entry point, so we
-    // never add a caller-controlled `Duration` to an `Instant`.
-    // Instead we measure `start.elapsed()` (always well-defined) and
-    // compare against the requested timeout — no arithmetic that can
-    // overflow on a hostile `timeout_ms`.
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_millis(timeout_ms);
-    let poll_interval = Duration::from_millis(5);
-    loop {
-        if LIVE_TASKS.load(Ordering::SeqCst) == 0 {
-            break;
-        }
-        let elapsed = start.elapsed();
-        if elapsed >= timeout {
-            break;
-        }
-        // Sleep the shorter of the poll interval and the remaining
-        // budget so we do not overshoot the deadline.
-        std::thread::sleep(poll_interval.min(timeout - elapsed));
-    }
-    let unfinished = LIVE_TASKS.load(Ordering::SeqCst) as u64;
+    // Cooperatively drain in-flight tasks up to the timeout, then
+    // capture the residual count.  The loop logic lives in
+    // `drain_until` so it can be unit-tested deterministically with an
+    // injected counter and clock (the real call reads `LIVE_TASKS` and
+    // sleeps on the wall clock).
+    let unfinished = drain_until(
+        || LIVE_TASKS.load(Ordering::SeqCst),
+        Duration::from_millis(timeout_ms),
+        Duration::from_millis(5),
+        std::thread::sleep,
+    );
 
     // Force the runtime down now.  Any tasks still in flight are
     // abandoned; we already captured their count above.  `ZERO`
@@ -1451,6 +1439,40 @@ pub extern "C" fn tgm_runtime_shutdown_blocking(timeout_ms: u64) -> u64 {
     rt.shutdown_timeout(Duration::ZERO);
 
     unfinished
+}
+
+/// Poll `live_count` until it reports `0` or `timeout` elapses,
+/// sleeping `min(poll_interval, remaining)` between polls; return the
+/// final count.
+///
+/// Pure and dependency-injected — the clock is `Instant::elapsed`
+/// internally but the sleep is supplied by the caller so unit tests
+/// can drive it without real time.  Overflow-safe: it never adds a
+/// `Duration` to an `Instant`, comparing `start.elapsed()` against the
+/// timeout instead, so any `u64` millisecond budget is safe.
+///
+/// Separated from [`tgm_runtime_shutdown_blocking`] so the break /
+/// timeout / remaining-budget arithmetic is testable without the
+/// single-shot, process-global runtime.
+fn drain_until<C, S>(live_count: C, timeout: Duration, poll_interval: Duration, mut sleep: S) -> u64
+where
+    C: Fn() -> usize,
+    S: FnMut(Duration),
+{
+    let start = std::time::Instant::now();
+    loop {
+        if live_count() == 0 {
+            break;
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            break;
+        }
+        // Sleep the shorter of the poll interval and the remaining
+        // budget so we do not overshoot the deadline.
+        sleep(poll_interval.min(timeout - elapsed));
+    }
+    live_count() as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -1549,6 +1571,144 @@ fn dtype_name(d: tensogram::dtype::Dtype) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    // ----- drain_until: the cooperative-drain loop logic -----
+    //
+    // These exercise drain_until directly with an injected counter and
+    // sleep so the break / timeout / remaining-budget arithmetic is
+    // pinned without the single-shot process-global runtime.
+
+    /// A count that is already zero breaks on the first iteration — no
+    /// sleeps, residual 0.  Kills the `== 0` → `!= 0` mutation: under
+    /// the flip, a zero count would NOT break and the loop would sleep
+    /// toward the timeout.
+    #[test]
+    fn drain_until_zero_count_breaks_immediately_without_sleeping() {
+        let sleeps = RefCell::new(0usize);
+        // The sleep panics if ever reached.  Correct code breaks on the
+        // first `count == 0` check, so it is never called; the
+        // `== 0` → `!= 0` mutation would fall through to the sleep and
+        // panic here — failing the test *fast* rather than spinning to
+        // the (deliberately large) timeout.
+        let residual = drain_until(
+            || 0,
+            Duration::from_secs(3600),
+            Duration::from_millis(5),
+            |_| {
+                *sleeps.borrow_mut() += 1;
+                panic!("zero count must break before any sleep");
+            },
+        );
+        assert_eq!(residual, 0, "zero count must report zero unfinished");
+        assert_eq!(
+            *sleeps.borrow(),
+            0,
+            "a zero count must break before any sleep"
+        );
+    }
+
+    /// A count that drops to zero after two polls terminates via the
+    /// count==0 path and returns 0.  Confirms the loop actually
+    /// re-reads the counter and that a positive count does NOT break
+    /// early (also guards the `== 0` predicate from the other side).
+    #[test]
+    fn drain_until_terminates_when_count_reaches_zero() {
+        let calls = RefCell::new(0usize);
+        let sleeps = RefCell::new(0usize);
+        let residual = drain_until(
+            || {
+                let mut c = calls.borrow_mut();
+                *c += 1;
+                // 1st and 2nd reads: still busy; 3rd read: drained.
+                if *c >= 3 { 0 } else { 1 }
+            },
+            Duration::from_secs(3600),
+            Duration::from_millis(1),
+            |_| *sleeps.borrow_mut() += 1,
+        );
+        assert_eq!(residual, 0);
+        assert_eq!(*sleeps.borrow(), 2, "should sleep once per busy poll");
+    }
+
+    /// A never-zero count with an already-elapsed budget terminates via
+    /// the timeout branch and reports the residual.  Kills the
+    /// `>= timeout` → `< timeout` mutation: under the flip the loop
+    /// would never break here (the test would hang, which cargo-mutants
+    /// records as the mutant being caught).  A zero poll-interval keeps
+    /// the wall-clock test fast.
+    #[test]
+    fn drain_until_breaks_on_timeout_and_reports_residual() {
+        let residual = drain_until(
+            || 4,
+            Duration::ZERO, // already "elapsed" → must break at once
+            Duration::from_millis(5),
+            |_| {},
+        );
+        assert_eq!(
+            residual, 4,
+            "a never-draining count must report its residual"
+        );
+    }
+
+    /// The inter-poll sleep is `min(poll_interval, remaining)`.  With a
+    /// poll interval larger than the whole budget, the first sleep must
+    /// be clamped to the remaining budget — exercising `timeout -
+    /// elapsed`.  Kills the `-` → `+` mutation: `timeout + elapsed`
+    /// would exceed `poll_interval`, so the recorded sleep would equal
+    /// the (large) poll interval instead of the clamped remainder.
+    #[test]
+    fn drain_until_clamps_sleep_to_remaining_budget() {
+        let recorded: RefCell<Vec<Duration>> = RefCell::new(Vec::new());
+        let polls = RefCell::new(0usize);
+        let _ = drain_until(
+            || {
+                // Busy for the first poll, then drained, so exactly one
+                // sleep is recorded.
+                let mut p = polls.borrow_mut();
+                *p += 1;
+                if *p >= 2 { 0 } else { 1 }
+            },
+            Duration::from_millis(20),
+            Duration::from_secs(10), // poll interval >> budget
+            |d| recorded.borrow_mut().push(d),
+        );
+        let recorded = recorded.borrow();
+        assert_eq!(recorded.len(), 1, "exactly one busy poll → one sleep");
+        // With `min(10s, 20ms - elapsed)`, the clamp must keep the sleep
+        // at or below the 20 ms budget — far below the 10 s interval.
+        // Under `timeout + elapsed` the value would be ≈10s.
+        assert!(
+            recorded[0] <= Duration::from_millis(20),
+            "sleep must be clamped to the remaining budget, got {:?}",
+            recorded[0]
+        );
+    }
+
+    // ----- LiveTaskGuard: the LIVE_TASKS accounting -----
+
+    /// `LiveTaskGuard::new` increments and `Drop` decrements
+    /// `LIVE_TASKS` by exactly one.  Kills the
+    /// `<impl Drop for LiveTaskGuard>::drop with ()` mutation: under
+    /// the flip the decrement would not run and the post-drop count
+    /// would stay inflated.
+    #[test]
+    fn live_task_guard_increments_then_decrements() {
+        let before = LIVE_TASKS.load(Ordering::SeqCst);
+        {
+            let _g = LiveTaskGuard::new();
+            assert_eq!(
+                LIVE_TASKS.load(Ordering::SeqCst),
+                before + 1,
+                "new() must increment LIVE_TASKS"
+            );
+        }
+        assert_eq!(
+            LIVE_TASKS.load(Ordering::SeqCst),
+            before,
+            "drop must decrement LIVE_TASKS back to the starting value"
+        );
+    }
 
     /// Full single-shot shutdown lifecycle, in one test because the
     /// runtime is process-global and shutdown is irreversible — a
