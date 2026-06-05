@@ -1817,16 +1817,30 @@ mod tests {
         // Regression guard for the stranded-task deadlock: the task's
         // future was dropped by the runtime teardown before it could
         // call `complete`, so without the `CompletionGuard` backstop
-        // this join would block on the readiness condvar FOREVER.  With
-        // the backstop the task was transitioned to `Cancelled` on
-        // drop, so the join returns promptly with that outcome.  (This
-        // test would hang rather than fail if the backstop regressed.)
-        // Map the join outcome to a Debug-able tag without requiring
-        // `TaskResult: Debug` (the Ok payload is irrelevant here).
+        // the task would stay `Pending` forever.  Poll the
+        // *non-blocking* readiness flag with a bounded budget rather
+        // than calling the blocking join directly — that way a
+        // regression (or a mutated-out guard) fails this assertion
+        // quickly instead of hanging the whole test binary.
+        let mut ready = false;
+        for _ in 0..200 {
+            if tgm_async_task_is_ready(task) {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            ready,
+            "the CompletionGuard backstop must move a shutdown-stranded task out of Pending"
+        );
+        // Now that it is ready, the join cannot block; it must report
+        // the Cancelled outcome the backstop installed.  (Debug-able tag
+        // avoids requiring `TaskResult: Debug`.)
         let join_tag: Result<(), TgmError> = join_internal(task).map(|_| ());
         assert!(
             matches!(join_tag, Err(TgmError::Cancelled)),
-            "a task stranded by shutdown must join as Cancelled, not deadlock; got {join_tag:?}"
+            "a task stranded by shutdown must join as Cancelled; got {join_tag:?}"
         );
 
         // Free the heap handle.  `tgm_async_task_free` only drops the
