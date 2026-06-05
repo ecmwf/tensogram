@@ -1,0 +1,70 @@
+# Fuzzing harnesses for Tensogram's untrusted-input boundary.
+#
+# Not part of the main workspace (excluded in the root Cargo.toml).
+# Build/run with the nightly toolchain via cargo-fuzz:
+#
+#   cargo +nightly fuzz run fuzz_decode -- -max_total_time=120
+#
+# Each target asserts the security invariant: NO panic, NO hang, NO
+# memory-safety violation (ASan), NO leak on ANY input.  A crash that
+# cargo-fuzz finds is saved under fuzz/artifacts/ and should be promoted
+# to a permanent regression test in the relevant crate.
+[package]
+name = "tensogram-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.tensogram]
+path = "../rust/tensogram"
+
+[dependencies.tensogram-encodings]
+path = "../rust/tensogram-encodings"
+
+# Prevent this from being picked up by the parent workspace.
+[workspace]
+
+[profile.release]
+debug = 1
+
+# Each target is a separate binary.
+[[bin]]
+name = "fuzz_decode"
+path = "fuzz_targets/fuzz_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_decode_metadata"
+path = "fuzz_targets/fuzz_decode_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_scan"
+path = "fuzz_targets/fuzz_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_validate"
+path = "fuzz_targets/fuzz_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_decode_object"
+path = "fuzz_targets/fuzz_decode_object.rs"
+test = false
+doc = false
+bench = false
