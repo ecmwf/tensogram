@@ -529,6 +529,12 @@ pub enum SZ3Error {
         found: Vec<usize>,
         expected: Vec<usize>,
     },
+    /// The compressed SZ3 stream is too short or its embedded sizes are
+    /// inconsistent with the buffer length (truncated / malformed /
+    /// hostile input).  The C++ header parser signals this by returning
+    /// a config with `N == 0`; see SEC-010 in `plans/SECURITY_ANALYSIS.md`.
+    #[error("malformed or truncated SZ3 compressed stream")]
+    MalformedCompressedStream,
 }
 
 type Result<T> = std::result::Result<T, SZ3Error>;
@@ -618,6 +624,15 @@ impl ParsedConfig {
                 compressed_data.len(),
             )
         };
+        // SECURITY (SEC-010): the C++ shim returns `N == 0` (with a null
+        // `dims`) when the input is too short or its embedded sizes are
+        // inconsistent with the buffer length — a malformed/truncated
+        // SZ3 stream from a hostile `.tgm`.  Reject it here rather than
+        // proceeding to read a null/garbage dims pointer.
+        if raw.N == 0 || raw.dims.is_null() {
+            // Free nothing: an invalid config carries a null dims.
+            return Err(SZ3Error::MalformedCompressedStream);
+        }
         let dims: Vec<usize> = (0..raw.N)
             .map(|i| unsafe { std::ptr::read(raw.dims.add(i as usize)) })
             .collect();

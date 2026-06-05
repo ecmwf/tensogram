@@ -267,6 +267,59 @@ no UB (ASan)** on any input.
 > this pattern; the fixes are perf-neutral (the checks replace the same
 > additions).
 
+### SEC-009 — HIGH — FIXED
+
+- **Surface:** `zfp_ffi.rs` `zfp_decompress_f64` → libzfp C decoder.
+- **Class:** A (out-of-bounds read / memory-safety). The vendored libzfp
+  decompressor does **not** bounds-check its input bitstream against the
+  requested element count, so a truncated stream (e.g. 1 byte) with a
+  large `num_values` made zfp's `stream_read_word` read past the buffer
+  (ASan **SEGV** / potential info leak), reachable from a `.tgm` with
+  `compression=zfp`.
+- **Discovery:** `fuzz_codec_decode` (the direct codec-decode harness).
+- **Mitigation:** at the Rust shim, query `zfp_stream_maximum_size` for
+  the field+mode, reject a stream longer than that maximum (malformed),
+  and decode from a **zero-padded buffer sized to the maximum** so the
+  decoder can never read past our allocation regardless of how it walks
+  the stream. Legitimate round-trips (all modes + range) unaffected.
+- **Regression test:** `zfp_ffi.rs::sec009_zfp_truncated_stream_rejected_not_oob`.
+
+### SEC-010 — HIGH — FIXED
+
+- **Surface:** **our vendored** `sz3_ffi.cpp` `sz3_decompress_config` →
+  SZ3 C++ `read` / `Config::load`.
+- **Class:** A (out-of-bounds read). The C++ header parser read a
+  16-byte header and a config trailer from an attacker buffer **using
+  `len` for nothing** — no length check before the header read, and the
+  config offset `pos + cmpDataSize` used an attacker-controlled
+  `cmpDataSize` from the stream. A short/hostile stream caused OOB reads
+  (ASan **SEGV** in `SZ3::read` / `MemoryUtil.hpp`), reachable from a
+  `.tgm` with `compression=sz3`.
+- **Discovery:** `fuzz_codec_decode`.
+- **Mitigation (deep audit of our C++):**
+  - reject `len < 16` before any header read;
+  - bound `cmpDataSize` against `len` (no overflow, config offset in
+    range);
+  - copy the config trailer into a **64 KiB zero-padded heap buffer** so
+    SZ3's non-bounds-checking `Config::load` cannot over-read past the
+    real data;
+  - wrap `Config::load` in try/catch so a thrown SZ3 exception cannot
+    cross the C ABI;
+  - return a sentinel invalid config (`N == 0`, null `dims`) on any of
+    the above, which the Rust side (`ParsedConfig::from_compressed`) now
+    rejects with `SZ3Error::MalformedCompressedStream`.
+- **Regression test:** `compression/sz3.rs::sec010_sz3_truncated_stream_rejected_not_oob`.
+- **Re-fuzz:** `fuzz_codec_decode` clean over 150 s after both SEC-009
+  and SEC-010 fixes.
+
+> **Native-codec pattern:** vendored C/C++ decompressors (zfp, SZ3,
+> likely others) trust their input stream length implicitly.  The
+> containment pattern is: validate the stream length against the
+> descriptor-derived expectation at the Rust/C++ shim, and decode from a
+> zero-padded buffer sized to the decoder's maximum read so any
+> over-read lands in padding, never out of bounds.  szip (libaec),
+> blosc2, zstd, and lz4 are checked next under the same lens.
+
 _(audit continuing)_
 
 ## 9. Deliverables

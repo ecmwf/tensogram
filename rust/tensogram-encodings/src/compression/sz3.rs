@@ -173,4 +173,34 @@ mod tests {
         let result = compressor.decompress_range(&[0], &[], 0, 1);
         assert!(matches!(result, Err(CompressionError::RangeNotSupported)));
     }
+
+    /// SEC-010 (HIGH, found by `fuzz_codec_decode`): the SZ3 C++ header
+    /// parser (`sz3_decompress_config`) read the 16-byte header and a
+    /// config trailer from an attacker buffer without bounds-checking it
+    /// against the length, causing out-of-bounds reads (ASan SEGV) in
+    /// `SZ3::read` / `Config::load` — reachable from a hostile `.tgm`
+    /// with `compression=sz3`.  Truncated / malformed streams must now
+    /// return a structured error instead of reading out of bounds.
+    #[test]
+    fn sec010_sz3_truncated_stream_rejected_not_oob() {
+        let compressor = Sz3Compressor {
+            error_bound: Sz3ErrorBound::Absolute(1e-4),
+            num_values: 512,
+            byte_order: ByteOrder::native(),
+        };
+        // The exact fuzzer trigger class: a few bytes claiming many values.
+        let err = compressor
+            .decompress(&[87u8], 512 * 8)
+            .expect_err("a 1-byte SZ3 stream must be rejected, not read OOB");
+        assert!(matches!(
+            err,
+            CompressionError::Sz3(_) | CompressionError::Unknown(_)
+        ));
+
+        // Sweep tiny/short buffers — none may read out of bounds.
+        for len in [0usize, 1, 7, 8, 15, 16, 17, 24] {
+            let tiny = vec![0xCDu8; len];
+            let _ = compressor.decompress(&tiny, 512 * 8); // must not SEGV
+        }
+    }
 }

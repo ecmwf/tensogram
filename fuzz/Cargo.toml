@@ -68,3 +68,10 @@ path = "fuzz_targets/fuzz_decode_object.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_codec_decode"
+path = "fuzz_targets/fuzz_codec_decode.rs"
+test = false
+doc = false
+bench = false
