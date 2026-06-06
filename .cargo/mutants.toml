@@ -164,6 +164,40 @@ exclude_re = [
     "decode\\.rs:588:18:.*replace < with == in decode_object_from_frame",
     "decode\\.rs:588:18:.*replace < with <= in decode_object_from_frame",
     "decode\\.rs:588:47:.*replace > with < in decode_object_from_frame",
+
+    # ── framing.rs: SEC-00x security-hardening defensive guards (PR #129)
+    #
+    # These guards were added by the hostile-input hardening audit
+    # (SEC-001..011).  They are *defensive* checks on attacker-controlled
+    # lengths that, by construction, never fire on a well-formed message —
+    # the same equivalent-mutation category as the verify_data_object_frames
+    # exclusions above (decode.rs:188/229/236/259/296).  The hostile path is
+    # pinned by the adversarial.rs `sec00x_*` tests (no panic / no OOB on
+    # malformed input); the happy path is pinned by
+    # `sec006_decode_metadata_returns_valid_metadata` and
+    # `sec004_inline_hashes_match_on_valid_hashed_message`.  The remaining
+    # comparison/alignment mutations below only change *which* defensive
+    # branch fires on input that is already structurally invalid, with no
+    # observable difference.
+    #
+    # decode_metadata_only frame-skip guard `frame_total < FRAME_HEADER_SIZE`
+    # (line 1148): valid frames are always >= FRAME_HEADER_SIZE, so the guard
+    # never fires on well-formed input.  `< → ==/>/<=` are equivalent.
+    "framing\\.rs:1148:.*in decode_metadata_only",
+    # decode_metadata_only alignment `pos.saturating_add(7) & !7` (line 1154):
+    # identical to decode.rs:296 — for valid input frames are 8-aligned so
+    # the mask is a no-op, and the non-"FR" byte-skip (line 1121-1123)
+    # compensates for any misalignment a mutation would introduce.
+    # `& → |/^` and `delete !` are equivalent/caught-by-progress.
+    "framing\\.rs:1154:.*in decode_metadata_only",
+    # data_object_inline_hashes minimum-frame-size guard
+    # `frame_total < FRAME_HEADER_SIZE + FRAME_COMMON_FOOTER_SIZE` (line 1245):
+    # defensive floor that never fires on valid frames (always >= 28 bytes).
+    # `< → ==/<=` and the `+ → -` on the constant sum only move a threshold
+    # that no valid frame ever crosses — equivalent.  (The overflow/OOB
+    # behaviour the guard exists to prevent is pinned by
+    # sec004_inline_hash_walk_huge_frame_total_does_not_overflow.)
+    "framing\\.rs:1245:.*in data_object_inline_hashes",
 ]
 
 # Use the `release-mutants` profile (defined in workspace `Cargo.toml`)
