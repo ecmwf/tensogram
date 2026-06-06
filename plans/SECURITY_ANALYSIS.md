@@ -320,6 +320,54 @@ no UB (ASan)** on any input.
 > over-read lands in padding, never out of bounds.  szip (libaec),
 > blosc2, zstd, and lz4 are checked next under the same lens.
 
+### SEC-011 — HIGH — FIXED
+
+- **Surface:** `tensogram-sz3` `decompress` (reached from the sz3 codec
+  on the `.tgm` decode path).
+- **Class:** D (unbounded-allocation OOM DoS). `Vec::with_capacity(len)`
+  where `len` is the element count from the attacker-controlled SZ3
+  config trailer — a hostile config claiming a huge `num` aborts the
+  process via OOM (infallible allocation).
+- **Mitigation:** `try_reserve_exact(len)`, surfacing a pathological
+  count as `SZ3Error::MalformedCompressedStream` instead of aborting.
+- **Verification:** `fuzz_codec_decode` clean over 150 s after this +
+  SEC-009/010 (no OOM-abort on hostile sz3 streams); 37 sz3 round-trip
+  tests pass.
+
+### Audit notes — surfaces reviewed clean / low residual
+
+- **szip (libaec):** decode bounds libaec's output via `avail_out =
+  expected_size` (fallibly allocated), `checked_sub` on `decoded_len`,
+  strict-equality short-decode rejection, `set_len` only with
+  `decoded_len <= expected_size`. libaec honours `avail_in` (input is
+  bounded), unlike zfp/sz3. Fuzz-clean. **No finding.**
+- **blosc2:** uses the safe `blosc2` Rust crate over the self-describing
+  c-blosc2 frame format (internal size validation); per-chunk
+  `try_reserve`; documented `items_num()` over-report mitigation.
+  Fuzz-clean. **No finding.**
+- **C FFI input boundary (`tensogram-ffi/lib.rs`):** every
+  `slice::from_raw_parts(buf, buf_len)` on the decode/scan/range path is
+  preceded by an `is_null` guard (and the range path null-checks the
+  offset/count arrays); `CStr::from_ptr(...).to_str()` validates UTF-8
+  with error handling; `extract_inline_hashes` slices only validated
+  `scan` output (safe given SEC-002/005). Caller-contract violations
+  (dangling / wrong-length pointers) are inherent to any C ABI and the
+  caller's responsibility. **No finding** — well-guarded.
+- **remote.rs / remote_scan_parse.rs:** range arithmetic is already
+  `checked_add` / `saturating_add`/`sub`-hardened throughout; the few
+  raw `pos + PREAMBLE_SIZE as u64` additions operate on offsets bounded
+  by the object's real `file_size`, so a `u64` overflow would require a
+  >16-exabyte object. **No HIGH** — low residual.
+
+### SEC-012 — LOW — logged (not on hostile-input path)
+
+- **Surface:** `tensogram-sz3` `decompress_into_dimensioned`
+  `assert_eq!(decompressed_data.len(), len)` panics on a config/buffer
+  length mismatch. **Not reachable from `.tgm` decode** — the codec uses
+  `decompress` (SEC-011-fixed), not this variant, which is a direct
+  `tensogram-sz3` API where the caller owns the buffer. Logged for a
+  future `Result`-returning cleanup.
+
 _(audit continuing)_
 
 ## 9. Deliverables

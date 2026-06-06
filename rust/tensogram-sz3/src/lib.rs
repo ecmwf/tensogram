@@ -754,9 +754,17 @@ pub fn decompress<V: SZ3Compressible, T: std::ops::Deref<Target = [u8]>>(
         return Err(SZ3Error::DecompressedDataTypeMismatch);
     }
 
-    let decompressed_data = unsafe {
-        let mut decompressed_data: Vec<V> = Vec::with_capacity(len);
+    // SECURITY (SEC-011): `len` is the element count from the parsed
+    // SZ3 config trailer, which is attacker-controlled.  An infallible
+    // `Vec::with_capacity(len)` lets a hostile config claiming a huge
+    // `num` abort the process via OOM.  Reserve fallibly so a
+    // pathological count surfaces as a structured error instead.
+    let mut decompressed_data: Vec<V> = Vec::new();
+    decompressed_data
+        .try_reserve_exact(len)
+        .map_err(|_| SZ3Error::MalformedCompressedStream)?;
 
+    let decompressed_data = unsafe {
         V::decompress(
             compressed_data.as_ptr(),
             compressed_data.len(),
