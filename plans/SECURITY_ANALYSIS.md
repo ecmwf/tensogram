@@ -1,9 +1,53 @@
 # Security Analysis & Hardening Plan
 
-> **Status:** In progress. This document is the durable record of the
-> security threat model, the iterative audit methodology, the findings
-> (with severity), and their mitigations. It is updated as the audit
-> proceeds.
+> **Status:** First audit pass complete — **zero HIGH findings remain**.
+> This document is the durable record of the security threat model, the
+> iterative audit methodology, the findings (with severity), and their
+> mitigations.
+
+## 0. Executive Summary
+
+A first deep security audit of all ECMWF-deployed Tensogram code was
+performed against a **fully-hostile-remote-bytes** threat model (a `.tgm`
+downloaded from an untrusted/compromised server), using `cargo-fuzz`
+(libFuzzer + AddressSanitizer), targeted adversarial tests, `cargo
+audit`, and manual review of every `unsafe` / native-codec / FFI
+boundary.
+
+**11 HIGH issues were found and fixed; 1 security invariant was verified
+and pinned; 1 LOW was logged.** Every fix has a permanent regression
+test, and every fuzz target re-ran clean afterwards. The fixes are
+**performance-neutral on the hot path** (checked/saturating arithmetic
+replaces the same operations; the native-codec fixes add a one-time
+length check + a bounded pad only on the decode-setup path).
+
+| Category | Count | IDs |
+|---|---:|---|
+| HIGH — framing integer-overflow / OOB / panic-DoS | 7 | SEC-001..007 |
+| HIGH — native-codec out-of-bounds read (zfp, SZ3) | 2 | SEC-009, SEC-010 |
+| HIGH — unbounded-allocation OOM DoS (sz3) | 1 | SEC-011 |
+| HIGH total | **10** | |
+| Invariant verified & pinned (CBOR recursion) | 1 | SEC-008 |
+| LOW logged (not on hostile-input path) | 1 | SEC-012 |
+
+**The two native out-of-bounds reads (SEC-009 zfp, SEC-010 in our own
+`sz3_ffi.cpp`) are the most serious — memory-safety violations on remote
+input — and warrant treating the landing change as a security release.**
+
+`cargo audit`: 0 vulnerable dependencies.
+
+Surfaces reviewed **clean** (no finding): pure-Rust `tensogram-szip`
+(zero `unsafe`), szip/libaec + blosc2 codec shims, the `tensogram-ffi` C
+ABI input boundary (every `from_raw_parts` null-guarded), `remote.rs`
+(already overflow-hardened), Python bindings (safe PyO3 + sound
+`u8`→`i8` + safe numpy byte-parse), and the C++/Fortran/WASM/TS thin
+layers (delegate to the audited core).
+
+> **Note on scope:** this is a *first pass to zero-HIGH*. Fuzzing was
+> bounded (~1–2 min/target smoke runs); a CI/nightly deep-fuzz job and a
+> periodic re-audit are recommended follow-ups (see §10). Upstream
+> vendored C/C++ (SZ3, c-blosc2, libaec, zfp) is treated as a contained
+> black box, not line-audited.
 
 ## 1. Scope
 
@@ -368,7 +412,7 @@ no UB (ASan)** on any input.
   `tensogram-sz3` API where the caller owns the buffer. Logged for a
   future `Result`-returning cleanup.
 
-_(audit continuing)_
+_(first audit pass complete — zero HIGH remaining)_
 
 ## 9. Deliverables
 
@@ -380,3 +424,24 @@ _(audit continuing)_
   landed as a single reviewed PR.
 - Opt-in `ReaderOptions`/`DecodeOptions` resource limits (default off)
   where a resource-DoS class warrants caller control.
+
+## 10. Recommended follow-ups (not HIGH; out of this pass)
+
+- **CI deep-fuzz job.** Wire the `fuzz/` targets into a nightly/weekly CI
+  job (longer `-max_total_time`, persistent corpus) so regressions and
+  deeper inputs are caught continuously. The smoke runs in this pass
+  were bounded (~1–2 min/target).
+- **Add fuzz targets for the FFI C ABI and the remote scan-parse**
+  (`fuzz_ffi_decode`, `fuzz_remote_scan_parse`) to fuzz those boundaries
+  directly rather than only through the core.
+- **SEC-012 (LOW):** convert `decompress_into_dimensioned`'s `assert_eq!`
+  to a `Result` so the direct `tensogram-sz3` API never panics on a
+  length mismatch.
+- **Resource-limit knobs.** Per the agreed model, resource *limits*
+  (max-object-count, max-decompressed-size) remain opt-in/off; revisit
+  if an operational consumer wants them ON for the remote path.
+- **Periodic re-audit + `cargo audit` in CI** to catch new dependency
+  CVEs and code drift.
+- **Upstream report (optional):** SEC-009 is an upstream libzfp
+  bounds-check gap; consider reporting it to the zfp project (we contain
+  it at our boundary regardless).
