@@ -202,6 +202,14 @@ extern "C" SZ3_Config_C sz3_decompress_config(const char* data, size_t len) {
     // serialised SZ3 config.
     const size_t trailer_len = len - conf_off;
     constexpr size_t kPad     = 64 * 1024;
+    // Guard against `trailer_len + kPad` overflowing `size_t`: an
+    // overflow would wrap to a tiny allocation, and the subsequent
+    // `memcpy(..., trailer_len)` would then write past the buffer (heap
+    // OOB write).  `trailer_len` derives from the attacker-controlled
+    // input length, so reject any value that cannot be padded safely.
+    if (trailer_len > SIZE_MAX - kPad) {
+        return invalid_config();
+    }
     std::vector<unsigned char> trailer;
     try {
         trailer.assign(trailer_len + kPad, 0);
