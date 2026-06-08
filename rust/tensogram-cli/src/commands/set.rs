@@ -11,8 +11,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use tensogram::{
-    DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, RESERVED_KEY,
-    TensogramFile, decode, decode_metadata, encode,
+    decode, decode_metadata, encode, DataObjectDescriptor, DecodeOptions, EncodeOptions,
+    GlobalMetadata, TensogramFile, RESERVED_KEY,
 };
 
 use crate::filter;
@@ -247,7 +247,7 @@ fn insert_nested_cbor_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tensogram::{ByteOrder, DataObjectDescriptor, Dtype, GlobalMetadata, encode};
+    use tensogram::{encode, ByteOrder, DataObjectDescriptor, Dtype, GlobalMetadata};
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
@@ -372,12 +372,10 @@ mod tests {
         // Second message should be unchanged
         let m1 = f.read_message(1).unwrap();
         let meta1_out = decode_metadata(&m1).unwrap();
-        assert!(
-            meta1_out
-                .base
-                .iter()
-                .all(|entry| entry.get("source").is_none())
-        );
+        assert!(meta1_out
+            .base
+            .iter()
+            .all(|entry| entry.get("source").is_none()));
         assert_eq!(meta1_out.extra.get("source"), None);
     }
 
@@ -578,8 +576,12 @@ mod tests {
     /// Missing input file → open error.
     #[test]
     fn set_missing_input_file() {
-        let output = std::env::temp_dir().join("set-missing-out.tgm");
-        let input = PathBuf::from("/nonexistent/definitely/missing.tgm");
+        // Fresh tempdir for both paths: the output name is unique per run
+        // (no parallel-test collision) and the input is a never-created
+        // child that is guaranteed-missing regardless of environment.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("definitely-missing.tgm");
+        let output = dir.path().join("set-missing-out.tgm");
         assert!(run(&input, &output, "a=b", None).is_err());
     }
 

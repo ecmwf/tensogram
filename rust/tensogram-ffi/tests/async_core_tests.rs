@@ -21,7 +21,7 @@ use tensogram_ffi::*;
 fn make_test_file() -> tempfile::NamedTempFile {
     use std::collections::BTreeMap;
     use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-    use tensogram::{Dtype, EncodeOptions, encode};
+    use tensogram::{encode, Dtype, EncodeOptions};
 
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -1306,7 +1306,12 @@ fn async_file_open_invalid_utf8_path_is_invalid_arg() {
 
 #[test]
 fn async_file_open_missing_file_join_is_error() {
-    let path = cstring("/nonexistent/tensogram/async/missing.tgm");
+    // Fresh tempdir + never-created child: guaranteed-missing in any
+    // environment, rather than relying on a hard-coded "/nonexistent/..."
+    // path being absent on shared/self-hosted runners.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.tgm");
+    let path = cstring(missing.to_str().unwrap());
     let mut task: *mut TgmAsyncTask = ptr::null_mut();
     let err = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut task);
     assert!(matches!(err, TgmError::Ok)); // spawn ok; failure surfaces on join
