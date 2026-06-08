@@ -492,7 +492,14 @@ impl<V: SZ3Compressible, T: std::ops::DerefMut<Target = [V]>> DimensionedData<V,
 // ---------------------------------------------------------------------------
 
 /// Errors returned by the SZ3 compression and dimension-building APIs.
+///
+/// `#[non_exhaustive]` (matching this crate's other public enums,
+/// `CompressionAlgorithm` and `ErrorBound`) so new error categories — such
+/// as the `MalformedCompressedStream` variant added for hostile-input
+/// hardening — can be introduced without breaking downstream exhaustive
+/// `match`es.  Callers should include a `_ =>` arm.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum SZ3Error {
     #[error(
         "invalid dimension specification for data of length {len}: already specified dimensions \
