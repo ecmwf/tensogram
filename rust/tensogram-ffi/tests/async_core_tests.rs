@@ -21,7 +21,7 @@ use tensogram_ffi::*;
 fn make_test_file() -> tempfile::NamedTempFile {
     use std::collections::BTreeMap;
     use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-    use tensogram::{encode, Dtype, EncodeOptions};
+    use tensogram::{Dtype, EncodeOptions, encode};
 
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),

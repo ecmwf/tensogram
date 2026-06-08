@@ -1508,7 +1508,7 @@ mod tests {
         // bit-identical output to `xxh3_64(concat(chunks))`.  If this ever
         // diverges, the hash-while-encoding optimisation would silently
         // corrupt hash values.
-        use xxhash_rust::xxh3::{xxh3_64, Xxh3Default};
+        use xxhash_rust::xxh3::{Xxh3Default, xxh3_64};
 
         for size in [0usize, 1, 239, 240, 1024 * 1024 + 17] {
             let data: Vec<u8> = (0..size).map(|i| (i * 31 + 7) as u8).collect();
