@@ -16,7 +16,6 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
-#include <limits>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -203,15 +202,16 @@ extern "C" SZ3_Config_C sz3_decompress_config(const char* data, size_t len) {
     // serialised SZ3 config.
     const size_t trailer_len = len - conf_off;
     constexpr size_t kPad     = 64 * 1024;
-    // Guard against `trailer_len + kPad` overflowing `size_t`: an
-    // overflow would wrap to a tiny allocation, and the subsequent
-    // `memcpy(..., trailer_len)` would then write past the buffer (heap
-    // OOB write).  `trailer_len` derives from the attacker-controlled
-    // input length, so reject any value that cannot be padded safely.
-    // Use `std::numeric_limits` rather than the `SIZE_MAX` macro so the
-    // guard does not depend on a macro whose visibility varies with
-    // headers / feature-test macros across toolchains.
-    if (trailer_len > std::numeric_limits<size_t>::max() - kPad) {
+    // A legitimate serialised SZ3 config is far smaller than `kPad`
+    // (64 KiB).  A `trailer_len` exceeding that is therefore a malformed
+    // stream — reject it up front rather than allocating, zeroing and
+    // copying the entire remaining buffer (which, for a hostile stream
+    // with a tiny `cmpDataSize`, can approach `len` and amplify memory
+    // pressure pointlessly before SZ3 rejects the garbage).  This bound
+    // also subsumes the `trailer_len + kPad` overflow guard: with
+    // `trailer_len <= kPad`, the padded size is at most `2 * kPad` and
+    // cannot overflow `size_t`.
+    if (trailer_len > kPad) {
         return invalid_config();
     }
     std::vector<unsigned char> trailer;
