@@ -616,7 +616,16 @@ fn file_create_invalid_utf8_path_is_invalid_arg() {
 
 #[test]
 fn file_create_in_missing_dir_is_io_error() {
-    let path = cstring("/nonexistent/tensogram/dir/out.tgm");
+    // `TensogramFile::create` runs `create_dir_all(parent)` before
+    // opening the file, so a merely-absent parent directory is created
+    // (and the call succeeds) — especially when the test runs as root in
+    // CI, where even `/nonexistent/...` is creatable.  To get a
+    // deterministic I/O error regardless of privilege, point the path at
+    // a child *under a regular file*: `create_dir_all` then fails with
+    // NotADirectory because a path component is not a directory.
+    let parent = tempfile::NamedTempFile::new().unwrap();
+    let bogus = parent.path().join("sub").join("out.tgm");
+    let path = cstring(bogus.to_str().unwrap());
     let mut file: *mut TgmFile = ptr::null_mut();
     assert!(!matches!(
         tgm_file_create(path.as_ptr(), &mut file),
