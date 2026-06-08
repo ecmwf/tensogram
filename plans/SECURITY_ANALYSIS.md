@@ -14,7 +14,7 @@ downloaded from an untrusted/compromised server), using `cargo-fuzz`
 audit`, and manual review of every `unsafe` / native-codec / FFI
 boundary.
 
-**11 HIGH issues were found and fixed; 1 security invariant was verified
+**10 HIGH issues were found and fixed; 1 security invariant was verified
 and pinned; 1 LOW was logged.** Every fix has a permanent regression
 test, and every fuzz target re-ran clean afterwards. The fixes are
 **performance-neutral on the hot path** (checked/saturating arithmetic
