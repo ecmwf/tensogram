@@ -225,13 +225,18 @@ extern "C" SZ3_Config_C sz3_decompress_config(const char* data, size_t len) {
     const unsigned char* confPos = trailer.data();
     try {
         cfg.load(confPos);
+        // `config_cpp_to_c` heap-allocates `dims` with `new[]`; a hostile
+        // trailer that makes `cfg.dims.size()` huge can throw
+        // `std::bad_alloc`.  Keep the conversion inside the same try so no
+        // exception crosses the `extern "C"` boundary (which would
+        // terminate the process — a hostile-input DoS on the SEC-010 path).
+        return config_cpp_to_c(cfg);
     } catch (...) {
-        // A malformed trailer can make SZ3 throw; surface as invalid
-        // rather than letting the exception cross the C ABI boundary.
+        // A malformed trailer can make SZ3 throw (or the dims allocation
+        // can fail); surface as invalid rather than letting the exception
+        // cross the C ABI boundary.
         return invalid_config();
     }
-
-    return config_cpp_to_c(cfg);
 }
 
 // ---------------------------------------------------------------------------
