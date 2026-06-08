@@ -761,6 +761,17 @@ pub fn decompress<V: SZ3Compressible, T: std::ops::Deref<Target = [u8]>>(
         return Err(SZ3Error::DecompressedDataTypeMismatch);
     }
 
+    // SECURITY (SEC-010): a `len` of 0 only arises from a malformed config
+    // trailer — the dimension builder cannot construct a valid 0-element
+    // payload.  Reject it before calling the native decompressor: with
+    // `len == 0` the `Vec` has no spare capacity, so
+    // `spare_capacity_mut().as_mut_ptr()` is a dangling pointer, and we
+    // cannot rely on the C++ decoder leaving it untouched for a hostile
+    // zero-length stream.
+    if len == 0 {
+        return Err(SZ3Error::MalformedCompressedStream);
+    }
+
     // SECURITY (SEC-011): `len` is the element count from the parsed
     // SZ3 config trailer, which is attacker-controlled.  An infallible
     // `Vec::with_capacity(len)` lets a hostile config claiming a huge
