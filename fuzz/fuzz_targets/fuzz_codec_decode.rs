@@ -29,7 +29,12 @@ fuzz_target!(|data: &[u8]| {
     // exponent so the harness itself doesn't legitimately try to alloc
     // exabytes for every iteration (the library's own guards are what
     // we're testing; we just want a spread of small..huge claims).
-    let num_values: usize = 1usize << (num_exp % 40); // up to ~1 TiB claim
+    // Cap the shift below `usize::BITS` so `1usize << shift` never
+    // overflows — 39 would panic on a 32-bit target where usize is 32
+    // bits wide; keep the harness panic-free on every target.
+    let max_shift = (usize::BITS - 1).min(40);
+    let shift = (num_exp as u32) % max_shift;
+    let num_values: usize = 1usize << shift; // up to ~512 GiB claim
 
     let compression = match codec_sel % 8 {
         0 => CompressionType::None,
