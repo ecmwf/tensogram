@@ -1540,14 +1540,13 @@ class TestScanLocalBigEndianByteswap:
                 ],
             )
         be_arr = np.array([1.0, 2.0, 3.0], dtype=">f4")
-        with patch("tensogram.decode_object", return_value=(None, None, be_arr)):
-            store = TensogramStore.open_tgm(path)
-            try:
-                chunk = store._keys["field/c/0"]
-                # Stored bytes must be little-endian after the swap.
-                np.testing.assert_array_equal(np.frombuffer(chunk, dtype="<f4"), [1.0, 2.0, 3.0])
-            finally:
-                store.close()
+        with (
+            patch("tensogram.decode_object", return_value=(None, None, be_arr)),
+            TensogramStore.open_tgm(path) as store,
+        ):
+            chunk = store._keys["field/c/0"]
+            # Stored bytes must be little-endian after the swap.
+            np.testing.assert_array_equal(np.frombuffer(chunk, dtype="<f4"), [1.0, 2.0, 3.0])
 
 
 class TestDecodeChunkGuards:
