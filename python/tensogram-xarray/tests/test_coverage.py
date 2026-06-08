@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 import tensogram
 import xarray as xr
+
 from tensogram_xarray.array import (
     _is_contiguous_slice,
     _nd_slice_to_flat_ranges,
@@ -1851,10 +1852,10 @@ def _serve_tgm_bytes(msg: bytes):
 
 
 class TestArrayGetFile:
-    """Cover array.py ``_get_file`` branches (lines 246, 250)."""
+    """Cover array.py ``_get_file`` branches."""
 
     def test_get_file_returns_shared(self):
-        """``_get_file`` short-circuits to the shared handle (line 246)."""
+        """``_get_file`` short-circuits to the shared handle."""
         from tensogram_xarray.array import TensogramBackendArray
 
         sentinel = object()
@@ -1870,7 +1871,7 @@ class TestArrayGetFile:
         assert ba._get_file() is sentinel
 
     def test_get_file_remote_opens_remote(self):
-        """``_get_file`` calls ``open_remote`` for a remote URL (line 250)."""
+        """``_get_file`` calls ``open_remote`` for a remote URL."""
         from unittest.mock import patch
 
         from tensogram_xarray.array import TensogramBackendArray
@@ -1893,7 +1894,7 @@ class TestArrayGetFile:
 
 
 class TestArrayDecodeRangeFallbackReal:
-    """Cover array.py decode_range exception fallback (lines 292-293)."""
+    """Cover array.py decode_range exception fallback."""
 
     def test_file_decode_range_failure_falls_back(self, tmp_path: Path):
         """When ``f.file_decode_range`` raises, full decode is used instead."""
@@ -1933,7 +1934,7 @@ class TestArrayDecodeRangeFallbackReal:
 
 
 class TestExpandKeyIntBranch:
-    """Cover array.py ``_expand_key_to_indices`` int branch (line 418)."""
+    """Cover array.py ``_expand_key_to_indices`` int branch."""
 
     def test_integer_key_wrapped_in_list(self):
         from tensogram_xarray.array import _expand_key_to_indices
@@ -1947,7 +1948,7 @@ class TestMappingExtraHintErrorPaths:
     """Cover mapping.py ``parse_extra_dim_names_hint`` error branches."""
 
     def test_list_element_str_raises_returns_empty(self):
-        """A list whose elements fail ``str()`` yields ``{}`` (lines 134-135)."""
+        """A list whose elements fail ``str()`` yields ``{}``."""
         from tensogram_xarray.mapping import parse_extra_dim_names_hint
 
         class _Unstringable:
@@ -1957,14 +1958,14 @@ class TestMappingExtraHintErrorPaths:
         assert parse_extra_dim_names_hint(2, [_Unstringable(), _Unstringable()]) == {}
 
     def test_dict_non_int_key_returns_empty(self):
-        """A dict with a non-integer key yields ``{}`` (lines 142-143)."""
+        """A dict with a non-integer key yields ``{}``."""
         from tensogram_xarray.mapping import parse_extra_dim_names_hint
 
         assert parse_extra_dim_names_hint(2, {"not_an_int": "values"}) == {}
 
 
 class TestScannerRemote:
-    """Cover scanner.py remote scan path (lines 135, 143-145)."""
+    """Cover scanner.py remote scan path."""
 
     def test_scan_file_remote(self):
         """``scan_file`` opens remote URLs and decodes descriptors lazily."""
@@ -1981,7 +1982,7 @@ class TestScannerRemote:
 
 
 class TestMergeRemote:
-    """Cover merge.py remote shared-file open and close (lines 94, 167-175)."""
+    """Cover merge.py remote shared-file open and close."""
 
     def test_open_datasets_remote_and_close(self):
         """``open_datasets`` opens a remote shared file and closes cleanly."""
@@ -2001,7 +2002,7 @@ class TestMergeRemote:
 
 
 class TestPartitionKeysUnhashable:
-    """Cover merge.py ``_partition_keys`` unhashable fallback (lines 242-245)."""
+    """Cover merge.py ``_partition_keys`` unhashable fallback."""
 
     def test_unhashable_values_treated_as_constant(self):
         """Values that remain unhashable after ``_make_hashable`` -> constant."""
@@ -2015,7 +2016,7 @@ class TestPartitionKeysUnhashable:
 
 
 class TestHypercubeMissingEntry:
-    """Cover merge.py missing-hypercube-entry guards (lines 607-611, 739-743)."""
+    """Cover merge.py missing-hypercube-entry guards."""
 
     def test_missing_entry_without_variable_key(self, tmp_path: Path):
         """A duplicate + a missing grid corner raises in ``_hypercube_dataset``."""
@@ -2033,7 +2034,7 @@ class TestHypercubeMissingEntry:
             open_datasets(path)
 
     def test_missing_entry_with_variable_key(self, tmp_path: Path):
-        """Same defect inside a ``variable_key`` sub-group raises (lines 739-743)."""
+        """Same defect inside a ``variable_key`` sub-group raises."""
         path = str(tmp_path / "missing_entry_var.tgm")
         rows = [
             ("2t", "d1", "L1"),

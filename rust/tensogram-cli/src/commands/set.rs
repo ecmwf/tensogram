@@ -519,8 +519,9 @@ mod tests {
 
     // ── Error-path & branch coverage ────────────────────────────────────
 
-    /// `_reserved_` rejection with a NON-immutable leaf so the check at
-    /// line 73-77 (not the immutable-key check) is what rejects it.
+    /// `_reserved_` rejection with a NON-immutable leaf so the
+    /// reserved-namespace guard (not the immutable-key check) is what
+    /// rejects it.
     #[test]
     fn set_reserved_non_immutable_leaf_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -673,7 +674,7 @@ mod tests {
 
     /// Set a nested key where an intermediate path segment already holds
     /// a non-map (Text) value. `insert_nested_cbor_value` must replace
-    /// the scalar with a fresh map (the `_ =>` arm, lines 240-243).
+    /// the scalar with a fresh map (the `_ =>` arm).
     #[test]
     fn set_nested_replaces_scalar_with_map() {
         let dir = tempfile::tempdir().unwrap();

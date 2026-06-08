@@ -532,8 +532,8 @@ mod tests {
     }
 
     /// `SeTable::lookup` returns `None` for any `fs` beyond the 91-entry
-    /// table (line 50). The in-range path is covered by SE decoding; this
-    /// pins down the out-of-range guard directly.
+    /// table. The in-range path is covered by SE decoding; this pins down
+    /// the out-of-range guard directly.
     #[test]
     fn se_table_lookup_out_of_range_is_none() {
         let t = SeTable::new();
@@ -545,8 +545,8 @@ mod tests {
     }
 
     /// `write_samples` returns a `Config` error for a byte width outside
-    /// 1..=4 that does NOT overflow the `checked_mul` (line 512). The
-    /// existing overflow test exercises the earlier 468 guard instead.
+    /// 1..=4 that does NOT overflow the `checked_mul`. The existing
+    /// overflow test exercises the earlier byte-count guard instead.
     #[test]
     fn write_samples_rejects_unsupported_byte_width() {
         let samples = [0u32; 4];
@@ -563,8 +563,8 @@ mod tests {
 
     /// Full encode→decode round trip with signed preprocessing through the
     /// pure-Rust pipeline, then a range decode over the same stream. The
-    /// range path exercises the signed `xmax` branch (line 214) and the
-    /// signed `postprocess_signed` arm (line 236) of `decode_range`.
+    /// range path exercises the signed `xmax` branch and the signed
+    /// `postprocess_signed` arm of `decode_range`.
     #[test]
     fn decode_range_signed_preprocessed() {
         use crate::encoder;
@@ -582,8 +582,8 @@ mod tests {
     }
 
     /// Range decode over a stream encoded WITHOUT preprocessing exercises
-    /// the `else { rsi_buffer }` branch (line 241) of `decode_range` where
-    /// no post-processing is applied.
+    /// the `else { rsi_buffer }` branch of `decode_range` where no
+    /// post-processing is applied.
     #[test]
     fn decode_range_no_preprocess() {
         use crate::encoder;
@@ -601,7 +601,7 @@ mod tests {
     }
 
     /// `decode_range` must reject a `byte_size` that overflows when added
-    /// to `local_byte_pos` (lines 246-250) rather than wrapping.
+    /// to `local_byte_pos` rather than wrapping.
     #[test]
     fn decode_range_byte_size_overflow_rejected() {
         use crate::encoder;
@@ -621,14 +621,13 @@ mod tests {
 
     /// A truncated stream that ends partway through a low-entropy
     /// reference read makes `decode_rsi` hit the end-of-stream guard
-    /// (lines 326-327) and return a structured `Data` error instead of
-    /// panicking.
+    /// and return a structured `Data` error instead of panicking.
     #[test]
     fn decode_truncated_low_entropy_ref_errors() {
         use crate::encoder;
         // Constant data compresses into low-entropy (zero / SE) blocks,
         // so the decoder reads a reference right after the ID + low bit —
-        // exactly the path guarded at 325-327.
+        // exactly the end-of-stream guard path.
         let p = params(8, 16, 64, AEC_DATA_PREPROCESS);
         let data = vec![7u8; 1024];
         let (compressed, _) = encoder::encode(&data, &p, true).unwrap();
@@ -640,8 +639,8 @@ mod tests {
         assert!(result.is_err(), "truncated low-entropy stream must error");
     }
 
-    /// `decode_rsi`'s fallible RSI-buffer reservation (lines 301-305)
-    /// rejects a pathological `rsi * block_size` product. Under
+    /// `decode_rsi`'s fallible RSI-buffer reservation rejects a
+    /// pathological `rsi * block_size` product. Under
     /// `AEC_NOT_ENFORCE` the block size may be any large even number, so
     /// `samples_per_rsi` can exceed what the allocator will grant; the
     /// decoder must surface a "failed to reserve" error, not abort.

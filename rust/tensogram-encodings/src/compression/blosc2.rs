@@ -475,7 +475,6 @@ mod tests {
 
     /// `decompress`/`decompress_range`/`from_buffer` on garbage bytes must
     /// surface a structured `Blosc2` error via `map_err`, never panic.
-    /// Exercises the `map_err` helper (lines 58-60) on the decode side.
     #[test]
     fn blosc2_decompress_garbage_returns_error() {
         ensure_blosc2_init();

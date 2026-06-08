@@ -22,6 +22,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 import tensogram
+
 from tensogram_zarr import TensogramStore
 from tensogram_zarr.mapping import (
     build_array_zarr_json,
@@ -1378,7 +1379,7 @@ def _serve_bytes(msg: bytes):
 
 
 class TestCloseFlushReraise:
-    """Cover store.py close() flush exception path (lines 184-186)."""
+    """Cover store.py close() flush exception path."""
 
     def test_close_reraises_flush_failure(self, output_path: str):
         """A flush failure inside close() is re-raised and the store closes."""
@@ -1395,7 +1396,7 @@ class TestCloseFlushReraise:
 
 
 class TestGetSyncDecodesChunk:
-    """Cover store.py _get_sync -> _decode_chunk dispatch (line 264)."""
+    """Cover store.py _get_sync -> _decode_chunk dispatch."""
 
     def test_get_chunk_from_index_decodes(self):
         """A chunk key present only in ``_chunk_index`` is decoded on get."""
@@ -1416,7 +1417,7 @@ class TestGetSyncDecodesChunk:
 
 
 class TestDeleteGroupJson:
-    """Cover store.py delete('zarr.json') clearing group attrs (line 321)."""
+    """Cover store.py delete('zarr.json') clearing group attrs."""
 
     def test_delete_group_json_clears_attrs(self, output_path: str):
         async def run():
@@ -1443,7 +1444,7 @@ class TestDeleteGroupJson:
 
 
 class TestScanRemoteFailure:
-    """Cover store.py _scan_remote failure + cleanup (lines 393-395, 459-460)."""
+    """Cover store.py _scan_remote failure + cleanup."""
 
     def test_remote_decode_descriptors_failure(self):
         """A failure decoding remote descriptors closes the handle and raises."""
@@ -1481,7 +1482,7 @@ class TestScanRemoteFailure:
 
 
 class TestScanLocalDecodeFailures:
-    """Cover store.py _scan_local decode failures (lines 424-425, 443-444)."""
+    """Cover store.py _scan_local decode failures."""
 
     def test_decode_descriptors_failure(self, tmp_path: Path):
         """A failure decoding the message wraps in a contextual ValueError."""
@@ -1523,7 +1524,7 @@ class TestScanLocalDecodeFailures:
 
 
 class TestScanLocalBigEndianByteswap:
-    """Cover store.py _scan_local big-endian byteswap (line 449)."""
+    """Cover store.py _scan_local big-endian byteswap."""
 
     def test_big_endian_array_is_byteswapped(self, tmp_path: Path):
         """A decoded big-endian array is byteswapped to little-endian bytes."""
@@ -1550,7 +1551,7 @@ class TestScanLocalBigEndianByteswap:
 
 
 class TestDecodeChunkGuards:
-    """Cover store.py _decode_chunk guards + byteswap (lines 502, 506)."""
+    """Cover store.py _decode_chunk guards + byteswap."""
 
     def test_decode_chunk_returns_none_when_file_missing(self, output_path: str):
         """A chunk in the index but no open file handle returns ``None``."""
@@ -1586,7 +1587,7 @@ class TestDecodeChunkGuards:
 
 
 class TestFlushUnsupportedDtype:
-    """Cover store.py _flush_to_tgm unsupported-dtype wrapping (lines 566-567).
+    """Cover store.py _flush_to_tgm unsupported-dtype wrapping.
 
     ``parse_array_zarr_json`` only ever yields TGM dtypes that
     ``tgm_dtype_to_numpy`` accepts, so this defensive error-wrapping branch

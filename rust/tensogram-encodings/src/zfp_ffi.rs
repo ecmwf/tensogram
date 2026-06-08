@@ -358,7 +358,7 @@ mod tests {
     fn zfp_decompress_rejects_malformed_size_stream_pairings() {
         let mode = ZfpMode::FixedRate { rate: 16.0 };
         // num_values == 0 but a non-empty stream is a malformed descriptor
-        // (lines 84-89) — must not silently return empty.
+        // — must not silently return empty.
         let err = zfp_decompress_f64(&[1u8, 2, 3, 4], 0, &mode)
             .expect_err("num_values=0 with data must be rejected");
         assert!(
@@ -366,8 +366,7 @@ mod tests {
             "got: {err}"
         );
 
-        // num_values > 0 but an empty stream is truncated/missing payload
-        // (lines 90-94).
+        // num_values > 0 but an empty stream is truncated/missing payload.
         let err = zfp_decompress_f64(&[], 128, &mode)
             .expect_err("num_values>0 with empty stream must be rejected");
         assert!(
@@ -379,7 +378,7 @@ mod tests {
     #[test]
     fn zfp_range_offset_plus_count_overflows() {
         // sample_offset + sample_count overflowing usize must surface the
-        // dedicated checked_add error (lines 211-215), not wrap silently.
+        // dedicated checked_add error, not wrap silently.
         let values = smooth_data(128);
         let mode = ZfpMode::FixedRate { rate: 16.0 };
         let compressed = zfp_compress_f64(&values, &mode).unwrap();

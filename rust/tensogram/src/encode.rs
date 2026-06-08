@@ -2942,7 +2942,7 @@ mod tests {
         }
     }
 
-    // ── validate_object: bitmask data-length mismatch (line 279) ──────
+    // ── validate_object: bitmask data-length mismatch ─────────────────
 
     #[test]
     fn validate_object_bitmask_data_len_mismatch_rejected() {
@@ -2989,7 +2989,7 @@ mod tests {
         assert!(validate_object(&desc, 3).is_ok());
     }
 
-    // ── validate_object: routes through validate_mask_params (line 286) ──
+    // ── validate_object: routes through validate_mask_params ─────────────
 
     #[test]
     fn validate_object_rejects_invalid_mask_descriptor() {
@@ -3021,7 +3021,7 @@ mod tests {
         }
     }
 
-    // ── resolve_encoding error paths (lines 850-852) ─────────────────
+    // ── resolve_encoding error paths ─────────────────────────────────
 
     fn float64_desc(
         encoding: &str,
@@ -3070,7 +3070,7 @@ mod tests {
         }
     }
 
-    // ── resolve_filter error paths (lines 873-874) ───────────────────
+    // ── resolve_filter error paths ───────────────────────────────────
 
     #[test]
     fn resolve_filter_rejects_unknown_filter() {
@@ -3455,7 +3455,7 @@ mod tests {
         }
     }
 
-    // ── extract_simple_packing_params error paths (lines 1101-1105) ──
+    // ── extract_simple_packing_params error paths ────────────────────
 
     #[test]
     fn extract_simple_packing_params_rejects_nan_reference() {
@@ -3663,7 +3663,7 @@ mod tests {
         }
     }
 
-    // ── bytes_as_f64_vec error path (lines 1254-1257) ────────────────
+    // ── bytes_as_f64_vec error path ──────────────────────────────────
 
     #[test]
     fn bytes_as_f64_vec_rejects_non_multiple_of_8() {
@@ -3832,7 +3832,7 @@ mod tests {
         }
     }
 
-    // ── compose_payload_region: mask composition (line 502 path) ─────
+    // ── compose_payload_region: mask composition ─────────────────────
 
     #[test]
     fn compose_payload_region_empty_masks_is_passthrough() {
@@ -3917,7 +3917,7 @@ mod tests {
         GlobalMetadata::default()
     }
 
-    // ── encode_one_mask: per-method coverage (lines 1590-1608) ───────
+    // ── encode_one_mask: per-method coverage ─────────────────────────
 
     #[test]
     fn encode_one_mask_none_method_packs_raw() {
@@ -3982,7 +3982,7 @@ mod tests {
         assert!(!blob.is_empty());
     }
 
-    // ── mask_params_cbor: all method shapes (lines 1620-1644) ────────
+    // ── mask_params_cbor: all method shapes ──────────────────────────
 
     #[test]
     fn mask_params_cbor_paramless_methods_empty() {
@@ -4165,7 +4165,7 @@ mod tests {
     #[test]
     fn resolve_simple_packing_params_rejects_non_finite_data() {
         // Auto-compute path with a NaN in the data: compute_params
-        // surfaces a PackingError (line 1224).
+        // surfaces a PackingError.
         let mut params = BTreeMap::new();
         params.insert(
             "sp_bits_per_value".to_string(),
@@ -4432,13 +4432,13 @@ mod tests {
         }
     }
 
-    // ── encode_pre_encoded szip block-offset validation (line 475) ───
+    // ── encode_pre_encoded szip block-offset validation ──────────────
 
     #[cfg(any(feature = "szip", feature = "szip-pure"))]
     #[test]
     fn encode_pre_encoded_szip_validates_block_offsets() {
         // PreEncoded mode with szip compression + szip_block_offsets
-        // exercises the validate_szip_block_offsets call at line 475.
+        // exercises the validate_szip_block_offsets call.
         let mut params = BTreeMap::new();
         params.insert(
             "szip_rsi".to_string(),

@@ -145,8 +145,8 @@ mod tests {
     #[test]
     fn zfp_compressor_range_out_of_bounds_propagates_error() {
         // The compressor's `decompress_range` must propagate the underlying
-        // `zfp_decompress_range_f64` error (the `?` on line 72) when the
-        // requested byte range exceeds the stored values.
+        // `zfp_decompress_range_f64` error when the requested byte range
+        // exceeds the stored values.
         let data = smooth_data(64);
         let compressor = ZfpCompressor {
             mode: ZfpMode::FixedRate { rate: 16.0 },

@@ -1490,7 +1490,7 @@ mod tests {
         assert_eq!(remaining[1].len(), 1);
     }
 
-    // ── cbor_to_global_metadata error paths (lines 55-98) ────────────
+    // ── cbor_to_global_metadata error paths ──────────────────────────
 
     fn to_cbor(value: &ciborium::Value) -> Vec<u8> {
         let mut bytes = Vec::new();

@@ -602,8 +602,7 @@ mod tests {
 
     /// Pre-encoded szip path: extract real szip payload + descriptor (which
     /// carries `szip_block_offsets`) from a sync-encoded message and feed it
-    /// to `write_object_pre_encoded`, driving the szip-offset validation arm
-    /// (lines 272-274).
+    /// to `write_object_pre_encoded`, driving the szip-offset validation arm.
     ///
     /// Uses `simple_packing` as the encoding wrapper: `validate_object`
     /// enforces a raw-size check only when `encoding == "none"`, so a
