@@ -2263,13 +2263,18 @@ mod tests {
     #[cfg(feature = "mmap")]
     #[test]
     fn test_open_mmap_nonexistent_returns_io_error() {
-        let result = TensogramFile::open_mmap("/tmp/no_such_mmap_tensogram_zzz.tgm");
+        // A fresh tempdir plus a name we never create is guaranteed-missing
+        // regardless of environment (no reliance on a hard-coded /tmp path
+        // that could coincidentally exist on shared/self-hosted runners).
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no_such_mmap_tensogram.tgm");
+        let result = TensogramFile::open_mmap(&missing);
         match result {
             Ok(_) => panic!("expected error for nonexistent mmap file"),
             Err(e) => {
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("no_such_mmap_tensogram_zzz.tgm")
+                    msg.contains("no_such_mmap_tensogram.tgm")
                         || msg.contains("No such")
                         || msg.contains("not found"),
                     "expected path-tagged I/O error, got: {msg}"

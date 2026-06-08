@@ -731,8 +731,13 @@ fn create_bad_hash_algo_is_invalid_arg() {
 
 #[test]
 fn create_io_error_surfaces_on_join() {
-    // A nonexistent directory: file create fails inside the future.
-    let path = cstring("/nonexistent/tensogram/async/stream.tgm");
+    // Put the target *under a regular file* so the create fails with
+    // NotADirectory regardless of privilege/environment (a bare
+    // "/nonexistent/..." path could, in principle, be creatable as root on
+    // an unusual runner).
+    let blocker = tempfile::NamedTempFile::new().unwrap();
+    let bogus = blocker.path().join("async").join("stream.tgm");
+    let path = cstring(bogus.to_str().unwrap());
     let meta = cstring(r#"{"base":[]}"#);
     let mut task: *mut TgmAsyncTask = ptr::null_mut();
     let err = tgm_async_streaming_encoder_create(
