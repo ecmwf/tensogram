@@ -176,6 +176,14 @@ pub fn zfp_decompress_f64(
 
         let stream =
             zfp_sys_cc::stream_open(padded.as_mut_ptr() as *mut std::ffi::c_void, max_size);
+        // `stream_open` allocates and can return null on failure.  Passing
+        // a null bitstream into `zfp_stream_set_bit_stream`/`zfp_decompress`
+        // is undefined behaviour, and this runs on attacker-controlled
+        // input, so bail out with a structured error instead.
+        if stream.is_null() {
+            cleanup(field, zfp, None);
+            return Err(err("zfp stream_open failed (allocation failure)"));
+        }
         zfp_sys_cc::zfp_stream_set_bit_stream(zfp, stream);
         zfp_sys_cc::zfp_stream_rewind(zfp);
 
