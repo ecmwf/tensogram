@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -207,7 +208,10 @@ extern "C" SZ3_Config_C sz3_decompress_config(const char* data, size_t len) {
     // `memcpy(..., trailer_len)` would then write past the buffer (heap
     // OOB write).  `trailer_len` derives from the attacker-controlled
     // input length, so reject any value that cannot be padded safely.
-    if (trailer_len > SIZE_MAX - kPad) {
+    // Use `std::numeric_limits` rather than the `SIZE_MAX` macro so the
+    // guard does not depend on a macro whose visibility varies with
+    // headers / feature-test macros across toolchains.
+    if (trailer_len > std::numeric_limits<size_t>::max() - kPad) {
         return invalid_config();
     }
     std::vector<unsigned char> trailer;
