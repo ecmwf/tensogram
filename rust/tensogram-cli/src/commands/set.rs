@@ -517,6 +517,235 @@ mod tests {
         assert!(run(&input, &output, "dtype=broken", None).is_err());
     }
 
+    // ── Error-path & branch coverage ────────────────────────────────────
+
+    /// `_reserved_` rejection with a NON-immutable leaf so the check at
+    /// line 73-77 (not the immutable-key check) is what rejects it.
+    #[test]
+    fn set_reserved_non_immutable_leaf_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // leaf "foo" is mutable, so only the _reserved_ namespace guard
+        // can reject this — exercising the reserved-rejection message.
+        let err = run(&input, &output, "_reserved_.foo=bar", None).unwrap_err();
+        assert!(
+            err.to_string().contains(RESERVED_KEY),
+            "expected reserved-namespace rejection, got: {err}"
+        );
+    }
+
+    /// Bad set-value with no `=` sign → "invalid set value" parse error.
+    #[test]
+    fn set_invalid_set_value_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        let err = run(&input, &output, "no_equals_sign", None).unwrap_err();
+        assert!(err.to_string().contains("invalid set value"));
+    }
+
+    /// Invalid where clause → parse error before any file I/O.
+    #[test]
+    fn set_invalid_where_clause_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // A clause with no `=`/`!=` operator is rejected by the parser.
+        let err = run(&input, &output, "a=b", Some("no_operator_here")).unwrap_err();
+        assert!(err.to_string().contains("invalid where clause"));
+    }
+
+    /// Missing input file → open error.
+    #[test]
+    fn set_missing_input_file() {
+        let output = std::env::temp_dir().join("set-missing-out.tgm");
+        let input = PathBuf::from("/nonexistent/definitely/missing.tgm");
+        assert!(run(&input, &output, "a=b", None).is_err());
+    }
+
+    /// `objects.0` with fewer than three path parts → invalid object key.
+    #[test]
+    fn set_object_key_too_short_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // "objects.0" has only 2 parts (no trailing key).
+        let err = run(&input, &output, "objects.0=val", None).unwrap_err();
+        assert!(err.to_string().contains("invalid object key"));
+    }
+
+    /// Non-numeric object index → parse error.
+    #[test]
+    fn set_object_non_numeric_index_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        let err = run(&input, &output, "objects.x.key=val", None).unwrap_err();
+        assert!(err.to_string().contains("invalid object index"));
+    }
+
+    /// Bare `extra` with no trailing key → invalid extra key.
+    #[test]
+    fn set_extra_key_too_short_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // "extra" alone has only one part.
+        let err = run(&input, &output, "extra=val", None).unwrap_err();
+        assert!(err.to_string().contains("invalid extra key"));
+    }
+
+    /// Set a deeply-nested key, then OVERWRITE one of its leaves on a
+    /// second run so `insert_nested_cbor_value` takes the "update an
+    /// existing entry" arms (recurse into an existing child + overwrite
+    /// an existing leaf).
+    #[test]
+    fn set_nested_update_existing_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let mid = dir.path().join("mid.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // First create mars.class=od and mars.stream=oper (two leaves
+        // under the same nested map).
+        run(&input, &mid, "mars.class=od", None).unwrap();
+        // Now add a sibling and overwrite the original leaf in one pass.
+        // "mars.class" overwrites an existing leaf (find-and-replace arm);
+        // "mars.stream" recurses into the existing "mars" child then adds
+        // a new leaf.
+        run(&mid, &output, "mars.class=rd,mars.stream=oper", None).unwrap();
+
+        let updated = decode_metadata(&std::fs::read(&output).unwrap()).unwrap();
+        let mars = updated.base[0].get("mars").unwrap();
+        let ciborium::Value::Map(entries) = mars else {
+            panic!("mars should be a map");
+        };
+        let find = |name: &str| {
+            entries
+                .iter()
+                .find_map(|(k, v)| matches!(k, ciborium::Value::Text(s) if s == name).then_some(v))
+        };
+        assert_eq!(find("class"), Some(&ciborium::Value::Text("rd".into())));
+        assert_eq!(find("stream"), Some(&ciborium::Value::Text("oper".into())));
+    }
+
+    /// Set a nested key where an intermediate path segment already holds
+    /// a non-map (Text) value. `insert_nested_cbor_value` must replace
+    /// the scalar with a fresh map (the `_ =>` arm, lines 240-243).
+    #[test]
+    fn set_nested_replaces_scalar_with_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let mid = dir.path().join("mid.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // First set "mars" to a scalar Text value.
+        run(&input, &mid, "mars=scalar", None).unwrap();
+        // Now set "mars.class=od": mars is a scalar, so the nested insert
+        // must replace it with a map.
+        run(&mid, &output, "mars.class=od", None).unwrap();
+
+        let updated = decode_metadata(&std::fs::read(&output).unwrap()).unwrap();
+        let mars = updated.base[0].get("mars").unwrap();
+        assert!(
+            matches!(mars, ciborium::Value::Map(_)),
+            "mars should have been replaced by a map, got: {mars:?}"
+        );
+    }
+
+    // ── Direct helper-function coverage ─────────────────────────────────
+    //
+    // The empty-path guards are unreachable through `run` (key.split('.')
+    // always yields at least one segment), so cover them by calling the
+    // private helpers directly.
+
+    /// Cover the `apply_mutation` branch where there are objects but the
+    /// base vector is empty: one base entry must be created per object and
+    /// the key written into each. The normal encoder always populates base
+    /// 1:1 with objects, so this state is only reachable by calling the
+    /// helper directly.
+    #[test]
+    fn apply_mutation_objects_without_base_creates_entries() {
+        let mut meta = make_global_meta();
+        assert!(meta.base.is_empty());
+        let mut objects = vec![
+            (make_descriptor(), vec![0u8; 16]),
+            (make_descriptor(), vec![0u8; 16]),
+        ];
+
+        apply_mutation(&mut meta, &mut objects, "source", "x").unwrap();
+
+        // One base entry created per object, each carrying the key.
+        assert_eq!(meta.base.len(), 2);
+        for entry in &meta.base {
+            assert_eq!(
+                entry.get("source"),
+                Some(&ciborium::Value::Text("x".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn insert_nested_value_empty_path_errors() {
+        let mut map = BTreeMap::new();
+        let err = insert_nested_value(&mut map, &[], "v").unwrap_err();
+        assert_eq!(err, "empty mutation path");
+    }
+
+    #[test]
+    fn insert_nested_cbor_value_empty_path_errors() {
+        let mut node = ciborium::Value::Map(Vec::new());
+        let err = insert_nested_cbor_value(&mut node, &[], "v").unwrap_err();
+        assert_eq!(err, "empty nested mutation path");
+    }
+
     #[test]
     fn set_on_zero_object_message() {
         let dir = tempfile::tempdir().unwrap();

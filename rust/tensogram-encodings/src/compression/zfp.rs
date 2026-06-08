@@ -143,6 +143,66 @@ mod tests {
     }
 
     #[test]
+    fn zfp_compressor_range_out_of_bounds_propagates_error() {
+        // The compressor's `decompress_range` must propagate the underlying
+        // `zfp_decompress_range_f64` error (the `?` on line 72) when the
+        // requested byte range exceeds the stored values.
+        let data = smooth_data(64);
+        let compressor = ZfpCompressor {
+            mode: ZfpMode::FixedRate { rate: 16.0 },
+            num_values: 64,
+            byte_order: ByteOrder::native(),
+        };
+        let result = compressor.compress(&data).unwrap();
+        // Ask for samples beyond the 64 encoded (byte_pos 512 = sample 64).
+        let err = compressor
+            .decompress_range(&result.data, &[], 512, 512)
+            .expect_err("range past the encoded values must propagate an error");
+        assert!(matches!(err, CompressionError::Zfp(_)));
+    }
+
+    #[test]
+    fn zfp_compress_rejects_misaligned_length() {
+        // 12 bytes is not a multiple of 8 (f64 width) — must surface a
+        // structured Zfp error from `bytes_to_f64_native`, not panic.
+        let compressor = ZfpCompressor {
+            mode: ZfpMode::FixedRate { rate: 16.0 },
+            num_values: 1,
+            byte_order: ByteOrder::native(),
+        };
+        let result = compressor.compress(&[0u8; 12]);
+        assert!(result.is_err(), "non-8-aligned input must be rejected");
+        match result {
+            Err(CompressionError::Zfp(msg)) => assert!(msg.contains("multiple of 8")),
+            Err(other) => panic!("expected Zfp misalignment error, got {other:?}"),
+            Ok(_) => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn zfp_decompress_big_endian_output() {
+        // Drive the `ByteOrder::Big` arm of `f64_to_bytes`: encode native,
+        // decode requesting big-endian serialisation, and verify the bytes
+        // are the big-endian representation of the decoded values.
+        let data = smooth_data(64);
+        let compressor = ZfpCompressor {
+            mode: ZfpMode::FixedRate { rate: 24.0 },
+            num_values: 64,
+            byte_order: ByteOrder::Big,
+        };
+        let result = compressor.compress(&data).unwrap();
+        let decoded = compressor.decompress(&result.data, data.len()).unwrap();
+        assert_eq!(decoded.len(), data.len());
+
+        // Re-interpret the big-endian output and confirm it parses back to
+        // finite values (round-trip of the byte-order branch).
+        for chunk in decoded.chunks_exact(8) {
+            let v = f64::from_be_bytes(chunk.try_into().unwrap());
+            assert!(v.is_finite());
+        }
+    }
+
+    #[test]
     fn zfp_compressor_range_decode() {
         let data = smooth_data(512);
         let compressor = ZfpCompressor {

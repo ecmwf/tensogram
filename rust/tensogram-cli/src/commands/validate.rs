@@ -324,4 +324,118 @@ mod tests {
         let path = make_test_file(dir.path(), "full_json.tgm", 1);
         run(&[path], &full_opts(), true).unwrap();
     }
+
+    // ── Failure-path coverage ───────────────────────────────────────────
+    //
+    // These exercise the human/JSON failure rendering and the
+    // `ValidationFailed` error-return path (uncovered before).
+
+    /// Append trailing junk to a valid file so `validate_file` reports a
+    /// file-level issue. Drives the file-issue WARNING line, the FAILED
+    /// summary line and the `ValidationFailed` error return.
+    fn make_trailing_junk_file(dir: &Path, name: &str) -> PathBuf {
+        let path = make_test_file(dir, name, 1);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"GARBAGE_TRAILING_DATA");
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// Corrupt the data payload of a valid file so the message fails
+    /// validation with an `Error` severity issue (e.g. hash mismatch).
+    /// Drives the per-message FAILED rendering (object/offset notes).
+    fn make_corrupt_payload_file(dir: &Path, name: &str) -> PathBuf {
+        let path = make_test_file(dir, name, 1);
+        let mut bytes = std::fs::read(&path).unwrap();
+        // Corrupt ~70% of the way through, well inside the data region
+        // (matches the library's own hash-mismatch regression test).
+        let target = bytes.len() * 7 / 10;
+        bytes[target] ^= 0xFF;
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn cli_validate_trailing_junk_human_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_trailing_junk_file(dir.path(), "trailing.tgm");
+        let result = run(&[path], &default_opts(), false);
+        assert!(result.is_err(), "trailing junk must fail validation");
+        let err = result.unwrap_err();
+        assert_eq!(err.to_string(), "validation failed");
+    }
+
+    #[test]
+    fn cli_validate_trailing_junk_json_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_trailing_junk_file(dir.path(), "trailing_json.tgm");
+        let result = run(&[path], &default_opts(), true);
+        assert!(result.is_err(), "trailing junk must fail in JSON mode");
+    }
+
+    #[test]
+    fn cli_validate_corrupt_payload_human_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_corrupt_payload_file(dir.path(), "corrupt.tgm");
+        let result = run(&[path], &default_opts(), false);
+        assert!(result.is_err(), "corrupt payload must fail validation");
+    }
+
+    #[test]
+    fn cli_validate_corrupt_payload_json_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_corrupt_payload_file(dir.path(), "corrupt_json.tgm");
+        let result = run(&[path], &default_opts(), true);
+        assert!(result.is_err(), "corrupt payload must fail in JSON mode");
+    }
+
+    /// Mixed batch: a valid file followed by a failing one. Ensures
+    /// `all_ok` is flipped by a later entry and that the FAILED branch
+    /// is reached even when the first file is OK.
+    #[test]
+    fn cli_validate_mixed_batch_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = make_test_file(dir.path(), "ok.tgm", 1);
+        let bad = make_trailing_junk_file(dir.path(), "bad.tgm");
+        let result = run(&[ok, bad], &default_opts(), false);
+        assert!(result.is_err(), "mixed batch with a bad file must fail");
+    }
+
+    /// `print_human` directly so the FAILED summary's singular/plural
+    /// `error`/`errors` label branch is exercised and the function is
+    /// reached even without going through `run`.
+    #[test]
+    fn print_human_renders_failing_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_corrupt_payload_file(dir.path(), "ph_corrupt.tgm");
+        let report = validate_file(&path, &default_opts()).unwrap();
+        assert!(!report.is_ok());
+        // Should not panic and should render the FAILED path.
+        print_human(&path, &report);
+    }
+
+    #[test]
+    fn print_human_renders_trailing_junk_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_trailing_junk_file(dir.path(), "ph_trailing.tgm");
+        let report = validate_file(&path, &default_opts()).unwrap();
+        assert!(!report.is_ok());
+        // File-issue WARNING line + FAILED summary line.
+        print_human(&path, &report);
+    }
+
+    /// `JsonFileReport::from_report` on a failing report so the
+    /// `status = "failed"` branch and `file_issues`/`message_reports`
+    /// cloning are covered, and the resulting struct serializes.
+    #[test]
+    fn json_report_from_failing_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_trailing_junk_file(dir.path(), "json_fail.tgm");
+        let report = validate_file(&path, &default_opts()).unwrap();
+        let json_report = JsonFileReport::from_report(&path, &report);
+        assert_eq!(json_report.status, "failed");
+        assert!(!json_report.file_issues.is_empty());
+        let s = serde_json::to_string_pretty(&json_report).unwrap();
+        assert!(s.contains("\"status\": \"failed\""));
+    }
 }

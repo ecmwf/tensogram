@@ -1271,4 +1271,469 @@ mod tests {
         let result = extract_block_offsets(&params).unwrap();
         assert_eq!(result, vec![0, 100, 200]);
     }
+
+    #[test]
+    fn test_extract_block_offsets_negative_out_of_u64_range() {
+        // A negative integer cannot fit in u64 → "out of u64 range"
+        // (decode.rs L25-27).
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![ciborium::Value::Integer((-1).into())]),
+        );
+        let result = extract_block_offsets(&params);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("out of u64 range"),
+            "expected 'out of u64 range', got: {msg}"
+        );
+    }
+
+    // ── verify_data_object_frames (decode with verify_hash) ──────────────
+
+    fn opts_verify() -> DecodeOptions {
+        DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        }
+    }
+
+    /// Encode a single-object message with hashing on/off.
+    fn encode_one(hashing: bool) -> Vec<u8> {
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![5u8; 16];
+        let opts = EncodeOptions {
+            hashing,
+            ..Default::default()
+        };
+        encode(&meta, &[(&desc, &data)], &opts).unwrap()
+    }
+
+    #[test]
+    fn test_decode_verify_hash_succeeds_on_hashed_message() {
+        // Happy path through verify_data_object_frames: every frame's
+        // slot matches the recomputed digest (decode.rs L227-298).
+        let msg = encode_one(true);
+        let (_, objs) = decode(&msg, &opts_verify()).unwrap();
+        assert_eq!(objs.len(), 1);
+    }
+
+    #[test]
+    fn test_decode_verify_hash_missing_hash_on_unhashed_message() {
+        // Unhashed frame with verify_hash=true → MissingHash
+        // (decode.rs L277-279).
+        let msg = encode_one(false);
+        let err = decode(&msg, &opts_verify()).unwrap_err();
+        assert!(
+            matches!(err, TensogramError::MissingHash { object_index: 0 }),
+            "expected MissingHash{{0}}, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_decode_verify_hash_mismatch_on_tampered_payload() {
+        // Tamper a payload byte inside the hashed body region → the
+        // recomputed digest disagrees with the slot (decode.rs L280-282).
+        let mut msg = encode_one(true);
+        // Locate the data-object frame via the message index and flip a
+        // byte right after its 16-byte header (payload region).
+        let dm = framing::decode_message(&msg).unwrap();
+        let frame_off = dm.objects[0].3;
+        msg[frame_off + crate::wire::FRAME_HEADER_SIZE] ^= 0xFF;
+        let err = decode(&msg, &opts_verify()).unwrap_err();
+        assert!(
+            matches!(err, TensogramError::HashMismatch { .. }),
+            "expected HashMismatch, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_decode_verify_hash_buffer_too_short_for_preamble() {
+        // < PREAMBLE_SIZE bytes → Framing error (decode.rs L188-193).
+        let buf = vec![0u8; 10];
+        let err = decode(&buf, &opts_verify()).unwrap_err();
+        assert!(
+            matches!(err, TensogramError::Framing(_)),
+            "expected Framing error, got: {err:?}"
+        );
+        assert!(err.to_string().contains("too short for preamble"));
+    }
+
+    #[test]
+    fn test_decode_verify_hash_total_length_exceeds_buffer() {
+        // Truncate a valid hashed message so the preamble's
+        // total_length now exceeds the buffer (decode.rs L210-216).
+        let msg = encode_one(true);
+        let truncated = &msg[..msg.len() - 16];
+        let err = decode(truncated, &opts_verify()).unwrap_err();
+        assert!(
+            matches!(err, TensogramError::Framing(_)),
+            "expected Framing error, got: {err:?}"
+        );
+        assert!(err.to_string().contains("exceeds buffer"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_decode_verify_hash_frame_runs_past_message_end() {
+        // Shrink the preamble's total_length so the first frame's end
+        // now exceeds the (smaller) msg_end → "runs past first-message
+        // end" (decode.rs L259-263).
+        let mut msg = encode_one(true);
+        // total_length lives at preamble bytes [16..24) (big-endian).
+        // Choose it so msg_end = total_len - POSTAMBLE lands just past
+        // the metadata frame header (so the loop enters) but before the
+        // frame's real end — triggering the past-end guard.  The
+        // buffer-bounds check still passes because total_len <= len.
+        let msg_end_target = crate::wire::PREAMBLE_SIZE + crate::wire::FRAME_HEADER_SIZE;
+        let shrunk = (msg_end_target + crate::wire::POSTAMBLE_SIZE) as u64;
+        msg[16..24].copy_from_slice(&shrunk.to_be_bytes());
+        let err = decode(&msg, &opts_verify()).unwrap_err();
+        assert!(
+            matches!(err, TensogramError::Framing(_)),
+            "expected Framing error, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("runs past first-message end"),
+            "got: {err}"
+        );
+    }
+
+    // NOTE: the streaming `buf.len().checked_sub(POSTAMBLE_SIZE)`
+    // underflow branch in `verify_data_object_frames` (decode.rs
+    // L219-224) is UNREACHABLE: `PREAMBLE_SIZE == POSTAMBLE_SIZE == 24`,
+    // so any buffer long enough to parse the preamble (≥ 24) is also
+    // long enough for the postamble subtraction.  Reported as
+    // unreachable rather than contrived.
+
+    #[test]
+    fn test_decode_verify_hash_skips_non_frame_bytes() {
+        // A streaming-style buffer whose body holds only zero padding
+        // (no `FR` magic) forces the byte-at-a-time advance in
+        // verify_data_object_frames (decode.rs L235-237).  The walk
+        // never lands on a data-object frame, so it returns Ok(()).
+        use crate::wire::{MessageFlags, PREAMBLE_SIZE, Postamble, Preamble, WIRE_VERSION};
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+        // 32 bytes of non-frame padding to walk over.
+        out.extend(std::iter::repeat_n(0u8, 32));
+        let postamble = Postamble {
+            first_footer_offset: 0,
+            total_length: 0,
+        };
+        postamble.write_to(&mut out);
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags: MessageFlags::default(),
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut pb = Vec::new();
+        preamble.write_to(&mut pb);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&pb);
+
+        assert!(verify_data_object_frames(&out, None).is_ok());
+    }
+
+    #[test]
+    fn test_decode_object_verify_hash_pre_pass() {
+        // decode_object with verify_hash drives the Some(index) path of
+        // verify_data_object_frames, short-circuiting after the target
+        // (decode.rs L272-289, L491-492).
+        let meta = make_global_meta();
+        let desc0 = make_descriptor(vec![2]);
+        let desc1 = make_descriptor(vec![3]);
+        let data0 = vec![1u8; 8];
+        let data1 = vec![2u8; 12];
+        let opts = EncodeOptions {
+            hashing: true,
+            ..Default::default()
+        };
+        let msg = encode(
+            &meta,
+            &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
+            &opts,
+        )
+        .unwrap();
+        // Verify the SECOND object (index 1) so the walker steps past
+        // object 0 without checking it, then verifies + returns.
+        let (_, ret_desc, ret_data) = decode_object(&msg, 1, &opts_verify()).unwrap();
+        assert_eq!(ret_desc.shape, vec![3]);
+        assert_eq!(ret_data, data1);
+    }
+
+    // ── masks / restore_non_finite paths ─────────────────────────────────
+
+    /// Encode a single Float64 object containing NaN/+Inf/-Inf so the
+    /// encoder emits a `masks` sub-map.  Returns (message_bytes,
+    /// values).
+    fn encode_nan_inf_object(hashing: bool) -> (Vec<u8>, Vec<f64>) {
+        let values: Vec<f64> = vec![
+            1.0,
+            f64::NAN,
+            3.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            6.0,
+            7.0,
+            8.0,
+        ];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![8],
+            strides: vec![1],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let enc_opts = EncodeOptions {
+            allow_nan: true,
+            allow_inf: true,
+            hashing,
+            small_mask_threshold_bytes: 0,
+            ..Default::default()
+        };
+        let msg = encode(&make_global_meta(), &[(&desc, &data)], &enc_opts).unwrap();
+        (msg, values)
+    }
+
+    /// Extract the raw bytes of object frame `i` from a message using
+    /// the message's index frame.
+    fn extract_object_frame(msg: &[u8], i: usize) -> Vec<u8> {
+        let dm = framing::decode_message(msg).unwrap();
+        let idx = dm.index.as_ref().expect("message must carry an index");
+        let off = idx.offsets[i] as usize;
+        let len = idx.lengths[i] as usize;
+        msg[off..off + len].to_vec()
+    }
+
+    #[test]
+    fn test_decode_object_restores_non_finite_masks() {
+        // decode_object with restore_non_finite=true on a NaN/Inf object
+        // exercises restore_non_finite_into (decode.rs L528-535).
+        let (msg, _) = encode_nan_inf_object(false);
+        let (_, _desc, decoded) = decode_object(&msg, 0, &DecodeOptions::default()).unwrap();
+        let vals: Vec<f64> = decoded
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(vals[0], 1.0);
+        assert!(vals[1].is_nan(), "NaN must be restored");
+        assert!(vals[3].is_infinite() && vals[3] > 0.0, "+Inf restored");
+        assert!(vals[4].is_infinite() && vals[4] < 0.0, "-Inf restored");
+    }
+
+    #[test]
+    fn test_decode_object_from_frame_with_masks_restore() {
+        // decode_object_from_frame restores non-finite from the frame's
+        // own mask region (decode.rs L621-628).
+        let (msg, _) = encode_nan_inf_object(false);
+        let frame = extract_object_frame(&msg, 0);
+        let (_desc, decoded) = decode_object_from_frame(&frame, &DecodeOptions::default()).unwrap();
+        let vals: Vec<f64> = decoded
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert!(vals[1].is_nan());
+        assert!(vals[3].is_infinite() && vals[3] > 0.0);
+    }
+
+    #[test]
+    fn test_decode_object_from_frame_verify_hash_succeeds() {
+        // verify_hash=true on a hashed frame walks the total_length
+        // bounds checks and the check_frame_hash success path
+        // (decode.rs L572-599).
+        let (msg, _) = encode_nan_inf_object(true);
+        let frame = extract_object_frame(&msg, 0);
+        let (_desc, decoded) = decode_object_from_frame(&frame, &opts_verify()).unwrap();
+        assert!(!decoded.is_empty());
+    }
+
+    #[test]
+    fn test_decode_object_from_frame_verify_hash_missing_on_unhashed() {
+        // verify_hash=true on an UNHASHED frame: check_frame_hash
+        // returns false → MissingHash{0} (decode.rs L596-598).
+        let (msg, _) = encode_nan_inf_object(false);
+        let frame = extract_object_frame(&msg, 0);
+        let err = decode_object_from_frame(&frame, &opts_verify()).unwrap_err();
+        assert!(
+            matches!(err, TensogramError::MissingHash { object_index: 0 }),
+            "expected MissingHash{{0}}, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_decode_non_native_byte_order_path() {
+        // native_byte_order=false routes output_byte_order through the
+        // descriptor's declared byte order (decode.rs L726-727).
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        let opts = DecodeOptions {
+            native_byte_order: false,
+            ..Default::default()
+        };
+        let (_, objs) = decode(&encoded, &opts).unwrap();
+        assert_eq!(objs.len(), 1);
+    }
+
+    #[test]
+    fn test_decode_object_from_frame_verify_hash_total_out_of_bounds() {
+        // verify_hash=true but the frame header's total_length exceeds
+        // the supplied buffer → Framing error (decode.rs L588-595).
+        let (msg, _) = encode_nan_inf_object(true);
+        let frame = extract_object_frame(&msg, 0);
+        // Truncate so total_length now exceeds frame_bytes.len().
+        let short = &frame[..frame.len() - 8];
+        let err = decode_object_from_frame(short, &opts_verify()).unwrap_err();
+        assert!(
+            matches!(err, TensogramError::Framing(_)),
+            "expected Framing error, got: {err:?}"
+        );
+        assert!(err.to_string().contains("outside bounds"));
+    }
+
+    #[test]
+    fn test_decode_range_from_frame_restores_masks() {
+        // decode_range_from_frame restore branch (decode.rs L656-668).
+        let (msg, _) = encode_nan_inf_object(false);
+        let frame = extract_object_frame(&msg, 0);
+        let (ret_desc, parts) =
+            decode_range_from_frame(&frame, &[(0, 5)], &DecodeOptions::default()).unwrap();
+        assert!(ret_desc.masks.is_some());
+        let vals: Vec<f64> = parts[0]
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert!(vals[1].is_nan());
+        assert!(vals[3].is_infinite() && vals[3] > 0.0);
+        assert!(vals[4].is_infinite() && vals[4] < 0.0);
+    }
+
+    #[test]
+    fn test_decode_range_restores_masks() {
+        // decode_range restore branch (decode.rs L703-711).
+        let (msg, _) = encode_nan_inf_object(false);
+        let (ret_desc, parts) =
+            decode_range(&msg, 0, &[(0, 5)], &DecodeOptions::default()).unwrap();
+        assert!(ret_desc.masks.is_some());
+        let vals: Vec<f64> = parts[0]
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert!(vals[1].is_nan());
+        assert!(vals[3].is_infinite() && vals[3] > 0.0);
+    }
+
+    #[test]
+    fn test_decode_axis_a_parallel_multi_object() {
+        // threads > 0 + multiple objects + a zero parallel threshold
+        // forces the axis-A (cross-object) rayon path in `decode`
+        // (decode.rs L363-372).  Output must equal the sequential path.
+        let meta = make_global_meta();
+        let desc0 = make_descriptor(vec![4]);
+        let desc1 = make_descriptor(vec![4]);
+        let data0 = vec![11u8; 16];
+        let data1 = vec![22u8; 16];
+        let encoded = encode(
+            &meta,
+            &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let opts = DecodeOptions {
+            threads: 4,
+            parallel_threshold_bytes: Some(0),
+            ..Default::default()
+        };
+        let (_, objs) = decode(&encoded, &opts).unwrap();
+        assert_eq!(objs.len(), 2);
+        assert_eq!(objs[0].1, data0);
+        assert_eq!(objs[1].1, data1);
+    }
+
+    #[test]
+    fn test_decode_range_axis_a_parallel_multi_range() {
+        // threads > 0 + multiple ranges + zero threshold forces the
+        // axis-A rayon path in `decode_range_from_payload`
+        // (decode.rs L813-822).
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![16]);
+        let data: Vec<u8> = (0..64).collect();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        let opts = DecodeOptions {
+            threads: 4,
+            parallel_threshold_bytes: Some(0),
+            ..Default::default()
+        };
+        let (_, parts) = decode_range(&encoded, 0, &[(0, 4), (4, 4), (8, 4)], &opts).unwrap();
+        assert_eq!(parts.len(), 3);
+        assert!(parts.iter().all(|p| p.len() == 16));
+    }
+
+    #[cfg(feature = "szip")]
+    #[test]
+    fn test_decode_range_szip_extracts_block_offsets() {
+        // A range decode on an szip-compressed object drives the
+        // `extract_block_offsets` call in decode_range_from_payload
+        // (decode.rs L786-787).
+        let meta = make_global_meta();
+        let mut desc = make_descriptor(vec![256]);
+        desc.compression = "szip".to_string();
+        // Finite f32 data so the pipeline accepts it.
+        let data: Vec<u8> = (0..256).flat_map(|i| (i as f32).to_ne_bytes()).collect();
+        let encoded = match encode(&meta, &[(&desc, &data)], &EncodeOptions::default()) {
+            Ok(e) => e,
+            // If szip encode is unavailable in this build, skip.
+            Err(_) => return,
+        };
+        let (_, parts) = decode_range(&encoded, 0, &[(0, 8)], &DecodeOptions::default()).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), 32); // 8 f32 = 32 bytes
+    }
+
+    #[test]
+    fn test_make_descriptor_scalar_empty_shape() {
+        // Exercises the empty-shape (scalar) branch of the test helper
+        // (decode.rs L881-882) and confirms a 0-dim descriptor decodes.
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![]);
+        assert!(desc.strides.is_empty());
+        let data = vec![0u8; 4]; // one f32 scalar
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        let (_, objs) = decode(&encoded, &DecodeOptions::default()).unwrap();
+        assert_eq!(objs.len(), 1);
+    }
+
+    #[test]
+    fn test_decode_with_masks_returns_raw_masks() {
+        // decode_with_masks materialises raw masks alongside the
+        // 0-substituted payload (decode.rs L405-456).
+        let (msg, _) = encode_nan_inf_object(false);
+        let (_, objs) = decode_with_masks(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(objs.len(), 1);
+        // restore is forced off, so NaN/Inf positions are 0.0.
+        let vals: Vec<f64> = objs[0]
+            .payload
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            vals[1], 0.0,
+            "NaN should be 0.0 in decode_with_masks payload"
+        );
+        // The raw mask set reports the NaN / Inf masks.
+        assert!(objs[0].masks.nan.is_some(), "NaN mask must be present");
+        assert!(objs[0].masks.pos_inf.is_some(), "+Inf mask must be present");
+        assert!(objs[0].masks.neg_inf.is_some(), "-Inf mask must be present");
+    }
 }

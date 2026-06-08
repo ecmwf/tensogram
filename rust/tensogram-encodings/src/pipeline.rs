@@ -2078,4 +2078,553 @@ mod tests {
         // 2 elements × 4 bytes, starting at element 1.
         assert_eq!(out, payload[4..12]);
     }
+
+    // -----------------------------------------------------------------------
+    // encode_pipeline_f64 coverage: simple_packing encoding and shuffle
+    // filter branches that the byte-oriented `encode_pipeline` tests do not
+    // exercise.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_pipeline_f64_simple_packing_round_trip() {
+        // Exercises the SimplePacking branch of `encode_pipeline_f64`
+        // (the f64 entry point skips the bytes→f64 conversion and packs
+        // directly).  Round-trips through decode_pipeline.
+        let values: Vec<f64> = (0..64).map(|i| 250.0 + i as f64 * 0.25).collect();
+        let params = simple_packing::compute_params(&values, 16, 0).unwrap();
+        let config = PipelineConfig {
+            encoding: EncodingType::SimplePacking(params),
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline_f64(&values, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        let decoded_values = bytes_to_f64(&decoded, ByteOrder::Little).unwrap();
+        for (orig, dec) in values.iter().zip(decoded_values.iter()) {
+            assert!((orig - dec).abs() < 0.01, "orig={orig}, dec={dec}");
+        }
+    }
+
+    #[test]
+    fn encode_pipeline_f64_shuffle_filter_round_trip() {
+        // Exercises the Shuffle branch of `encode_pipeline_f64`.
+        let values: Vec<f64> = (0..16).map(|i| i as f64 * 1.5).collect();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::Shuffle { element_size: 8 },
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline_f64(&values, &config).unwrap();
+        // Shuffled bytes differ from the plain little-endian serialisation.
+        let plain: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_ne!(result.encoded_bytes, plain);
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        assert_eq!(decoded, plain);
+    }
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn encode_pipeline_f64_with_compression() {
+        // Exercises the `Some(compressor)` arm of `encode_pipeline_f64`
+        // (the f64 entry point feeding a real codec), which the
+        // None-compression f64 tests do not reach.  Round-trips through
+        // decode_pipeline.
+        let values: Vec<f64> = (0..1000).map(|i| (i as f64).sqrt()).collect();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Lz4,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline_f64(&values, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        let plain: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(decoded, plain);
+    }
+
+    #[test]
+    fn encode_pipeline_f64_passthrough_none_encoding() {
+        // The `EncodingType::None` branch of `encode_pipeline_f64`
+        // serialises f64 values straight to the wire byte order.
+        let values: Vec<f64> = vec![1.0, -2.0, 3.5, 4.25];
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Big,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline_f64(&values, &config).unwrap();
+        let expected: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        assert_eq!(result.encoded_bytes, expected);
+    }
+
+    // -----------------------------------------------------------------------
+    // decode_range_pipeline coverage: shuffle rejection and the
+    // simple_packing range branch.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decode_range_pipeline_rejects_shuffle_filter() {
+        // Partial range decode is explicitly unsupported with a shuffle
+        // filter — it must fail fast with a Shuffle error rather than
+        // produce wrong bytes.
+        let cfg = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::Shuffle { element_size: 4 },
+            compression: CompressionType::None,
+            num_values: 4,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 4,
+            swap_unit_size: 4,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let payload = vec![0u8; 16];
+        let err = decode_range_pipeline(&payload, &cfg, &[], 0, 2, false)
+            .expect_err("shuffle filter must be rejected by range decode");
+        match err {
+            PipelineError::Shuffle(msg) => {
+                assert!(
+                    msg.contains("not supported"),
+                    "expected unsupported-shuffle message, got: {msg}"
+                );
+            }
+            other => panic!("expected Shuffle error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn decode_range_pipeline_simple_packing_uncompressed() {
+        // Exercises the SimplePacking arm of `decode_range_pipeline`:
+        // bit-offset computation, decode_range, then f64_to_bytes in the
+        // target byte order.  No compressor → the uncompressed slice path.
+        let values: Vec<f64> = (0..32).map(|i| i as f64).collect();
+        let params = simple_packing::compute_params(&values, 16, 0).unwrap();
+        let cfg = PipelineConfig {
+            encoding: EncodingType::SimplePacking(params),
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let payload = encode_pipeline_f64(&values, &cfg).unwrap().encoded_bytes;
+
+        // Decode elements [8, 8+10) via the range path.
+        let out = decode_range_pipeline(&payload, &cfg, &[], 8, 10, false)
+            .expect("simple_packing range decode must succeed");
+        let decoded: Vec<f64> = out
+            .chunks_exact(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded.len(), 10);
+        for (i, v) in decoded.iter().enumerate() {
+            assert!(
+                (v - (i + 8) as f64).abs() < 0.5,
+                "range elem {i}: got {v}, want ~{}",
+                i + 8
+            );
+        }
+    }
+
+    #[test]
+    fn decode_range_pipeline_simple_packing_native_byte_order() {
+        // Same as above but with native_byte_order=true and a big-endian
+        // wire order, so the SimplePacking range arm serialises to native.
+        let values: Vec<f64> = (0..40).map(|i| 500.0 + i as f64).collect();
+        let params = simple_packing::compute_params(&values, 16, 0).unwrap();
+        let cfg = PipelineConfig {
+            encoding: EncodingType::SimplePacking(params),
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Big,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let payload = encode_pipeline_f64(&values, &cfg).unwrap().encoded_bytes;
+        let out = decode_range_pipeline(&payload, &cfg, &[], 0, 5, true)
+            .expect("native-order simple_packing range decode must succeed");
+        let decoded: Vec<f64> = out
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        for (i, v) in decoded.iter().enumerate() {
+            assert!((v - (500.0 + i as f64)).abs() < 1.0, "elem {i}: {v}");
+        }
+    }
+
+    #[test]
+    fn decode_range_pipeline_none_native_byte_swap() {
+        // encoding=none range decode with native_byte_order=true and a
+        // cross-endian wire order exercises the byteswap arm of the
+        // range path (Phase 3, EncodingType::None native branch).
+        let values: Vec<u32> = vec![0x0102_0304, 0x0506_0708, 0x090A_0B0C, 0x0D0E_0F10];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let cfg = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Big,
+            dtype_byte_width: 4,
+            swap_unit_size: 4,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        // Decode elements [1, 3) with native byte order requested.
+        let out = decode_range_pipeline(&data, &cfg, &[], 1, 2, true)
+            .expect("native-order none range decode must succeed");
+        let decoded: Vec<u32> = out
+            .chunks_exact(4)
+            .map(|c| u32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded, vec![0x0506_0708, 0x090A_0B0C]);
+    }
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn decode_range_pipeline_szip_compressed_range() {
+        // Exercises the `Some(compressor).decompress_range(...)` arm of
+        // `decode_range_pipeline` using szip, which supports random
+        // access via block offsets.
+        let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Szip {
+                rsi: 128,
+                block_size: 16,
+                flags: 8, // AEC_DATA_PREPROCESS
+                bits_per_sample: 8,
+            },
+            num_values: data.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 1,
+            swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline(&data, &config).unwrap();
+        let block_offsets = result.block_offsets.expect("szip yields block offsets");
+
+        // Decode elements [256, 256+128) via the compressed range path.
+        let out = decode_range_pipeline(
+            &result.encoded_bytes,
+            &config,
+            &block_offsets,
+            256,
+            128,
+            false,
+        )
+        .expect("szip compressed range decode must succeed");
+        assert_eq!(out, data[256..384]);
+    }
+
+    #[test]
+    fn decode_range_pipeline_none_byte_range_exceeds_payload() {
+        // The encoding=none arm computes a byte range directly; requesting
+        // a range past the payload end must surface a Range error rather
+        // than slice out of bounds.  Use a compressed pipeline so the
+        // descriptor-size gate is a no-op and the slice bound check fires.
+        // (Uncompressed none would be caught earlier by the size gate.)
+        let cfg = sizecheck_none_config(/*num_values=*/ 4, /*width=*/ 4);
+        let payload: Vec<u8> = (0..16).collect();
+        // Request element 3 .. 3+4 = past the 4-element payload.
+        let err = decode_range_pipeline(&payload, &cfg, &[], 3, 4, false)
+            .expect_err("out-of-range slice must be rejected");
+        match err {
+            PipelineError::Range(msg) => {
+                assert!(
+                    msg.contains("exceeds payload size"),
+                    "expected payload-size error, got: {msg}"
+                );
+            }
+            other => panic!("expected Range error, got: {other}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // bytes_to_f64 / f64_to_bytes direct error & branch coverage.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bytes_to_f64_rejects_non_multiple_of_8() {
+        // A byte length that is not a multiple of 8 must be rejected
+        // rather than silently dropping the trailing partial value.
+        let data = vec![0u8; 12]; // 12 is not a multiple of 8
+        let err = bytes_to_f64(&data, ByteOrder::Little)
+            .expect_err("non-multiple-of-8 length must be rejected");
+        match err {
+            PipelineError::Range(msg) => {
+                assert!(msg.contains("not a multiple of 8"), "got: {msg}");
+            }
+            other => panic!("expected Range error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn bytes_to_f64_big_endian_branch() {
+        // Exercise the big-endian deserialisation branch of bytes_to_f64.
+        let values = [1.0f64, -2.5, 3.75];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let out = bytes_to_f64(&data, ByteOrder::Big).unwrap();
+        assert_eq!(out, values);
+    }
+
+    #[test]
+    fn f64_to_bytes_both_byte_orders() {
+        // Cover both arms of f64_to_bytes' byte-order match.
+        let values = [10.0f64, 20.0, 30.0];
+        let le = f64_to_bytes(&values, ByteOrder::Little).unwrap();
+        let be = f64_to_bytes(&values, ByteOrder::Big).unwrap();
+        let expected_le: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let expected_be: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        assert_eq!(le, expected_le);
+        assert_eq!(be, expected_be);
+    }
+
+    #[test]
+    fn try_clone_bytes_round_trips_payload() {
+        // The happy path of try_clone_bytes: a normal-sized slice clones
+        // into an owned Vec byte-for-byte.
+        let src: Vec<u8> = (0..37).collect();
+        let cloned = try_clone_bytes(&src).unwrap();
+        assert_eq!(cloned, src);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_compressor branch coverage: per-codec round-trips through the
+    // full encode → decode pipeline.  These exercise the codec-construction
+    // arms of `build_compressor` (blosc2, sz3, zstd, rle, roaring) that the
+    // other pipeline tests do not reach.
+    // -----------------------------------------------------------------------
+
+    #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
+    #[test]
+    fn pipeline_zstd_round_trip() {
+        let data: Vec<u8> = (0..4096).map(|i| (i * 7 % 251) as u8).collect();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Zstd { level: 5 },
+            num_values: data.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 1,
+            swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline(&data, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[cfg(feature = "blosc2")]
+    #[test]
+    fn pipeline_blosc2_round_trip() {
+        // Exercises the Blosc2 arm of build_compressor for every codec
+        // variant, round-tripping through the full pipeline.
+        let data: Vec<u8> = (0..8192).map(|i| (i % 64) as u8).collect();
+        for codec in [
+            Blosc2Codec::Blosclz,
+            Blosc2Codec::Lz4,
+            Blosc2Codec::Lz4hc,
+            Blosc2Codec::Zlib,
+            Blosc2Codec::Zstd,
+        ] {
+            let config = PipelineConfig {
+                encoding: EncodingType::None,
+                filter: FilterType::None,
+                compression: CompressionType::Blosc2 {
+                    codec,
+                    clevel: 5,
+                    typesize: 1,
+                },
+                num_values: data.len(),
+                byte_order: ByteOrder::Little,
+                dtype_byte_width: 1,
+                swap_unit_size: 1,
+                compression_backend: CompressionBackend::default(),
+                intra_codec_threads: 0,
+                compute_hash: false,
+            };
+            let result = encode_pipeline(&data, &config).unwrap();
+            let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+            assert_eq!(decoded, data, "blosc2 codec {codec:?} round-trip mismatch");
+        }
+    }
+
+    #[cfg(feature = "sz3")]
+    #[test]
+    fn pipeline_sz3_round_trip() {
+        // Exercises the Sz3 arm of build_compressor across error-bound
+        // variants.  sz3 is lossy, so check reconstruction within bound.
+        let values: Vec<f64> = (0..1024).map(|i| (i as f64 * 0.01).sin()).collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        for error_bound in [
+            Sz3ErrorBound::Absolute(1e-3),
+            Sz3ErrorBound::Relative(1e-3),
+            Sz3ErrorBound::Psnr(80.0),
+        ] {
+            let config = PipelineConfig {
+                encoding: EncodingType::None,
+                filter: FilterType::None,
+                compression: CompressionType::Sz3 {
+                    error_bound: error_bound.clone(),
+                },
+                num_values: values.len(),
+                byte_order: ByteOrder::native(),
+                dtype_byte_width: 8,
+                swap_unit_size: 8,
+                compression_backend: CompressionBackend::default(),
+                intra_codec_threads: 0,
+                compute_hash: false,
+            };
+            let result = encode_pipeline(&data, &config).unwrap();
+            let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+            let decoded_values: Vec<f64> = decoded
+                .chunks_exact(8)
+                .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+                .collect();
+            assert_eq!(decoded_values.len(), values.len());
+        }
+    }
+
+    #[cfg(feature = "zfp")]
+    #[test]
+    fn pipeline_zfp_round_trip_all_modes() {
+        // Exercises the Zfp arm of build_compressor across its three modes.
+        let values: Vec<f64> = (0..512).map(|i| 100.0 + (i as f64 * 0.05).cos()).collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        for mode in [
+            ZfpMode::FixedRate { rate: 16.0 },
+            ZfpMode::FixedPrecision { precision: 20 },
+            ZfpMode::FixedAccuracy { tolerance: 1e-4 },
+        ] {
+            let config = PipelineConfig {
+                encoding: EncodingType::None,
+                filter: FilterType::None,
+                compression: CompressionType::Zfp { mode: mode.clone() },
+                num_values: values.len(),
+                byte_order: ByteOrder::native(),
+                dtype_byte_width: 8,
+                swap_unit_size: 8,
+                compression_backend: CompressionBackend::default(),
+                intra_codec_threads: 0,
+                compute_hash: false,
+            };
+            let result = encode_pipeline(&data, &config).unwrap();
+            let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+            assert_eq!(
+                decoded.len(),
+                data.len(),
+                "zfp mode {mode:?} length mismatch"
+            );
+        }
+    }
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn pipeline_lz4_round_trip() {
+        // Exercises the Lz4 arm of build_compressor end-to-end (the hash
+        // test only covers the encode direction).
+        let data: Vec<u8> = (0..4000).map(|i| (i % 17) as u8).collect();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Lz4,
+            num_values: data.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 1,
+            swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline(&data, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn pipeline_rle_round_trip_bitmask() {
+        // RLE is bitmask-only; build_compressor constructs an RleCompressor.
+        // Use a run-heavy bit pattern so the codec has something to compress.
+        let data: Vec<u8> = vec![0xFFu8, 0xFF, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0xFF];
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Rle,
+            num_values: data.len() * 8,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 0, // bitmask
+            swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline(&data, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn pipeline_roaring_round_trip_bitmask() {
+        // Roaring is bitmask-only; build_compressor constructs a
+        // RoaringCompressor.
+        let data: Vec<u8> = vec![0b1010_1010u8, 0x00, 0xFF, 0b0101_0101];
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Roaring,
+            num_values: data.len() * 8,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 0, // bitmask
+            swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let result = encode_pipeline(&data, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        assert_eq!(decoded, data);
+    }
 }

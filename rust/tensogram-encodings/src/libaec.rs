@@ -789,6 +789,116 @@ mod tests {
         assert!(format!("{err}").contains("RESTRICTED"));
     }
 
+    // ── Coverage: aec_compress_no_offsets ────────────────────────────────
+
+    #[test]
+    fn compress_no_offsets_round_trips() {
+        // Exercises the `aec_compress_no_offsets` wrapper (which drops the
+        // offsets vector) and its `track_offsets = false` codepath in
+        // `aec_compress_impl` (the `else { Vec::new() }` branch).
+        let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
+        let params = default_params(8);
+
+        let compressed = aec_compress_no_offsets(&data, &params).unwrap();
+        assert!(!compressed.is_empty());
+
+        let decompressed = aec_decompress(&compressed, data.len(), &params).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn compress_no_offsets_empty_input() {
+        let params = default_params(8);
+        let compressed = aec_compress_no_offsets(&[], &params).unwrap();
+        assert!(compressed.is_empty());
+    }
+
+    // ── Coverage: NOT_ENFORCE odd block_size rejection ───────────────────
+
+    #[test]
+    fn validate_rejects_not_enforce_odd_block_size() {
+        // With AEC_NOT_ENFORCE the block_size must still be even; an odd
+        // value hits the dedicated 62-65 error branch in `validate_params`.
+        let params = AecParams {
+            bits_per_sample: 8,
+            block_size: 7,
+            rsi: 64,
+            flags: libaec_sys::AEC_DATA_PREPROCESS | libaec_sys::AEC_NOT_ENFORCE,
+        };
+        let err = aec_compress(&[0u8; 64], &params)
+            .expect_err("odd block_size under AEC_NOT_ENFORCE must be rejected");
+        assert!(format!("{err}").contains("block_size must be even"));
+    }
+
+    // ── Coverage: aec_decompress malformed size/stream pairings ──────────
+
+    #[test]
+    fn aec_decompress_rejects_expected_size_zero_with_data() {
+        // expected_size == 0 but a non-empty compressed stream is a
+        // malformed-descriptor symptom and must not silently succeed.
+        let (compressed, params) = small_real_compressed_blob();
+        let err = aec_decompress(&compressed, 0, &params)
+            .expect_err("expected_size=0 with non-empty data must be rejected");
+        assert!(format!("{err}").contains("malformed descriptor"));
+    }
+
+    #[test]
+    fn aec_decompress_rejects_nonzero_size_with_empty_stream() {
+        let params = default_params(8);
+        let err = aec_decompress(&[], 256, &params)
+            .expect_err("non-zero expected_size with empty stream must be rejected");
+        assert!(format!("{err}").contains("empty compressed stream"));
+    }
+
+    // ── Coverage: aec_decompress / range decode error paths ──────────────
+
+    #[test]
+    fn aec_decompress_truncated_stream_errors() {
+        // A real compressed blob truncated to a few bytes must surface a
+        // structured error (short decode or aec_decode failure), never an
+        // OOB read or process abort.
+        let (compressed, params) = small_real_compressed_blob();
+        let truncated = &compressed[..compressed.len().min(3)];
+        // expected_size matches the original payload, but the stream is
+        // truncated — decode must fail (short write / decode error).
+        let result = aec_decompress(truncated, 256, &params);
+        assert!(result.is_err(), "truncated stream must error");
+    }
+
+    #[test]
+    fn aec_decompress_range_empty_data_errors() {
+        let params = default_params(8);
+        let err = aec_decompress_range(&[], &[0], 0, 100, &params)
+            .expect_err("range decode from empty data must error");
+        assert!(format!("{err}").contains("empty data"));
+    }
+
+    #[test]
+    fn aec_decompress_range_zero_size_returns_empty_blob() {
+        let (compressed, params) = small_real_compressed_blob();
+        let out = aec_decompress_range(&compressed, &[0], 0, 0, &params).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn aec_decompress_range_with_bogus_offsets_errors() {
+        // Bogus bit offsets pointing past the stream make aec_decode_range
+        // fail or return a short write — either way a structured error,
+        // never an OOB read.
+        let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let params = default_params(8);
+        let (compressed, mut offsets) = aec_compress(&data, &params).unwrap();
+        // Corrupt the offsets so the range decoder seeks to a wrong place.
+        for o in offsets.iter_mut() {
+            *o = u64::from(u32::MAX);
+        }
+        let result = aec_decompress_range(&compressed, &offsets, 100, 200, &params);
+        assert!(
+            result.is_err(),
+            "range decode with bogus offsets must error, not abort"
+        );
+    }
+
     #[test]
     fn validate_accepts_not_enforce_even_block_size() {
         // Even block sizes outside {8,16,32,64} are valid under

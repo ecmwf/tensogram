@@ -1051,3 +1051,282 @@ fn async_open_remote_rejects_non_utf8_storage_value() {
     assert!(matches!(err, TgmError::InvalidArg));
     assert!(task.is_null());
 }
+
+// ---------------------------------------------------------------------------
+// Join function null-out, null-task, and type-mismatch branches.
+// ---------------------------------------------------------------------------
+
+/// Open a file and drive the open task to an AsyncFile-typed result;
+/// returns the still-ready (NOT yet joined) task handle.
+fn open_task_ready() -> (tempfile::NamedTempFile, *mut TgmAsyncTask) {
+    let f = make_test_file();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut task);
+    assert!(matches!(err, TgmError::Ok));
+    while !tgm_async_task_is_ready(task) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    (f, task)
+}
+
+#[test]
+fn join_size_null_out_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    assert!(matches!(
+        tgm_async_task_join_size(task, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn join_bytes_null_out_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    assert!(matches!(
+        tgm_async_task_join_bytes(task, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn join_message_null_out_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    assert!(matches!(
+        tgm_async_task_join_message(task, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn join_metadata_null_out_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    assert!(matches!(
+        tgm_async_task_join_metadata(task, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn join_async_file_null_out_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    assert!(matches!(
+        tgm_async_task_join_async_file(task, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn join_multi_bytes_null_out_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    let mut count = 0usize;
+    let mut array: *mut TgmBytes = ptr::null_mut();
+    assert!(matches!(
+        tgm_async_task_join_multi_bytes(task, ptr::null_mut(), &mut count),
+        TgmError::InvalidArg
+    ));
+    assert!(matches!(
+        tgm_async_task_join_multi_bytes(task, &mut array, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn join_void_type_mismatch_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    assert!(matches!(
+        tgm_async_task_join_void(task),
+        TgmError::InvalidArg
+    ));
+    tgm_async_task_free(task);
+}
+
+#[test]
+fn join_size_type_mismatch_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    let mut n = 0u64;
+    assert!(matches!(
+        tgm_async_task_join_size(task, &mut n),
+        TgmError::InvalidArg
+    ));
+    tgm_async_task_free(task);
+}
+
+#[test]
+fn join_bytes_type_mismatch_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    let mut b = TgmBytes {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+    assert!(matches!(
+        tgm_async_task_join_bytes(task, &mut b),
+        TgmError::InvalidArg
+    ));
+    tgm_async_task_free(task);
+}
+
+#[test]
+fn join_message_type_mismatch_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    let mut m: *mut TgmMessage = ptr::null_mut();
+    assert!(matches!(
+        tgm_async_task_join_message(task, &mut m),
+        TgmError::InvalidArg
+    ));
+    tgm_async_task_free(task);
+}
+
+#[test]
+fn join_metadata_type_mismatch_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    let mut md: *mut TgmMetadata = ptr::null_mut();
+    assert!(matches!(
+        tgm_async_task_join_metadata(task, &mut md),
+        TgmError::InvalidArg
+    ));
+    tgm_async_task_free(task);
+}
+
+#[test]
+fn join_multi_bytes_type_mismatch_is_invalid_arg() {
+    let (_f, task) = open_task_ready();
+    let mut arr: *mut TgmBytes = ptr::null_mut();
+    let mut cnt = 0usize;
+    assert!(matches!(
+        tgm_async_task_join_multi_bytes(task, &mut arr, &mut cnt),
+        TgmError::InvalidArg
+    ));
+    tgm_async_task_free(task);
+}
+
+#[test]
+fn join_async_file_type_mismatch_against_size() {
+    // A message_count task resolves to Size; joining it as async_file
+    // must surface a type mismatch.
+    let f = make_test_file();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let _ = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut task);
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+
+    let mut count_task: *mut TgmAsyncTask = ptr::null_mut();
+    let _ = tgm_async_file_message_count(file, ptr::null_mut(), 0, &mut count_task);
+    let mut wrong: *mut TgmAsyncFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_async_task_join_async_file(count_task, &mut wrong),
+        TgmError::InvalidArg
+    ));
+    tgm_async_task_free(count_task);
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn join_null_task_is_invalid_arg() {
+    let mut n = 0u64;
+    assert!(matches!(
+        tgm_async_task_join_size(ptr::null_mut(), &mut n),
+        TgmError::InvalidArg
+    ));
+    assert!(matches!(
+        tgm_async_task_join_void(ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    let mut b = TgmBytes {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+    assert!(matches!(
+        tgm_async_task_join_bytes(ptr::null_mut(), &mut b),
+        TgmError::InvalidArg
+    ));
+    let mut m: *mut TgmMessage = ptr::null_mut();
+    assert!(matches!(
+        tgm_async_task_join_message(ptr::null_mut(), &mut m),
+        TgmError::InvalidArg
+    ));
+}
+
+#[test]
+fn async_file_path_returns_path() {
+    let f = make_test_file();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let _ = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut task);
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+
+    let p = tgm_async_file_path(file);
+    assert!(!p.is_null());
+    let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_str().unwrap();
+    assert_eq!(s, f.path().to_str().unwrap());
+
+    tgm_async_file_close(file);
+}
+
+#[test]
+fn async_file_open_invalid_utf8_path_is_invalid_arg() {
+    let bad = [0xff_u8, 0xfe, 0x00];
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open(
+        bad.as_ptr() as *const std::os::raw::c_char,
+        ptr::null_mut(),
+        0,
+        &mut task,
+    );
+    assert!(matches!(err, TgmError::InvalidArg));
+    assert!(task.is_null());
+}
+
+#[test]
+fn async_file_open_missing_file_join_is_error() {
+    let path = cstring("/nonexistent/tensogram/async/missing.tgm");
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let err = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut task);
+    assert!(matches!(err, TgmError::Ok)); // spawn ok; failure surfaces on join
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let jerr = tgm_async_task_join_async_file(task, &mut file);
+    assert!(!matches!(jerr, TgmError::Ok));
+    tgm_async_task_free(task);
+}
+
+#[test]
+fn async_file_read_message_null_out_task_is_invalid_arg() {
+    let f = make_test_file();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut task: *mut TgmAsyncTask = ptr::null_mut();
+    let _ = tgm_async_file_open(path.as_ptr(), ptr::null_mut(), 0, &mut task);
+    let mut file: *mut TgmAsyncFile = ptr::null_mut();
+    let _ = tgm_async_task_join_async_file(task, &mut file);
+    tgm_async_task_free(task);
+
+    let err = tgm_async_file_read_message(file, 0, ptr::null_mut(), 0, ptr::null_mut());
+    assert!(matches!(err, TgmError::InvalidArg));
+    tgm_async_file_close(file);
+}

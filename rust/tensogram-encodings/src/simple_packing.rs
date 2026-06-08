@@ -1875,4 +1875,157 @@ mod tests {
             other => panic!("expected AllocationFailed, got {other:?}"),
         }
     }
+
+    // ── Coverage closers: write_bits aligned fast-paths ────────────────
+    //
+    // `write_bits` carries byte-aligned fast paths for nbits ∈
+    // {8, 16, 24, 32} when `bit_offset % 8 == 0`.  These are never hit
+    // through the public `encode` API (aligned widths dispatch to
+    // `encode_aligned`/`splat_aligned`, not the generic bit packer), so
+    // they are exercised here directly to pin the optimisation against
+    // regression.  Each writes a known value at an aligned offset and
+    // confirms `read_bits` recovers it byte-for-byte.
+
+    #[test]
+    fn write_bits_aligned_fast_path_8() {
+        let mut buf = vec![0u8; 4];
+        write_bits(&mut buf, 8, 0xAB, 8); // aligned offset, 8 bits
+        assert_eq!(buf[1], 0xAB);
+        assert_eq!(read_bits(&buf, 8, 8), 0xAB);
+    }
+
+    #[test]
+    fn write_bits_aligned_fast_path_16() {
+        let mut buf = vec![0u8; 6];
+        write_bits(&mut buf, 16, 0xBEEF, 16); // aligned offset, 16 bits
+        assert_eq!(&buf[2..4], &[0xBE, 0xEF]);
+        assert_eq!(read_bits(&buf, 16, 16), 0xBEEF);
+    }
+
+    #[test]
+    fn write_bits_aligned_fast_path_24() {
+        let mut buf = vec![0u8; 8];
+        write_bits(&mut buf, 0, 0x0A_BC_DE, 24); // aligned offset, 24 bits
+        assert_eq!(&buf[0..3], &[0x0A, 0xBC, 0xDE]);
+        assert_eq!(read_bits(&buf, 0, 24), 0x0A_BC_DE);
+    }
+
+    #[test]
+    fn write_bits_aligned_fast_path_32() {
+        let mut buf = vec![0u8; 8];
+        write_bits(&mut buf, 32, 0xDEAD_BEEF, 32); // aligned offset, 32 bits
+        assert_eq!(&buf[4..8], &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(read_bits(&buf, 32, 32), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn write_bits_aligned_offset_non_fast_width_falls_through() {
+        // Aligned offset but a width outside {8,16,24,32}: the fast-path
+        // `match` arm falls through to the generic bit-by-bit writer.
+        let mut buf = vec![0u8; 4];
+        write_bits(&mut buf, 8, 0b101_0101, 7);
+        assert_eq!(read_bits(&buf, 8, 7), 0b101_0101);
+    }
+
+    // ── Coverage closer: gather_aligned defensive arm ──────────────────
+
+    #[test]
+    fn gather_aligned_unsupported_width_returns_zero() {
+        // `gather_aligned` is only reached via `decode_aligned`, which
+        // rejects N ∉ {1,2,3,4} first, so its fall-through arm is
+        // unreachable through the public API.  Exercised directly here
+        // to pin the panic-free `_ => 0` contract.
+        let chunk = [0xFFu8; 8];
+        assert_eq!(gather_aligned::<5>(&chunk), 0);
+    }
+
+    // ── Coverage closers: parallel generic tail paths ──────────────────
+    //
+    // `encode_generic_par` / `decode_generic_par` split work into
+    // byte-aligned chunks of `lcm(8, bpv) / bpv` values and handle any
+    // trailing partial chunk sequentially.  Hitting the tail requires a
+    // value count that is NOT a multiple of `values_per_chunk` AND large
+    // enough (≥ PARALLEL_MIN_VALUES) with `threads ≥ 2` to take the
+    // parallel branch.  For bpv=12, values_per_chunk = lcm(8,12)/12 = 2,
+    // so an odd count leaves a 1-value tail.
+
+    #[cfg(feature = "threads")]
+    #[test]
+    fn parallel_generic_encode_decode_with_tail() {
+        // 12289 is odd → bpv=12 (values_per_chunk=2) leaves a 1-value tail.
+        let n = PARALLEL_MIN_VALUES + 4097; // 12289, well above threshold, odd
+        assert_eq!(n % 2, 1, "count must be odd to force a tail");
+        let values: Vec<f64> = (0..n).map(|i| 1.0 + i as f64 * 0.001).collect();
+        let params = compute_params(&values, 12, 0).unwrap();
+
+        // Sequential baseline.
+        let seq = encode_with_threads(&values, &params, 0).unwrap();
+        // Parallel: must hit the head (par_chunks) + tail (sequential) path.
+        let par = encode_with_threads(&values, &params, 4).unwrap();
+        assert_eq!(
+            seq, par,
+            "parallel generic encode (with tail) must match seq"
+        );
+
+        // Parallel decode must also exercise its head + tail split.
+        let dec_seq = decode_with_threads(&seq, n, &params, 0).unwrap();
+        let dec_par = decode_with_threads(&par, n, &params, 4).unwrap();
+        assert_eq!(
+            dec_seq, dec_par,
+            "parallel generic decode (with tail) must match seq"
+        );
+        assert_eq!(dec_par.len(), n);
+        for (a, b) in values.iter().zip(dec_par.iter()) {
+            assert!((a - b).abs() < 0.01, "round-trip loss: {a} vs {b}");
+        }
+    }
+
+    #[cfg(feature = "threads")]
+    #[test]
+    fn parallel_generic_encode_decode_tail_bpv_20() {
+        // bpv=20: gcd(8,20)=4, values_per_chunk = (8*20/4)/20 = 2 → odd
+        // count leaves a tail.  A second non-aligned width broadens the
+        // tail coverage beyond bpv=12.
+        let n = PARALLEL_MIN_VALUES + 1; // odd
+        let values: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 0.01).collect();
+        let params = compute_params(&values, 20, 0).unwrap();
+        let seq = encode_with_threads(&values, &params, 0).unwrap();
+        let par = encode_with_threads(&values, &params, 4).unwrap();
+        assert_eq!(seq, par);
+        let dec = decode_with_threads(&par, n, &params, 4).unwrap();
+        let dec_seq = decode_with_threads(&seq, n, &params, 0).unwrap();
+        assert_eq!(dec, dec_seq);
+    }
+
+    // ── Coverage closers: edge-case data through compute_params ─────────
+
+    #[test]
+    fn compute_params_all_equal_zero_range() {
+        // All-equal input → range == 0 → binary_scale_factor stays 0
+        // (the `range == 0.0` short-circuit in compute_params).
+        let values = vec![7.0f64; 64];
+        let params = compute_params(&values, 16, 0).unwrap();
+        assert_eq!(params.binary_scale_factor, 0);
+        assert_eq!(params.reference_value, 7.0);
+        // Round-trips back to the constant.
+        let encoded = encode(&values, &params).unwrap();
+        let decoded = decode(&encoded, values.len(), &params).unwrap();
+        for v in decoded {
+            assert!((v - 7.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn compute_params_decimal_scale_factor_applied() {
+        // A non-zero decimal_scale_factor feeds the `d_scale` multiply
+        // and the inv-scale reconstruction on decode.
+        let values: Vec<f64> = (0..40).map(|i| 0.001 * i as f64).collect();
+        let params = compute_params(&values, 16, 3).unwrap();
+        assert_eq!(params.decimal_scale_factor, 3);
+        let encoded = encode(&values, &params).unwrap();
+        let decoded = decode(&encoded, values.len(), &params).unwrap();
+        for (a, b) in values.iter().zip(decoded.iter()) {
+            assert!((a - b).abs() < 1e-3, "{a} vs {b}");
+        }
+    }
 }

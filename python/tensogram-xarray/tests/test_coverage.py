@@ -1782,3 +1782,271 @@ class TestMergePathDimResolution:
             "merge path must not misread message-level _extra_['dim_names'] as a per-object hint"
         )
         assert datasets, "expected at least one Dataset despite inconsistent hints"
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 4: remaining audit gaps (deterministic, no-network)
+# ---------------------------------------------------------------------------
+
+
+def _serve_tgm_bytes(msg: bytes):
+    """Serve raw .tgm *msg* bytes over a local loopback HTTP server.
+
+    Returns ``(url, shutdown)``.  ``shutdown`` must be called to stop the
+    server.  Supports Range requests so the tensogram object-store backend
+    can byte-range fetch descriptors/objects.
+    """
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(msg)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+        def do_GET(self):
+            range_header = self.headers.get("Range")
+            if range_header and range_header.startswith("bytes="):
+                spec = range_header[6:]
+                if spec.startswith("-"):
+                    n = int(spec[1:])
+                    s, e = max(0, len(msg) - n), len(msg)
+                else:
+                    parts = spec.split("-")
+                    s = int(parts[0])
+                    e = int(parts[1]) + 1 if parts[1] else len(msg)
+                    e = min(e, len(msg))
+                if s >= len(msg):
+                    self.send_response(416)
+                    self.end_headers()
+                    return
+                chunk = msg[s:e]
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {s}-{e - 1}/{len(msg)}")
+                self.send_header("Content-Length", str(len(chunk)))
+                self.end_headers()
+                self.wfile.write(chunk)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(msg)))
+                self.end_headers()
+                self.wfile.write(msg)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def shutdown():
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    return f"http://127.0.0.1:{port}/test.tgm", shutdown
+
+
+class TestArrayGetFile:
+    """Cover array.py ``_get_file`` branches (lines 246, 250)."""
+
+    def test_get_file_returns_shared(self):
+        """``_get_file`` short-circuits to the shared handle (line 246)."""
+        from tensogram_xarray.array import TensogramBackendArray
+
+        sentinel = object()
+        ba = TensogramBackendArray(
+            "/nowhere.tgm",
+            0,
+            0,
+            (2,),
+            np.dtype("float32"),
+            supports_range=False,
+            shared_file=sentinel,
+        )
+        assert ba._get_file() is sentinel
+
+    def test_get_file_remote_opens_remote(self):
+        """``_get_file`` calls ``open_remote`` for a remote URL (line 250)."""
+        from unittest.mock import patch
+
+        from tensogram_xarray.array import TensogramBackendArray
+
+        with (
+            patch("tensogram.is_remote_url", return_value=True),
+            patch("tensogram.TensogramFile") as mock_file,
+        ):
+            ba = TensogramBackendArray(
+                "s3://bucket/x.tgm",
+                0,
+                0,
+                (2,),
+                np.dtype("float32"),
+                supports_range=False,
+                storage_options={"region": "eu"},
+            )
+            ba._get_file()
+            mock_file.open_remote.assert_called_once_with("s3://bucket/x.tgm", {"region": "eu"})
+
+
+class TestArrayDecodeRangeFallbackReal:
+    """Cover array.py decode_range exception fallback (lines 292-293)."""
+
+    def test_file_decode_range_failure_falls_back(self, tmp_path: Path):
+        """When ``f.file_decode_range`` raises, full decode is used instead."""
+        from tensogram_xarray.array import TensogramBackendArray
+
+        data = np.arange(12, dtype=np.float32).reshape(3, 4)
+        path = str(tmp_path / "range_fail.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append({"version": 3}, [(_desc([3, 4]), data)])
+
+        class _FailingRange:
+            """Wraps a real file but raises in the range-decode fast path."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def file_decode_range(self, *args, **kwargs):
+                raise RuntimeError("range decode unavailable")
+
+            def read_message(self, *args, **kwargs):
+                return self._inner.read_message(*args, **kwargs)
+
+        with tensogram.TensogramFile.open(path) as inner:
+            wrapper = _FailingRange(inner)
+            ba = TensogramBackendArray(
+                path,
+                0,
+                0,
+                (3, 4),
+                np.dtype("float32"),
+                supports_range=True,
+                range_threshold=1.0,
+                shared_file=wrapper,
+            )
+            result = ba._raw_indexing_method((slice(0, 1), slice(0, 2)))
+        np.testing.assert_array_equal(result, data[0:1, 0:2])
+
+
+class TestExpandKeyIntBranch:
+    """Cover array.py ``_expand_key_to_indices`` int branch (line 418)."""
+
+    def test_integer_key_wrapped_in_list(self):
+        from tensogram_xarray.array import _expand_key_to_indices
+
+        result = _expand_key_to_indices((3, slice(1, 3)), (5, 10))
+        assert result[0] == [3]
+        assert result[1] == [1, 2]
+
+
+class TestMappingExtraHintErrorPaths:
+    """Cover mapping.py ``parse_extra_dim_names_hint`` error branches."""
+
+    def test_list_element_str_raises_returns_empty(self):
+        """A list whose elements fail ``str()`` yields ``{}`` (lines 134-135)."""
+        from tensogram_xarray.mapping import parse_extra_dim_names_hint
+
+        class _Unstringable:
+            def __str__(self):
+                raise ValueError("cannot stringify")
+
+        assert parse_extra_dim_names_hint(2, [_Unstringable(), _Unstringable()]) == {}
+
+    def test_dict_non_int_key_returns_empty(self):
+        """A dict with a non-integer key yields ``{}`` (lines 142-143)."""
+        from tensogram_xarray.mapping import parse_extra_dim_names_hint
+
+        assert parse_extra_dim_names_hint(2, {"not_an_int": "values"}) == {}
+
+
+class TestScannerRemote:
+    """Cover scanner.py remote scan path (lines 135, 143-145)."""
+
+    def test_scan_file_remote(self):
+        """``scan_file`` opens remote URLs and decodes descriptors lazily."""
+        data = np.arange(6, dtype=np.float32)
+        msg = bytes(tensogram.encode({"version": 3, "source": "remote"}, [(_desc([6]), data)]))
+        url, shutdown = _serve_tgm_bytes(msg)
+        try:
+            index = scan_file(url)
+        finally:
+            shutdown()
+        assert len(index.objects) == 1
+        assert index.objects[0].shape == (6,)
+        assert index.objects[0].common_meta.get("source") == "remote"
+
+
+class TestMergeRemote:
+    """Cover merge.py remote shared-file open and close (lines 94, 167-175)."""
+
+    def test_open_datasets_remote_and_close(self):
+        """``open_datasets`` opens a remote shared file and closes cleanly."""
+        data = np.arange(6, dtype=np.float32)
+        msg = bytes(tensogram.encode({"version": 3}, [(_desc([6]), data)]))
+        url, shutdown = _serve_tgm_bytes(msg)
+        try:
+            datasets = open_datasets(url)
+            assert len(datasets) >= 1
+            var = next(iter(datasets[0].data_vars.values()))
+            np.testing.assert_array_equal(var.values, data)
+            # Closing triggers the remote `_close_shared` callback.
+            for ds in datasets:
+                ds.close()
+        finally:
+            shutdown()
+
+
+class TestPartitionKeysUnhashable:
+    """Cover merge.py ``_partition_keys`` unhashable fallback (lines 242-245)."""
+
+    def test_unhashable_values_treated_as_constant(self):
+        """Values that remain unhashable after ``_make_hashable`` -> constant."""
+        # ``set`` passes through ``_make_hashable`` unchanged and a set of
+        # sets raises TypeError, exercising the except branch.
+        kv = {"flags": [{1, 2}, {3, 4}]}
+        const, vary = _partition_keys(kv)
+        assert "flags" in const
+        assert const["flags"] == {1, 2}
+        assert vary == {}
+
+
+class TestHypercubeMissingEntry:
+    """Cover merge.py missing-hypercube-entry guards (lines 607-611, 739-743)."""
+
+    def test_missing_entry_without_variable_key(self, tmp_path: Path):
+        """A duplicate + a missing grid corner raises in ``_hypercube_dataset``."""
+        path = str(tmp_path / "missing_entry.tgm")
+        # 4 objects: (a,1),(a,2),(b,1),(b,1) -> 2x2 grid count matches (4) yet
+        # (b,2) is absent and (b,1) is duplicated.
+        combos = [("a", "1"), ("a", "2"), ("b", "1"), ("b", "1")]
+        with tensogram.TensogramFile.create(path) as f:
+            for k1, k2 in combos:
+                f.append(
+                    {"version": 3, "base": [{"k1": k1, "k2": k2}]},
+                    [(_desc([2, 3]), np.ones((2, 3), dtype=np.float32))],
+                )
+        with pytest.raises(ValueError, match="hypercube has a missing entry"):
+            open_datasets(path)
+
+    def test_missing_entry_with_variable_key(self, tmp_path: Path):
+        """Same defect inside a ``variable_key`` sub-group raises (lines 739-743)."""
+        path = str(tmp_path / "missing_entry_var.tgm")
+        rows = [
+            ("2t", "d1", "L1"),
+            ("2t", "d1", "L2"),
+            ("2t", "d2", "L1"),
+            ("2t", "d2", "L1"),  # duplicate; (d2, L2) missing
+            ("10u", "d1", "L1"),
+        ]
+        with tensogram.TensogramFile.create(path) as f:
+            for param, date, level in rows:
+                f.append(
+                    {"version": 3, "base": [{"param": param, "date": date, "level": level}]},
+                    [(_desc([2, 3]), np.ones((2, 3), dtype=np.float32))],
+                )
+        with pytest.raises(ValueError, match="hypercube has a missing entry"):
+            open_datasets(path, variable_key="param")

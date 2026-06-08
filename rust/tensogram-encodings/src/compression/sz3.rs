@@ -164,6 +164,72 @@ mod tests {
     }
 
     #[test]
+    fn sz3_compress_rejects_misaligned_length() {
+        // 13 bytes is not a multiple of 8 (f64 width) — `bytes_to_f64_native`
+        // must return a structured Sz3 error rather than panicking.
+        let compressor = Sz3Compressor {
+            error_bound: Sz3ErrorBound::Absolute(1e-4),
+            num_values: 1,
+            byte_order: ByteOrder::native(),
+        };
+        let result = compressor.compress(&[0u8; 13]);
+        assert!(result.is_err(), "non-8-aligned input must be rejected");
+        match result {
+            Err(CompressionError::Sz3(msg)) => assert!(msg.contains("multiple of 8")),
+            Err(other) => panic!("expected Sz3 misalignment error, got {other:?}"),
+            Ok(_) => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn sz3_decompress_big_endian_output() {
+        // Drive the `ByteOrder::Big` arm of `f64_to_bytes`: encode native,
+        // decode requesting big-endian serialisation.
+        let data = smooth_data(256);
+        let tol = 1e-4;
+        let compressor = Sz3Compressor {
+            error_bound: Sz3ErrorBound::Absolute(tol),
+            num_values: 256,
+            byte_order: ByteOrder::Big,
+        };
+        let result = compressor.compress(&data).unwrap();
+        let decoded = compressor.decompress(&result.data, data.len()).unwrap();
+        assert_eq!(decoded.len(), data.len());
+
+        // Parse the big-endian output and compare with the native-endian
+        // originals within tolerance — proves the Big branch serialised
+        // correctly.
+        let orig: Vec<f64> = data
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        let dec: Vec<f64> = decoded
+            .chunks_exact(8)
+            .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+            .collect();
+        for (o, d) in orig.iter().zip(dec.iter()) {
+            assert!((o - d).abs() <= tol, "orig={o}, dec={d}");
+        }
+    }
+
+    #[test]
+    fn sz3_round_trip_relative_and_psnr() {
+        // Exercise the `Relative` and `PSNR` arms of `to_sz3_bound`, which
+        // the absolute-only round-trip test never reaches.
+        let data = smooth_data(512);
+        for bound in [Sz3ErrorBound::Relative(1e-3), Sz3ErrorBound::Psnr(80.0)] {
+            let compressor = Sz3Compressor {
+                error_bound: bound,
+                num_values: 512,
+                byte_order: ByteOrder::native(),
+            };
+            let result = compressor.compress(&data).unwrap();
+            let decoded = compressor.decompress(&result.data, data.len()).unwrap();
+            assert_eq!(decoded.len(), data.len());
+        }
+    }
+
+    #[test]
     fn sz3_range_not_supported() {
         let compressor = Sz3Compressor {
             error_bound: Sz3ErrorBound::Absolute(1e-4),

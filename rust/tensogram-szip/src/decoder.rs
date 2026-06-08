@@ -520,6 +520,152 @@ fn write_samples(samples: &[u32], byte_width: usize, flags: u32) -> Result<Vec<u
 mod tests {
     use super::*;
 
+    use crate::params::{AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AEC_NOT_ENFORCE};
+
+    fn params(bits_per_sample: u32, block_size: u32, rsi: u32, flags: u32) -> AecParams {
+        AecParams {
+            bits_per_sample,
+            block_size,
+            rsi,
+            flags,
+        }
+    }
+
+    /// `SeTable::lookup` returns `None` for any `fs` beyond the 91-entry
+    /// table (line 50). The in-range path is covered by SE decoding; this
+    /// pins down the out-of-range guard directly.
+    #[test]
+    fn se_table_lookup_out_of_range_is_none() {
+        let t = SeTable::new();
+        assert!(t.lookup(91).is_none());
+        assert!(t.lookup(1000).is_none());
+        // A representative in-range entry resolves.
+        assert!(t.lookup(0).is_some());
+        assert!(t.lookup(90).is_some());
+    }
+
+    /// `write_samples` returns a `Config` error for a byte width outside
+    /// 1..=4 that does NOT overflow the `checked_mul` (line 512). The
+    /// existing overflow test exercises the earlier 468 guard instead.
+    #[test]
+    fn write_samples_rejects_unsupported_byte_width() {
+        let samples = [0u32; 4];
+        let err = write_samples(&samples, 5, 0)
+            .expect_err("byte_width = 5 is outside the supported 1..=4 range");
+        match err {
+            AecError::Config(msg) => assert!(
+                msg.contains("unexpected byte width"),
+                "error should report the bad width, got: {msg}"
+            ),
+            other => panic!("expected AecError::Config, got {other:?}"),
+        }
+    }
+
+    /// Full encode→decode round trip with signed preprocessing through the
+    /// pure-Rust pipeline, then a range decode over the same stream. The
+    /// range path exercises the signed `xmax` branch (line 214) and the
+    /// signed `postprocess_signed` arm (line 236) of `decode_range`.
+    #[test]
+    fn decode_range_signed_preprocessed() {
+        use crate::encoder;
+        let p = params(8, 16, 64, AEC_DATA_PREPROCESS | AEC_DATA_SIGNED);
+        let data: Vec<u8> = (0..2048).map(|i| ((i * 3) % 256) as u8).collect();
+        let (compressed, offsets) = encoder::encode(&data, &p, true).unwrap();
+
+        let full = decode(&compressed, data.len(), &p).unwrap();
+        assert_eq!(full, data);
+
+        let pos = 300;
+        let size = 200;
+        let partial = decode_range(&compressed, &offsets, pos, size, &p).unwrap();
+        assert_eq!(&partial[..], &full[pos..pos + size]);
+    }
+
+    /// Range decode over a stream encoded WITHOUT preprocessing exercises
+    /// the `else { rsi_buffer }` branch (line 241) of `decode_range` where
+    /// no post-processing is applied.
+    #[test]
+    fn decode_range_no_preprocess() {
+        use crate::encoder;
+        let p = params(8, 16, 64, 0);
+        let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
+        let (compressed, offsets) = encoder::encode(&data, &p, true).unwrap();
+
+        let full = decode(&compressed, data.len(), &p).unwrap();
+        assert_eq!(full, data);
+
+        let pos = 256;
+        let size = 100;
+        let partial = decode_range(&compressed, &offsets, pos, size, &p).unwrap();
+        assert_eq!(&partial[..], &full[pos..pos + size]);
+    }
+
+    /// `decode_range` must reject a `byte_size` that overflows when added
+    /// to `local_byte_pos` (lines 246-250) rather than wrapping.
+    #[test]
+    fn decode_range_byte_size_overflow_rejected() {
+        use crate::encoder;
+        let p = params(8, 16, 64, AEC_DATA_PREPROCESS);
+        let data: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
+        let (compressed, offsets) = encoder::encode(&data, &p, true).unwrap();
+
+        // byte_pos = 1 within the first RSI (local_byte_pos = 1), byte_size
+        // = usize::MAX so local_byte_pos + byte_size overflows usize.
+        let err = decode_range(&compressed, &offsets, 1, usize::MAX, &p)
+            .expect_err("byte_size overflow must be rejected");
+        assert!(
+            format!("{err}").contains("range end overflow"),
+            "expected overflow error, got: {err}"
+        );
+    }
+
+    /// A truncated stream that ends partway through a low-entropy
+    /// reference read makes `decode_rsi` hit the end-of-stream guard
+    /// (lines 326-327) and return a structured `Data` error instead of
+    /// panicking.
+    #[test]
+    fn decode_truncated_low_entropy_ref_errors() {
+        use crate::encoder;
+        // Constant data compresses into low-entropy (zero / SE) blocks,
+        // so the decoder reads a reference right after the ID + low bit —
+        // exactly the path guarded at 325-327.
+        let p = params(8, 16, 64, AEC_DATA_PREPROCESS);
+        let data = vec![7u8; 1024];
+        let (compressed, _) = encoder::encode(&data, &p, true).unwrap();
+
+        // Keep only the first byte: enough to read the ID/low bit but not
+        // the full reference. Decode must error, never panic.
+        let truncated = &compressed[..1];
+        let result = decode(truncated, data.len(), &p);
+        assert!(result.is_err(), "truncated low-entropy stream must error");
+    }
+
+    /// `decode_rsi`'s fallible RSI-buffer reservation (lines 301-305)
+    /// rejects a pathological `rsi * block_size` product. Under
+    /// `AEC_NOT_ENFORCE` the block size may be any large even number, so
+    /// `samples_per_rsi` can exceed what the allocator will grant; the
+    /// decoder must surface a "failed to reserve" error, not abort.
+    #[test]
+    fn decode_rsi_reservation_failure_rejected() {
+        // rsi=4096 (max) * block_size ~ 2^31 even → samples_per_rsi ~ 2^43,
+        // i.e. ~70 TiB of u32 — `try_reserve_exact` fails cleanly.
+        let p = params(
+            8,
+            2_000_000_000, // huge even block_size, allowed under NOT_ENFORCE
+            4096,
+            AEC_DATA_PREPROCESS | AEC_NOT_ENFORCE,
+        );
+        // Non-empty data and a matching-ish expected_size so we reach the
+        // RSI decode loop rather than an early return.
+        let data = vec![0u8; 64];
+        let err = decode(&data, 64, &p)
+            .expect_err("pathological samples_per_rsi must fail the reservation");
+        assert!(
+            format!("{err}").contains("failed to reserve"),
+            "expected reservation failure, got: {err}"
+        );
+    }
+
     #[test]
     fn write_samples_rejects_overflowing_byte_count() {
         let samples = [0u32; 2];

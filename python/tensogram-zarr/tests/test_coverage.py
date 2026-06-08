@@ -1296,3 +1296,332 @@ class TestFindChunkDataMultiChunkError:
         }
         with pytest.raises(ValueError, match="chunk keys"):
             _find_chunk_data("temp", chunks)
+
+
+# ===================================================================
+# Coverage pass: remaining store.py audit gaps
+# ===================================================================
+
+
+def _encode_msg(shape=(4,), dtype="float32"):
+    """Encode a single-object .tgm message to raw bytes."""
+    desc = {
+        "type": "ntensor",
+        "shape": list(shape),
+        "dtype": dtype,
+        "byte_order": "little",
+        "encoding": "none",
+        "filter": "none",
+        "compression": "none",
+    }
+    data = np.arange(int(np.prod(shape)), dtype=dtype).reshape(shape)
+    return bytes(tensogram.encode({"version": 3}, [(desc, data)]))
+
+
+def _serve_bytes(msg: bytes):
+    """Serve raw bytes over a loopback HTTP server with Range support.
+
+    Returns ``(url, shutdown)``.
+    """
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(msg)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+        def do_GET(self):
+            range_header = self.headers.get("Range")
+            if range_header and range_header.startswith("bytes="):
+                spec = range_header[6:]
+                if spec.startswith("-"):
+                    n = int(spec[1:])
+                    s, e = max(0, len(msg) - n), len(msg)
+                else:
+                    parts = spec.split("-")
+                    s = int(parts[0])
+                    e = int(parts[1]) + 1 if parts[1] else len(msg)
+                    e = min(e, len(msg))
+                if s >= len(msg):
+                    self.send_response(416)
+                    self.end_headers()
+                    return
+                chunk = msg[s:e]
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {s}-{e - 1}/{len(msg)}")
+                self.send_header("Content-Length", str(len(chunk)))
+                self.end_headers()
+                self.wfile.write(chunk)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(msg)))
+                self.end_headers()
+                self.wfile.write(msg)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def shutdown():
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    return f"http://127.0.0.1:{port}/test.tgm", shutdown
+
+
+class TestCloseFlushReraise:
+    """Cover store.py close() flush exception path (lines 184-186)."""
+
+    def test_close_reraises_flush_failure(self, output_path: str):
+        """A flush failure inside close() is re-raised and the store closes."""
+        store = TensogramStore(output_path, mode="w")
+        store._open_sync()
+        store._dirty = True
+        with (
+            patch.object(store, "_flush_to_tgm", side_effect=RuntimeError("flush boom")),
+            pytest.raises(RuntimeError, match="flush boom"),
+        ):
+            store.close()
+        # flush_failed path: keys are NOT cleared, but store is marked closed.
+        assert store._is_open is False
+
+
+class TestGetSyncDecodesChunk:
+    """Cover store.py _get_sync -> _decode_chunk dispatch (line 264)."""
+
+    def test_get_chunk_from_index_decodes(self):
+        """A chunk key present only in ``_chunk_index`` is decoded on get."""
+        from zarr.core.buffer import default_buffer_prototype
+
+        url, shutdown = _serve_bytes(_encode_msg())
+        try:
+            store = TensogramStore.open_tgm(url)
+            chunk_key = next(iter(store._chunk_index))
+            proto = default_buffer_prototype()
+            buf = store._get_sync(chunk_key, proto, None)
+            assert buf is not None
+            arr = np.frombuffer(buf.to_bytes(), dtype=np.float32)
+            np.testing.assert_array_equal(arr, np.arange(4, dtype=np.float32))
+            store.close()
+        finally:
+            shutdown()
+
+
+class TestDeleteGroupJson:
+    """Cover store.py delete('zarr.json') clearing group attrs (line 321)."""
+
+    def test_delete_group_json_clears_attrs(self, output_path: str):
+        async def run():
+            from zarr.core.buffer import default_buffer_prototype
+
+            store = TensogramStore(output_path, mode="w")
+            await store._open()
+            proto = default_buffer_prototype()
+            group_json = serialize_zarr_json(
+                {
+                    "zarr_format": 3,
+                    "node_type": "group",
+                    "attributes": {"keep": "this"},
+                }
+            )
+            await store.set("zarr.json", proto.buffer.from_bytes(group_json))
+            assert store._write_group_attrs == {"keep": "this"}
+            await store.delete("zarr.json")
+            assert store._write_group_attrs == {}
+            store._dirty = False
+            store.close()
+
+        asyncio.run(run())
+
+
+class TestScanRemoteFailure:
+    """Cover store.py _scan_remote failure + cleanup (lines 393-395, 459-460)."""
+
+    def test_remote_decode_descriptors_failure(self):
+        """A failure decoding remote descriptors closes the handle and raises."""
+        url, shutdown = _serve_bytes(_encode_msg())
+        try:
+            real_open_remote = tensogram.TensogramFile.open_remote
+
+            class _FailFile:
+                def __init__(self, inner):
+                    self._inner = inner
+
+                def file_decode_descriptors(self, *args, **kwargs):
+                    raise RuntimeError("descriptors unavailable")
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return self._inner.__exit__(*exc)
+
+            def fake_open_remote(path, opts):
+                return _FailFile(real_open_remote(path, opts))
+
+            with (
+                patch.object(
+                    tensogram.TensogramFile,
+                    "open_remote",
+                    staticmethod(fake_open_remote),
+                ),
+                pytest.raises(ValueError, match="failed to decode descriptors"),
+            ):
+                TensogramStore.open_tgm(url)
+        finally:
+            shutdown()
+
+
+class TestScanLocalDecodeFailures:
+    """Cover store.py _scan_local decode failures (lines 424-425, 443-444)."""
+
+    def test_decode_descriptors_failure(self, tmp_path: Path):
+        """A failure decoding the message wraps in a contextual ValueError."""
+        path = str(tmp_path / "desc_fail.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                {"version": 3},
+                [
+                    (
+                        {"type": "ntensor", "shape": [3], "dtype": "float32"},
+                        np.arange(3, dtype=np.float32),
+                    )
+                ],
+            )
+        with (
+            patch("tensogram.decode_descriptors", side_effect=RuntimeError("boom")),
+            pytest.raises(ValueError, match="failed to decode message 0"),
+        ):
+            TensogramStore.open_tgm(path)
+
+    def test_decode_object_failure(self, tmp_path: Path):
+        """A failure decoding an object wraps in a contextual ValueError."""
+        path = str(tmp_path / "obj_fail.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                {"version": 3, "base": [{"name": "field"}]},
+                [
+                    (
+                        {"type": "ntensor", "shape": [3], "dtype": "float32"},
+                        np.arange(3, dtype=np.float32),
+                    )
+                ],
+            )
+        with (
+            patch("tensogram.decode_object", side_effect=RuntimeError("boom")),
+            pytest.raises(ValueError, match=r"failed to decode object 0 \('field'\)"),
+        ):
+            TensogramStore.open_tgm(path)
+
+
+class TestScanLocalBigEndianByteswap:
+    """Cover store.py _scan_local big-endian byteswap (line 449)."""
+
+    def test_big_endian_array_is_byteswapped(self, tmp_path: Path):
+        """A decoded big-endian array is byteswapped to little-endian bytes."""
+        path = str(tmp_path / "be_local.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                {"version": 3, "base": [{"name": "field"}]},
+                [
+                    (
+                        {"type": "ntensor", "shape": [3], "dtype": "float32"},
+                        np.arange(3, dtype=np.float32),
+                    )
+                ],
+            )
+        be_arr = np.array([1.0, 2.0, 3.0], dtype=">f4")
+        with patch("tensogram.decode_object", return_value=(None, None, be_arr)):
+            store = TensogramStore.open_tgm(path)
+            try:
+                chunk = store._keys["field/c/0"]
+                # Stored bytes must be little-endian after the swap.
+                np.testing.assert_array_equal(np.frombuffer(chunk, dtype="<f4"), [1.0, 2.0, 3.0])
+            finally:
+                store.close()
+
+
+class TestDecodeChunkGuards:
+    """Cover store.py _decode_chunk guards + byteswap (lines 502, 506)."""
+
+    def test_decode_chunk_returns_none_when_file_missing(self, output_path: str):
+        """A chunk in the index but no open file handle returns ``None``."""
+        store = TensogramStore(output_path, mode="r")
+        store._chunk_index["v/c/0"] = 0
+        store._file = None
+        assert store._decode_chunk("v/c/0") is None
+
+    def test_decode_chunk_returns_none_when_index_missing(self, output_path: str):
+        """A chunk key not in the index returns ``None``."""
+        store = TensogramStore(output_path, mode="r")
+        store._file = object()
+        assert store._decode_chunk("absent/c/0") is None
+
+    def test_decode_chunk_byteswaps_big_endian(self, output_path: str):
+        """A remote big-endian decode is byteswapped before caching."""
+        from unittest.mock import MagicMock
+
+        store = TensogramStore(output_path, mode="r")
+        store._chunk_index["v/c/0"] = 0
+        mock_file = MagicMock()
+        mock_file.file_decode_object.return_value = {
+            "data": np.array([1.0, 2.0, 3.0], dtype=">f4")
+        }
+        store._file = mock_file
+
+        data = store._decode_chunk("v/c/0")
+        assert data is not None
+        np.testing.assert_array_equal(np.frombuffer(data, dtype="<f4"), [1.0, 2.0, 3.0])
+        # Cached in _keys and dropped from the lazy index.
+        assert "v/c/0" in store._keys
+        assert "v/c/0" not in store._chunk_index
+
+
+class TestFlushUnsupportedDtype:
+    """Cover store.py _flush_to_tgm unsupported-dtype wrapping (lines 566-567).
+
+    ``parse_array_zarr_json`` only ever yields TGM dtypes that
+    ``tgm_dtype_to_numpy`` accepts, so this defensive error-wrapping branch
+    is exercised by forcing ``parse_array_zarr_json`` to return a bogus
+    ``dtype``.
+    """
+
+    def test_unsupported_dtype_raises_contextual_error(self, output_path: str):
+        store = TensogramStore(output_path, mode="w")
+        store._open_sync()
+        store._write_arrays["v"] = {
+            "shape": [2],
+            "data_type": "float32",
+            "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+            "attributes": {
+                "_tensogram_encoding": "none",
+                "_tensogram_filter": "none",
+                "_tensogram_compression": "none",
+            },
+        }
+        store._write_chunks["v/c/0"] = np.array([1.0, 2.0], dtype="<f4").tobytes()
+        store._dirty = True
+        bogus_parsed = {
+            "shape": [2],
+            "dtype": "imaginary256",
+            "byte_order": "little",
+            "encoding": "none",
+            "filter": "none",
+            "compression": "none",
+            "attrs": {},
+        }
+        with (
+            patch("tensogram_zarr.store.parse_array_zarr_json", return_value=bogus_parsed),
+            pytest.raises(ValueError, match="unsupported dtype for variable 'v'"),
+        ):
+            store._flush_to_tgm()
+        store._dirty = False
+        store.close()

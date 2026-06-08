@@ -355,6 +355,56 @@ mod tests {
     }
 
     #[test]
+    fn zfp_decompress_rejects_malformed_size_stream_pairings() {
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        // num_values == 0 but a non-empty stream is a malformed descriptor
+        // (lines 84-89) — must not silently return empty.
+        let err = zfp_decompress_f64(&[1u8, 2, 3, 4], 0, &mode)
+            .expect_err("num_values=0 with data must be rejected");
+        assert!(
+            format!("{err}").contains("malformed zfp descriptor"),
+            "got: {err}"
+        );
+
+        // num_values > 0 but an empty stream is truncated/missing payload
+        // (lines 90-94).
+        let err = zfp_decompress_f64(&[], 128, &mode)
+            .expect_err("num_values>0 with empty stream must be rejected");
+        assert!(
+            format!("{err}").contains("empty compressed stream"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn zfp_range_offset_plus_count_overflows() {
+        // sample_offset + sample_count overflowing usize must surface the
+        // dedicated checked_add error (lines 211-215), not wrap silently.
+        let values = smooth_data(128);
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        let compressed = zfp_compress_f64(&values, &mode).unwrap();
+        let err = zfp_decompress_range_f64(&compressed, values.len(), &mode, usize::MAX, 1)
+            .expect_err("offset+count overflow must be rejected");
+        assert!(
+            format!("{err}").contains("range end overflow"),
+            "expected overflow error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn zfp_range_zero_count_at_end() {
+        // A zero-length range at the exact end is valid and yields an
+        // empty slice (end == all.len()), covering the extend_from_slice
+        // path with an empty range.
+        let values = smooth_data(128);
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        let compressed = zfp_compress_f64(&values, &mode).unwrap();
+        let out =
+            zfp_decompress_range_f64(&compressed, values.len(), &mode, values.len(), 0).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn zfp_accuracy_mode_roundtrip() {
         let values = smooth_data(256);
         let mode = ZfpMode::FixedAccuracy { tolerance: 0.01 };

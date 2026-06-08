@@ -2941,4 +2941,1590 @@ mod tests {
             other => panic!("expected Metadata error, got: {other:?}"),
         }
     }
+
+    // ── validate_object: bitmask data-length mismatch (line 279) ──────
+
+    #[test]
+    fn validate_object_bitmask_data_len_mismatch_rejected() {
+        // Bitmask dtype: expected bytes = ceil(product / 8).  shape [20]
+        // => ceil(20/8) = 3 bytes.  Supplying 2 bytes must error.
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![20],
+            strides: vec![1],
+            dtype: Dtype::Bitmask,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let err = validate_object(&desc, 2).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("bitmask"), "msg: {msg}");
+                assert!(msg.contains('3'), "expected ceil(20/8)=3: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_object_bitmask_data_len_match_ok() {
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![20],
+            strides: vec![1],
+            dtype: Dtype::Bitmask,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        assert!(validate_object(&desc, 3).is_ok());
+    }
+
+    // ── validate_object: routes through validate_mask_params (line 286) ──
+
+    #[test]
+    fn validate_object_rejects_invalid_mask_descriptor() {
+        // A `masks` block with an unknown method must be rejected by
+        // validate_object via validate_mask_params.
+        let masks = MasksMetadata {
+            nan: Some(make_mask_desc("bogus", BTreeMap::new())),
+            ..Default::default()
+        };
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: Some(masks),
+        };
+        let err = validate_object(&desc, 8).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("unknown method"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── resolve_encoding error paths (lines 850-852) ─────────────────
+
+    fn float64_desc(
+        encoding: &str,
+        params: BTreeMap<String, ciborium::Value>,
+    ) -> DataObjectDescriptor {
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![1],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::native(),
+            encoding: encoding.to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params,
+            masks: None,
+        }
+    }
+
+    #[test]
+    fn resolve_encoding_simple_packing_rejects_non_float64() {
+        // simple_packing requires float64; float32 must error.
+        let mut desc = float64_desc("simple_packing", BTreeMap::new());
+        desc.dtype = Dtype::Float32;
+        let err = resolve_encoding(&desc, Dtype::Float32).unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("simple_packing"), "msg: {msg}");
+                assert!(msg.contains("float64"), "msg: {msg}");
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_encoding_rejects_unknown_encoding() {
+        let desc = float64_desc("totally_unknown", BTreeMap::new());
+        let err = resolve_encoding(&desc, Dtype::Float64).unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("unknown encoding"), "msg: {msg}");
+                assert!(msg.contains("totally_unknown"), "msg: {msg}");
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    // ── resolve_filter error paths (lines 873-874) ───────────────────
+
+    #[test]
+    fn resolve_filter_rejects_unknown_filter() {
+        let mut desc = float64_desc("none", BTreeMap::new());
+        desc.filter = "rot13".to_string();
+        let err = resolve_filter(&desc).unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("unknown filter"), "msg: {msg}");
+                assert!(msg.contains("rot13"), "msg: {msg}");
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_filter_shuffle_missing_element_size_rejected() {
+        // shuffle requires shuffle_element_size; absence errors.
+        let mut desc = float64_desc("none", BTreeMap::new());
+        desc.filter = "shuffle".to_string();
+        let err = resolve_filter(&desc).unwrap_err();
+        assert!(matches!(err, TensogramError::Metadata(_)));
+    }
+
+    #[test]
+    fn resolve_filter_shuffle_happy_path() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "shuffle_element_size".to_string(),
+            ciborium::Value::Integer(4i64.into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.filter = "shuffle".to_string();
+        let f = resolve_filter(&desc).unwrap();
+        assert!(matches!(f, FilterType::Shuffle { element_size: 4 }));
+    }
+
+    // ── resolve_compression error paths ──────────────────────────────
+
+    #[test]
+    fn resolve_compression_rejects_unknown_compression() {
+        let mut desc = float64_desc("none", BTreeMap::new());
+        desc.compression = "magic".to_string();
+        let enc = EncodingType::None;
+        let filt = FilterType::None;
+        let err = resolve_compression(&desc, Dtype::Float64, &enc, &filt).unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("unknown compression"), "msg: {msg}");
+                assert!(msg.contains("magic"), "msg: {msg}");
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_compression_rle_rejects_non_bitmask() {
+        let mut desc = float64_desc("none", BTreeMap::new());
+        desc.compression = "rle".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("rle"), "msg: {msg}");
+                assert!(msg.contains("bitmask"), "msg: {msg}");
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_compression_roaring_rejects_non_bitmask() {
+        let mut desc = float64_desc("none", BTreeMap::new());
+        desc.compression = "roaring".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("roaring"), "msg: {msg}");
+                assert!(msg.contains("bitmask"), "msg: {msg}");
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn resolve_compression_szip_rsi_out_of_u32_range() {
+        // szip_rsi beyond u32::MAX must error.
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_rsi".to_string(),
+            ciborium::Value::Integer((u64::from(u32::MAX) + 1).into()),
+        );
+        params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(32i64.into()),
+        );
+        params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "szip".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("szip_rsi"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn resolve_compression_szip_block_size_out_of_u32_range() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_rsi".to_string(),
+            ciborium::Value::Integer(128i64.into()),
+        );
+        params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer((u64::from(u32::MAX) + 1).into()),
+        );
+        params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "szip".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("szip_block_size"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn resolve_compression_szip_flags_out_of_u32_range() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_rsi".to_string(),
+            ciborium::Value::Integer(128i64.into()),
+        );
+        params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(32i64.into()),
+        );
+        params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer((u64::from(u32::MAX) + 1).into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "szip".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("szip_flags"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
+    #[test]
+    fn resolve_compression_zstd_level_out_of_i32_range() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "zstd_level".to_string(),
+            ciborium::Value::Integer((i64::from(i32::MAX) + 1).into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "zstd".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("zstd_level"), "msg: {msg}");
+                assert!(msg.contains("i32"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "blosc2")]
+    #[test]
+    fn resolve_compression_blosc2_clevel_out_of_i32_range() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "blosc2_codec".to_string(),
+            ciborium::Value::Text("lz4".to_string()),
+        );
+        params.insert(
+            "blosc2_clevel".to_string(),
+            ciborium::Value::Integer((i64::from(i32::MAX) + 1).into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "blosc2".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("blosc2_clevel"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "blosc2")]
+    #[test]
+    fn resolve_compression_blosc2_unknown_codec_rejected() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "blosc2_codec".to_string(),
+            ciborium::Value::Text("snappy".to_string()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "blosc2".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("unknown blosc2 codec"), "msg: {msg}");
+                assert!(msg.contains("snappy"), "msg: {msg}");
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "zfp")]
+    #[test]
+    fn resolve_compression_zfp_missing_mode_rejected() {
+        let mut desc = float64_desc("none", BTreeMap::new());
+        desc.compression = "zfp".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("zfp_mode"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "zfp")]
+    #[test]
+    fn resolve_compression_zfp_precision_out_of_u32_range() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "zfp_mode".to_string(),
+            ciborium::Value::Text("fixed_precision".to_string()),
+        );
+        params.insert(
+            "zfp_precision".to_string(),
+            ciborium::Value::Integer((u64::from(u32::MAX) + 1).into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "zfp".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("zfp_precision"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "zfp")]
+    #[test]
+    fn resolve_compression_zfp_unknown_mode_rejected() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "zfp_mode".to_string(),
+            ciborium::Value::Text("wobble".to_string()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "zfp".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("unknown zfp_mode"), "msg: {msg}")
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "sz3")]
+    #[test]
+    fn resolve_compression_sz3_missing_mode_rejected() {
+        let mut desc = float64_desc("none", BTreeMap::new());
+        desc.compression = "sz3".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("sz3_error_bound_mode"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "sz3")]
+    #[test]
+    fn resolve_compression_sz3_unknown_mode_rejected() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sz3_error_bound_mode".to_string(),
+            ciborium::Value::Text("bogus".to_string()),
+        );
+        params.insert("sz3_error_bound".to_string(), ciborium::Value::Float(1e-3));
+        let mut desc = float64_desc("none", params);
+        desc.compression = "sz3".to_string();
+        let err = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(msg.contains("unknown sz3_error_bound_mode"), "msg: {msg}")
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    // ── extract_simple_packing_params error paths (lines 1101-1105) ──
+
+    #[test]
+    fn extract_simple_packing_params_rejects_nan_reference() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(f64::NAN),
+        );
+        params.insert(
+            "sp_binary_scale_factor".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        let err = extract_simple_packing_params(&params).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("finite"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_simple_packing_params_rejects_decimal_scale_out_of_i32() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(0.0),
+        );
+        params.insert(
+            "sp_binary_scale_factor".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            ciborium::Value::Integer((i64::from(i32::MAX) + 1).into()),
+        );
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        let err = extract_simple_packing_params(&params).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("sp_decimal_scale_factor"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_simple_packing_params_rejects_binary_scale_out_of_i32() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(0.0),
+        );
+        params.insert(
+            "sp_binary_scale_factor".to_string(),
+            ciborium::Value::Integer((i64::from(i32::MAX) + 1).into()),
+        );
+        params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        let err = extract_simple_packing_params(&params).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("sp_binary_scale_factor"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_simple_packing_params_rejects_bits_per_value_out_of_u32() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(0.0),
+        );
+        params.insert(
+            "sp_binary_scale_factor".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer((u64::from(u32::MAX) + 1).into()),
+        );
+        let err = extract_simple_packing_params(&params).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("sp_bits_per_value"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── resolve_simple_packing_params: auto-compute paths (1217-1267) ──
+
+    #[test]
+    fn resolve_simple_packing_params_noop_for_non_simple_packing() {
+        let mut desc = float64_desc("none", BTreeMap::new());
+        resolve_simple_packing_params(&mut desc, &[0u8; 8]).unwrap();
+        // No params added for encoding=none.
+        assert!(desc.params.is_empty());
+    }
+
+    #[test]
+    fn resolve_simple_packing_params_rejects_decimal_scale_out_of_i32() {
+        // Only sp_bits_per_value set (no ref/bsf), forcing the
+        // auto-compute path; bad decimal scale triggers i32 error.
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            ciborium::Value::Integer((i64::from(i32::MAX) + 1).into()),
+        );
+        let mut desc = float64_desc("simple_packing", params);
+        let data: Vec<u8> = (0..4).flat_map(|i| (i as f64).to_le_bytes()).collect();
+        let err = resolve_simple_packing_params(&mut desc, &data).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("sp_decimal_scale_factor"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_simple_packing_params_auto_computes_and_stamps_four_keys() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        let mut desc = float64_desc("simple_packing", params);
+        let data: Vec<u8> = (0..8).flat_map(|i| (i as f64).to_le_bytes()).collect();
+        resolve_simple_packing_params(&mut desc, &data).unwrap();
+        assert!(desc.params.contains_key("sp_reference_value"));
+        assert!(desc.params.contains_key("sp_binary_scale_factor"));
+        assert!(desc.params.contains_key("sp_decimal_scale_factor"));
+        assert!(desc.params.contains_key("sp_bits_per_value"));
+    }
+
+    #[test]
+    fn resolve_simple_packing_params_explicit_pair_defaults_decimal() {
+        // Both ref + bsf present: skip auto-compute, default decimal.
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(0.0),
+        );
+        params.insert(
+            "sp_binary_scale_factor".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        let mut desc = float64_desc("simple_packing", params);
+        resolve_simple_packing_params(&mut desc, &[0u8; 8]).unwrap();
+        assert_eq!(
+            desc.params.get("sp_decimal_scale_factor"),
+            Some(&ciborium::Value::Integer(0i64.into()))
+        );
+    }
+
+    #[test]
+    fn resolve_simple_packing_params_partial_pair_rejected() {
+        // Only ref set, bsf missing — must error (provide both or neither).
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(0.0),
+        );
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        let mut desc = float64_desc("simple_packing", params);
+        let err = resolve_simple_packing_params(&mut desc, &[0u8; 8]).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("simple_packing"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── bytes_as_f64_vec error path (lines 1254-1257) ────────────────
+
+    #[test]
+    fn bytes_as_f64_vec_rejects_non_multiple_of_8() {
+        let err = bytes_as_f64_vec(&[0u8; 7], ByteOrder::Little).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("multiple of 8"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bytes_as_f64_vec_big_endian_roundtrip() {
+        let v = bytes_as_f64_vec(&1.5f64.to_be_bytes(), ByteOrder::Big).unwrap();
+        assert_eq!(v, vec![1.5]);
+    }
+
+    // ── get_*_param error branches (1311-1313, 1322-1331, 1355-1356) ──
+
+    #[test]
+    fn get_f64_param_rejects_wrong_type() {
+        let mut params = BTreeMap::new();
+        params.insert("tol".to_string(), ciborium::Value::Text("x".to_string()));
+        let err = get_f64_param(&params, "tol").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("expected number"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_f64_param_missing_key_rejected() {
+        let params = BTreeMap::new();
+        let err = get_f64_param(&params, "tol").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("missing required parameter"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_i64_param_rejects_wrong_type() {
+        let mut params = BTreeMap::new();
+        params.insert("n".to_string(), ciborium::Value::Float(1.5));
+        let err = get_i64_param(&params, "n").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("expected integer"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_i64_param_missing_key_rejected() {
+        let params = BTreeMap::new();
+        let err = get_i64_param(&params, "n").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("missing required parameter"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_i64_param_or_default_rejects_out_of_i64_range() {
+        // An integer beyond i64::MAX (representable in CBOR as a large
+        // unsigned) must error in the present-Integer branch.
+        let mut params = BTreeMap::new();
+        params.insert("n".to_string(), ciborium::Value::Integer((u64::MAX).into()));
+        let err = get_i64_param_or_default(&params, "n", 0).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("out of i64 range"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_i64_param_rejects_out_of_i64_range() {
+        let mut params = BTreeMap::new();
+        params.insert("n".to_string(), ciborium::Value::Integer((u64::MAX).into()));
+        let err = get_i64_param(&params, "n").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("out of i64 range"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_u64_param_rejects_negative() {
+        let mut params = BTreeMap::new();
+        params.insert("n".to_string(), ciborium::Value::Integer((-1i64).into()));
+        let err = get_u64_param(&params, "n").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("out of u64 range"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_u64_param_rejects_wrong_type() {
+        let mut params = BTreeMap::new();
+        params.insert("n".to_string(), ciborium::Value::Float(1.0));
+        let err = get_u64_param(&params, "n").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("expected integer"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_u64_param_missing_key_rejected() {
+        let params = BTreeMap::new();
+        let err = get_u64_param(&params, "n").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("missing required parameter"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── validate_szip_block_offsets: empty + range errors (1431-1457) ──
+
+    #[test]
+    fn validate_szip_block_offsets_empty_rejected() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![]),
+        );
+        let err = validate_szip_block_offsets(&params, 100).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("must not be empty"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_szip_block_offsets_negative_element_rejected() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![ciborium::Value::Integer((-1i64).into())]),
+        );
+        let err = validate_szip_block_offsets(&params, 100).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("out of u64 range"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── compose_payload_region: mask composition (line 502 path) ─────
+
+    #[test]
+    fn compose_payload_region_empty_masks_is_passthrough() {
+        let payload = vec![1u8, 2, 3, 4];
+        let (region, meta) = compose_payload_region(
+            payload.clone(),
+            MaskSet::empty(0),
+            &MaskMethod::Roaring,
+            &MaskMethod::Roaring,
+            &MaskMethod::Roaring,
+            128,
+        )
+        .unwrap();
+        assert_eq!(region, payload);
+        assert!(meta.is_none());
+    }
+
+    #[test]
+    fn encode_nan_without_allow_nan_is_hard_error() {
+        // A NaN float32 input without allow_nan must be a hard error
+        // (covers the substitute-and-mask reject path).
+        let desc = make_descriptor(vec![2]);
+        let mut data = Vec::new();
+        data.extend_from_slice(&f32::NAN.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        let options = EncodeOptions {
+            hashing: false,
+            allow_nan: false,
+            allow_inf: false,
+            ..Default::default()
+        };
+        let err = encode(&meta_default(), &[(&desc, data.as_slice())], &options);
+        assert!(err.is_err(), "NaN without allow_nan must error");
+    }
+
+    #[test]
+    fn encode_inf_without_allow_inf_is_hard_error() {
+        let desc = make_descriptor(vec![2]);
+        let mut data = Vec::new();
+        data.extend_from_slice(&f32::INFINITY.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        let options = EncodeOptions {
+            hashing: false,
+            ..Default::default()
+        };
+        let err = encode(&meta_default(), &[(&desc, data.as_slice())], &options);
+        assert!(err.is_err(), "Inf without allow_inf must error");
+    }
+
+    #[test]
+    fn encode_nan_with_allow_nan_produces_mask_and_roundtrips() {
+        // allow_nan substitutes NaN with 0.0 and records a mask; the
+        // composed payload region must round-trip through decode.
+        // Use a large array so the mask exceeds the small-mask
+        // threshold and the requested method is honoured.
+        let desc = make_descriptor(vec![2048]);
+        let mut data = Vec::with_capacity(2048 * 4);
+        for i in 0..2048u32 {
+            if i % 3 == 0 {
+                data.extend_from_slice(&f32::NAN.to_le_bytes());
+            } else {
+                data.extend_from_slice(&(i as f32).to_le_bytes());
+            }
+        }
+        let options = EncodeOptions {
+            hashing: false,
+            allow_nan: true,
+            small_mask_threshold_bytes: 0,
+            ..Default::default()
+        };
+        let msg = encode(&meta_default(), &[(&desc, data.as_slice())], &options).unwrap();
+        let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 1);
+        let (decoded_desc, _) = &objects[0];
+        assert!(
+            decoded_desc.masks.is_some(),
+            "decoded descriptor should carry a NaN mask"
+        );
+    }
+
+    fn meta_default() -> GlobalMetadata {
+        GlobalMetadata::default()
+    }
+
+    // ── encode_one_mask: per-method coverage (lines 1590-1608) ───────
+
+    #[test]
+    fn encode_one_mask_none_method_packs_raw() {
+        // A small mask with threshold > size falls back to None.
+        let bits = vec![true, false, true, false];
+        let (blob, used) = encode_one_mask(&bits, MaskMethod::Roaring, 128).unwrap();
+        assert!(matches!(used, MaskMethod::None));
+        assert!(!blob.is_empty());
+    }
+
+    #[test]
+    fn encode_one_mask_rle_method() {
+        // Large mask, threshold 0 disables fallback — RLE honoured.
+        let bits = vec![true; 2048];
+        let (blob, used) = encode_one_mask(&bits, MaskMethod::Rle, 0).unwrap();
+        assert!(matches!(used, MaskMethod::Rle));
+        assert!(!blob.is_empty());
+    }
+
+    #[test]
+    fn encode_one_mask_roaring_method() {
+        let mut bits = vec![false; 2048];
+        bits[5] = true;
+        bits[1000] = true;
+        let (blob, used) = encode_one_mask(&bits, MaskMethod::Roaring, 0).unwrap();
+        assert!(matches!(used, MaskMethod::Roaring));
+        assert!(!blob.is_empty());
+    }
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn encode_one_mask_lz4_method() {
+        let bits = vec![true; 2048];
+        let (blob, used) = encode_one_mask(&bits, MaskMethod::Lz4, 0).unwrap();
+        assert!(matches!(used, MaskMethod::Lz4));
+        assert!(!blob.is_empty());
+    }
+
+    #[test]
+    fn encode_one_mask_zstd_method() {
+        let bits = vec![true; 2048];
+        let (blob, used) = encode_one_mask(&bits, MaskMethod::Zstd { level: Some(3) }, 0).unwrap();
+        assert!(matches!(used, MaskMethod::Zstd { .. }));
+        assert!(!blob.is_empty());
+    }
+
+    #[cfg(feature = "blosc2")]
+    #[test]
+    fn encode_one_mask_blosc2_method() {
+        use tensogram_encodings::pipeline::Blosc2Codec;
+        let bits = vec![true; 2048];
+        let (blob, used) = encode_one_mask(
+            &bits,
+            MaskMethod::Blosc2 {
+                codec: Blosc2Codec::Lz4,
+                level: 5,
+            },
+            0,
+        )
+        .unwrap();
+        assert!(matches!(used, MaskMethod::Blosc2 { .. }));
+        assert!(!blob.is_empty());
+    }
+
+    // ── mask_params_cbor: all method shapes (lines 1620-1644) ────────
+
+    #[test]
+    fn mask_params_cbor_paramless_methods_empty() {
+        for m in [
+            MaskMethod::None,
+            MaskMethod::Rle,
+            MaskMethod::Roaring,
+            MaskMethod::Lz4,
+        ] {
+            assert!(
+                mask_params_cbor(&m).is_empty(),
+                "method {m:?} must be paramless"
+            );
+        }
+    }
+
+    #[test]
+    fn mask_params_cbor_zstd_with_level() {
+        let params = mask_params_cbor(&MaskMethod::Zstd { level: Some(7) });
+        assert_eq!(
+            params.get("level"),
+            Some(&ciborium::Value::Integer(7i64.into()))
+        );
+    }
+
+    #[test]
+    fn mask_params_cbor_zstd_without_level_empty() {
+        let params = mask_params_cbor(&MaskMethod::Zstd { level: None });
+        assert!(params.is_empty());
+    }
+
+    #[cfg(feature = "blosc2")]
+    #[test]
+    fn mask_params_cbor_blosc2_all_codecs() {
+        use tensogram_encodings::pipeline::Blosc2Codec;
+        let codecs = [
+            (Blosc2Codec::Blosclz, "blosclz"),
+            (Blosc2Codec::Lz4, "lz4"),
+            (Blosc2Codec::Lz4hc, "lz4hc"),
+            (Blosc2Codec::Zlib, "zlib"),
+            (Blosc2Codec::Zstd, "zstd"),
+        ];
+        for (codec, name) in codecs {
+            let params = mask_params_cbor(&MaskMethod::Blosc2 { codec, level: 4 });
+            assert_eq!(
+                params.get("codec"),
+                Some(&ciborium::Value::Text(name.to_string()))
+            );
+            assert_eq!(
+                params.get("level"),
+                Some(&ciborium::Value::Integer(4i64.into()))
+            );
+        }
+    }
+
+    // ── compose_payload_region with explicit non-default methods ─────
+
+    #[test]
+    fn compose_payload_region_all_three_masks_with_distinct_methods() {
+        // Exercises append_one across nan/pos_inf/neg_inf and records
+        // distinct descriptors at increasing offsets.
+        let mk = |seed: usize| -> Vec<bool> {
+            (0..2048).map(|i| (i + seed).is_multiple_of(7)).collect()
+        };
+        let masks = MaskSet {
+            nan: Some(mk(0)),
+            pos_inf: Some(mk(1)),
+            neg_inf: Some(mk(2)),
+            n_elements: 2048,
+        };
+        let payload = vec![0xAAu8; 64];
+        let (region, meta) = compose_payload_region(
+            payload.clone(),
+            masks,
+            &MaskMethod::Roaring,
+            &MaskMethod::Rle,
+            &MaskMethod::Zstd { level: Some(1) },
+            0,
+        )
+        .unwrap();
+        let meta = meta.expect("masks present");
+        assert!(region.len() > payload.len());
+        let nan = meta.nan.expect("nan");
+        let pos = meta.pos_inf.expect("pos_inf");
+        let neg = meta.neg_inf.expect("neg_inf");
+        assert_eq!(nan.method, "roaring");
+        assert_eq!(pos.method, "rle");
+        assert_eq!(neg.method, "zstd");
+        // Offsets strictly increase, starting at the payload end.
+        assert_eq!(nan.offset, payload.len() as u64);
+        assert!(pos.offset > nan.offset);
+        assert!(neg.offset > pos.offset);
+    }
+
+    // ── validate_object basic error branches (238-267) ───────────────
+
+    #[test]
+    fn validate_object_rejects_empty_obj_type() {
+        let mut desc = make_descriptor(vec![2]);
+        desc.obj_type = String::new();
+        let err = validate_object(&desc, 8).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("obj_type"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_object_rejects_ndim_shape_mismatch() {
+        let mut desc = make_descriptor(vec![2, 3]);
+        desc.ndim = 3; // shape.len() is 2
+        let err = validate_object(&desc, 24).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("ndim"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_object_rejects_strides_shape_mismatch() {
+        let mut desc = make_descriptor(vec![2, 3]);
+        desc.strides = vec![1]; // wrong length
+        let err = validate_object(&desc, 24).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("strides.len()"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_object_rejects_data_len_mismatch() {
+        // float32 shape [4] => 16 bytes expected; supply 8.
+        let desc = make_descriptor(vec![4]);
+        let err = validate_object(&desc, 8).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("does not match expected"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── resolve_simple_packing_params: dtype + missing-bits (1153/1166) ──
+
+    #[test]
+    fn resolve_simple_packing_params_rejects_non_float64_dtype() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        let mut desc = float64_desc("simple_packing", params);
+        desc.dtype = Dtype::Float32;
+        let err = resolve_simple_packing_params(&mut desc, &[0u8; 4]).unwrap_err();
+        match err {
+            TensogramError::Encoding(msg) => {
+                assert!(
+                    msg.contains("simple_packing only supports float64"),
+                    "msg: {msg}"
+                )
+            }
+            other => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_simple_packing_params_rejects_missing_bits_per_value() {
+        // simple_packing with no sp_bits_per_value at all must error.
+        let desc_params = BTreeMap::new();
+        let mut desc = float64_desc("simple_packing", desc_params);
+        let err = resolve_simple_packing_params(&mut desc, &[0u8; 8]).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("sp_bits_per_value"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_simple_packing_params_rejects_non_finite_data() {
+        // Auto-compute path with a NaN in the data: compute_params
+        // surfaces a PackingError (line 1224).
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer(16i64.into()),
+        );
+        let mut desc = float64_desc("simple_packing", params);
+        let mut data = Vec::new();
+        data.extend_from_slice(&f64::NAN.to_le_bytes());
+        data.extend_from_slice(&1.0f64.to_le_bytes());
+        let err = resolve_simple_packing_params(&mut desc, &data).unwrap_err();
+        assert!(matches!(err, TensogramError::Encoding(_)));
+    }
+
+    // ── End-to-end rle / roaring on bitmask dtype (1031-1042) ────────
+
+    fn bitmask_desc(compression: &str, n_bits: u64) -> DataObjectDescriptor {
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![n_bits],
+            strides: vec![1],
+            dtype: Dtype::Bitmask,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: compression.to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        }
+    }
+
+    #[test]
+    fn encode_bitmask_rle_round_trips() {
+        let desc = bitmask_desc("rle", 64);
+        // 64 bits => 8 bytes, all set.
+        let data = vec![0xFFu8; 8];
+        let options = EncodeOptions {
+            hashing: false,
+            ..Default::default()
+        };
+        let msg = encode(&meta_default(), &[(&desc, data.as_slice())], &options).unwrap();
+        let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects[0].1, data);
+    }
+
+    #[test]
+    fn encode_bitmask_roaring_round_trips() {
+        let desc = bitmask_desc("roaring", 64);
+        let mut data = vec![0u8; 8];
+        data[0] = 0b1010_1010;
+        let options = EncodeOptions {
+            hashing: false,
+            ..Default::default()
+        };
+        let msg = encode(&meta_default(), &[(&desc, data.as_slice())], &options).unwrap();
+        let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects[0].1, data);
+    }
+
+    // ── Codec bits_per_sample / typesize combos via end-to-end ───────
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn encode_szip_with_shuffle_filter_round_trips() {
+        // Exercises the (None, Shuffle) bits_per_sample = 8 branch (904).
+        let mut params = BTreeMap::new();
+        params.insert(
+            "shuffle_element_size".to_string(),
+            ciborium::Value::Integer(4i64.into()),
+        );
+        params.insert(
+            "szip_rsi".to_string(),
+            ciborium::Value::Integer(128i64.into()),
+        );
+        params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(32i64.into()),
+        );
+        params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![256],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "shuffle".to_string(),
+            compression: "szip".to_string(),
+            params,
+            masks: None,
+        };
+        let data: Vec<u8> = (0..256u32).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        let options = EncodeOptions {
+            hashing: false,
+            ..Default::default()
+        };
+        let msg = encode(&meta_default(), &[(&desc, data.as_slice())], &options).unwrap();
+        let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects[0].1, data);
+    }
+
+    #[cfg(feature = "blosc2")]
+    #[test]
+    fn encode_blosc2_with_shuffle_filter_round_trips() {
+        // Exercises the blosc2 (None, Shuffle) typesize = 1 branch (958).
+        let mut params = BTreeMap::new();
+        params.insert(
+            "shuffle_element_size".to_string(),
+            ciborium::Value::Integer(4i64.into()),
+        );
+        params.insert(
+            "blosc2_codec".to_string(),
+            ciborium::Value::Text("lz4".to_string()),
+        );
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![256],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "shuffle".to_string(),
+            compression: "blosc2".to_string(),
+            params,
+            masks: None,
+        };
+        let data: Vec<u8> = (0..256u32).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        let options = EncodeOptions {
+            hashing: false,
+            ..Default::default()
+        };
+        let msg = encode(&meta_default(), &[(&desc, data.as_slice())], &options).unwrap();
+        let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects[0].1, data);
+    }
+
+    // ── resolve_compression: bits_per_sample / typesize match arms ───
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn resolve_compression_szip_none_none_uses_dtype_bit_width() {
+        // (EncodingType::None, FilterType::None) bits_per_sample arm (905).
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_rsi".to_string(),
+            ciborium::Value::Integer(128i64.into()),
+        );
+        params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(32i64.into()),
+        );
+        params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "szip".to_string();
+        let c = resolve_compression(
+            &desc,
+            Dtype::Float64,
+            &EncodingType::None,
+            &FilterType::None,
+        )
+        .unwrap();
+        match c {
+            CompressionType::Szip {
+                bits_per_sample, ..
+            } => {
+                assert_eq!(bits_per_sample, 64); // float64 = 8 bytes * 8
+            }
+            other => panic!("expected Szip, got: {other:?}"),
+        }
+    }
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn resolve_compression_szip_simple_packing_uses_pack_bits() {
+        // (EncodingType::SimplePacking, _) bits_per_sample arm (903).
+        use tensogram_encodings::simple_packing::SimplePackingParams;
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_rsi".to_string(),
+            ciborium::Value::Integer(128i64.into()),
+        );
+        params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(32i64.into()),
+        );
+        params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "szip".to_string();
+        let enc = EncodingType::SimplePacking(SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 12,
+        });
+        let c = resolve_compression(&desc, Dtype::Float64, &enc, &FilterType::None).unwrap();
+        match c {
+            CompressionType::Szip {
+                bits_per_sample, ..
+            } => assert_eq!(bits_per_sample, 12),
+            other => panic!("expected Szip, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "blosc2")]
+    #[test]
+    fn resolve_compression_blosc2_simple_packing_typesize_rounds_up() {
+        // (EncodingType::SimplePacking, _) typesize arm (955-956): 12 bits => 2 bytes.
+        use tensogram_encodings::simple_packing::SimplePackingParams;
+        let mut params = BTreeMap::new();
+        params.insert(
+            "blosc2_codec".to_string(),
+            ciborium::Value::Text("lz4".to_string()),
+        );
+        let mut desc = float64_desc("none", params);
+        desc.compression = "blosc2".to_string();
+        let enc = EncodingType::SimplePacking(SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 12,
+        });
+        let c = resolve_compression(&desc, Dtype::Float64, &enc, &FilterType::None).unwrap();
+        match c {
+            CompressionType::Blosc2 { typesize, .. } => assert_eq!(typesize, 2),
+            other => panic!("expected Blosc2, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "zfp")]
+    #[test]
+    fn resolve_compression_zfp_fixed_rate_and_accuracy() {
+        // fixed_rate (979) and fixed_accuracy (990-991) arms.
+        for (mode, key) in [
+            ("fixed_rate", "zfp_rate"),
+            ("fixed_accuracy", "zfp_tolerance"),
+        ] {
+            let mut params = BTreeMap::new();
+            params.insert(
+                "zfp_mode".to_string(),
+                ciborium::Value::Text(mode.to_string()),
+            );
+            params.insert(key.to_string(), ciborium::Value::Float(8.0));
+            let mut desc = float64_desc("none", params);
+            desc.compression = "zfp".to_string();
+            let c = resolve_compression(
+                &desc,
+                Dtype::Float64,
+                &EncodingType::None,
+                &FilterType::None,
+            )
+            .unwrap();
+            assert!(matches!(c, CompressionType::Zfp { .. }), "mode {mode}");
+        }
+    }
+
+    // ── encode_pre_encoded szip block-offset validation (line 475) ───
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn encode_pre_encoded_szip_validates_block_offsets() {
+        // PreEncoded mode with szip compression + szip_block_offsets
+        // exercises the validate_szip_block_offsets call at line 475.
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_rsi".to_string(),
+            ciborium::Value::Integer(128i64.into()),
+        );
+        params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(32i64.into()),
+        );
+        params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![ciborium::Value::Integer(0i64.into())]),
+        );
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "szip".to_string(),
+            params,
+            masks: None,
+        };
+        let data = vec![0u8; 16];
+        let options = EncodeOptions {
+            hashing: false,
+            ..Default::default()
+        };
+        // The opaque pre-encoded bytes are passed through; offset 0 is
+        // valid against the 16-byte (128-bit) bound.
+        let msg =
+            encode_pre_encoded(&meta_default(), &[(&desc, data.as_slice())], &options).unwrap();
+        assert!(!msg.is_empty());
+    }
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[test]
+    fn encode_pre_encoded_szip_rejects_offset_beyond_bound() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_rsi".to_string(),
+            ciborium::Value::Integer(128i64.into()),
+        );
+        params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(32i64.into()),
+        );
+        params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer(0i64.into()),
+        );
+        // bit-bound for 16 bytes is 128; an offset of 9999 is out of range.
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![
+                ciborium::Value::Integer(0i64.into()),
+                ciborium::Value::Integer(9999i64.into()),
+            ]),
+        );
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "szip".to_string(),
+            params,
+            masks: None,
+        };
+        let data = vec![0u8; 16];
+        let options = EncodeOptions {
+            hashing: false,
+            ..Default::default()
+        };
+        let err =
+            encode_pre_encoded(&meta_default(), &[(&desc, data.as_slice())], &options).unwrap_err();
+        assert!(matches!(err, TensogramError::Metadata(_)));
+    }
 }
