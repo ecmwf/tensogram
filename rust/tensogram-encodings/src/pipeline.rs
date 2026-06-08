@@ -1508,7 +1508,7 @@ mod tests {
         // bit-identical output to `xxh3_64(concat(chunks))`.  If this ever
         // diverges, the hash-while-encoding optimisation would silently
         // corrupt hash values.
-        use xxhash_rust::xxh3::{Xxh3Default, xxh3_64};
+        use xxhash_rust::xxh3::{xxh3_64, Xxh3Default};
 
         for size in [0usize, 1, 239, 240, 1024 * 1024 + 17] {
             let data: Vec<u8> = (0..size).map(|i| (i * 31 + 7) as u8).collect();
@@ -2361,9 +2361,9 @@ mod tests {
     fn decode_range_pipeline_none_byte_range_exceeds_payload() {
         // The encoding=none arm computes a byte range directly; requesting
         // a range past the payload end must surface a Range error rather
-        // than slice out of bounds.  Use a compressed pipeline so the
-        // descriptor-size gate is a no-op and the slice bound check fires.
-        // (Uncompressed none would be caught earlier by the size gate.)
+        // than slice out of bounds.  The payload is exactly the claimed
+        // size (4 values * 4 bytes = 16), so the descriptor-size gate
+        // passes and it's the range-bounds check that we exercise here.
         let cfg = sizecheck_none_config(/*num_values=*/ 4, /*width=*/ 4);
         let payload: Vec<u8> = (0..16).collect();
         // Request element 3 .. 3+4 = past the 4-element payload.
