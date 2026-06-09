@@ -12,15 +12,21 @@ rewrites the project version across every manifest that carries it — the root
 `Cargo.toml` `[workspace.package]` version, the non-member crate Cargo.tomls,
 all internal `version = "=X.Y.Z"` dependency pins, every Python
 `pyproject.toml`, the version-controlled `package.json` files, and the Fortran
-`fpm.toml` / `CMakeLists.txt` — then greps the tree for stragglers, separating
-dependency *constraint ranges* (which encode a deliberate `<` ceiling and need
-human review) from unexpected leftovers. Exposed as `make bump-version
-VERSION=X.Y.Z`. The companion `make version-check` is a no-edit CI guard that
-fails when any manifest drifts from the `VERSION` file. The generated,
-git-ignored `typescript/wasm/package.json` is deliberately left untouched (it
-is regenerated from the crate version at build time). The version
+`fpm.toml` / `CMakeLists.txt`, plus the `tensoscope/` viewer app and the two
+self-referential version blocks of its committed `package-lock.json` — then
+greps the tree for stragglers, separating dependency *constraint ranges* (which
+encode a deliberate `<` ceiling and need human review) from unexpected
+leftovers. Exposed as `make bump-version VERSION=X.Y.Z`. The companion
+`make version-check` is a no-edit CI guard that fails when any manifest drifts
+from the `VERSION` file. The generated, git-ignored
+`typescript/wasm/package.json` is deliberately left untouched (it is
+regenerated from the crate version at build time). The version
 single-source-of-truth section of `AGENTS.md` now points at this tooling
 instead of a hand-maintained checklist.
+
+The `tensoscope/` viewer was at `0.20.0`, out of step with the project; it now
+follows the shared project version like every other subpackage and is kept in
+sync by the tooling above.
 
 ### Changed — graceful async runtime shutdown (`tgm_runtime_shutdown_blocking`)
 

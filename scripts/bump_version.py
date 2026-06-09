@@ -70,6 +70,19 @@ def _cmake_project_version() -> list[tuple[str, str]]:
     return [(r"(project\([^)]*VERSION\s+)(?:\d+\.\d+\.\d+)", r"\g<1>{new}")]
 
 
+def _npm_lock_self_version(pkg_name: str) -> list[tuple[str, str]]:
+    # An npm `package-lock.json` contains a `"version"` for EVERY dependency,
+    # so the blanket _json_version() regex would corrupt it. The package's own
+    # version appears only in the two self-referential blocks, each preceded by
+    # `"name": "<pkg>"`. Anchor on that so we never touch a dependency version.
+    name = re.escape(pkg_name)
+    pattern = (
+        r'("name"\s*:\s*"' + name + r'"\s*,\s*\n\s*"version"\s*:\s*")'
+        r"(?:\d+\.\d+\.\d+)(\")"
+    )
+    return [(pattern, r"\g<1>{new}\g<2>")]
+
+
 # Every Cargo.toml that pins an internal workspace crate does so with
 # `version = "=X.Y.Z"`. Those pins live in member *and* excluded crates, so
 # we rewrite the `=`-pin token in all of them. The root Cargo.toml also
@@ -107,6 +120,11 @@ TARGETS: list[tuple[str, list[tuple[str, str]]]] = [
     # JS packages that are version-controlled (NOT the generated wasm output).
     ("typescript/package.json", _json_version()),
     ("examples/typescript/package.json", _json_version()),
+    # Tensoscope (standalone viewer app) follows the project version like the
+    # other subpackages. Its committed lockfile mirrors the version in two
+    # self-referential blocks; we rewrite only those (never a dependency entry).
+    ("tensoscope/package.json", _json_version()),
+    ("tensoscope/package-lock.json", _npm_lock_self_version("tensoscope")),
     # Fortran binding.
     ("fortran/fpm.toml", _toml_version()),
     ("fortran/CMakeLists.txt", _cmake_project_version()),
