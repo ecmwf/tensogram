@@ -1,9 +1,14 @@
 # Claude and Other Agents
 
+This file (`AGENTS.md`) is the canonical agent-instructions document.
+`CLAUDE.md` is a symlink to it for cross-tool compatibility — edit `AGENTS.md`
+and refer to it by that name.
+
 # Guidelines
 
-- CRITICAL: Always prefer the LSP tool over Grep/Read for code navigation. 
-    - Use it to find definitions, references, and workspace symbols.
+- If an LSP / symbol-navigation tool is available, prefer it over Grep/Read for
+  code navigation — use it to find definitions, references, and workspace symbols.
+  Fall back to Grep/Read when no such tool is exposed.
 
 - CRITICAL: NEVER suppress warnings, lint errors, or test failures with annotations
   (`#[allow(...)]`, `noqa`, `@SuppressWarnings`, etc.) unless the suppression itself
@@ -107,33 +112,35 @@ Follow plans/DESIGN.md principles and the Code Style section of CONTRIBUTING.md 
 
 # Build / lint / test (required before marking done)
 
-## Languages
-This project contains Rust, Python, C, C++ and TypeScript code
+This project contains Rust, Python, C, C++, Fortran and TypeScript code. The
+top-level `Makefile` is the single entry point — run `make help` to list every
+target. The full gate before marking work done is:
 
-## Rust
-- Build: `cargo build --workspace`
-- Format: `cargo fmt`
-- Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- Test: `cargo test --workspace`
+```bash
+make all          # = make check test lint  (the gate; run before committing)
+```
 
-## Python
-- Setup (first time): `uv venv .venv && source .venv/bin/activate && uv pip install maturin numpy pytest ruff`
-- Build: `source .venv/bin/activate && cd python/bindings && maturin develop`
-- Lint: `ruff check --config python/bindings/pyproject.toml python/tests/`
-- Format: `ruff format --config python/bindings/pyproject.toml python/tests/`
-- Test: `source .venv/bin/activate && python -m pytest python/tests/ -v`
-- xarray tests: `source .venv/bin/activate && uv pip install -e "python/tensogram-xarray/[dask]" && python -m pytest python/tensogram-xarray/tests/ -v`
-- zarr tests: `source .venv/bin/activate && uv pip install -e python/tensogram-zarr/ && python -m pytest python/tensogram-zarr/tests/ -v`
-- IMPORTANT: ALWAYS run `ruff check` and `ruff format` before committing Python files. CI enforces this.
+Useful focused targets (run `make help` for the complete list):
 
-## TypeScript
-- Requires `wasm-pack` (`cargo install wasm-pack`) and Node ≥ 20
-- Install deps: `cd typescript && npm install`
-- Build: `make ts-build` (runs `wasm-pack build` then `tsc`)
-- Typecheck: `make ts-typecheck` (strict, covers src + tests)
-- Test: `make ts-test` (vitest)
-- Run an example: `cd examples/typescript && npm install && npx tsx 01_encode_decode.ts`
-- User-facing docs: `docs/src/guide/typescript-api.md`
+| Target | What it does |
+|--------|--------------|
+| `make check` | Compile the Rust workspace (default + `--no-default-features`) |
+| `make test` | `rust-test` + `python-test` + `ts-test` |
+| `make lint` | `rust-lint` + `python-lint` + `python-fmt` + `ts-typecheck` |
+| `make fmt` | Check Rust + Python formatting |
+| `make rust-test` / `rust-lint` / `rust-fmt` | Rust only |
+| `make python-build` / `python-test` / `python-lint` / `python-fmt` | Python (maturin into `.venv`) |
+| `make ts-build` / `ts-test` / `ts-typecheck` | TypeScript (wasm-pack + tsc + vitest) |
+| `make cpp-build` / `cpp-test` | C++ wrapper (CMake + GoogleTest) |
+| `make fortran-build` / `fortran-test` / `fortran-f2008-check` | Fortran binding |
+| `make wasm-test` / `doc-examples` / `docs-build` | WASM, runnable doc examples, mdBook |
+| `make version-check` / `bump-version VERSION=X.Y.Z` | Version sync (see *Version control*) |
+
+- IMPORTANT: ALWAYS run `ruff check` and `ruff format` (via `make python-lint`
+  / `python-fmt`) before committing Python files. CI enforces this.
+- For the raw per-tool commands (and the first-time Python/uv setup), see
+  the *Building* and *Testing* sections of `CONTRIBUTING.md` — the Makefile
+  targets wrap exactly those commands, so there is one source of truth.
 
 ## Tensoscope (React SPA)
 
@@ -141,7 +148,7 @@ The interactive web viewer lives at `tensoscope/`.
 It depends on the `@ecmwf.int/tensogram` WASM package at `typescript/`.
 
 ### Prerequisites
-- Build the WASM package first: `cd typescript && make ts-build`
+- Build the WASM package first: `make ts-build` (root Makefile target)
 
 ### Dev server
 ```bash
@@ -175,36 +182,50 @@ Serves at http://localhost:8000/ (set BASE_PATH env var to deploy under a subpat
 
 - NOTE: SINGLE SOURCE OF TRUTH FOR VERSION — The `VERSION` file at the repo root is the
   canonical version for the ENTIRE project. ALL version strings everywhere MUST match it.
-  When bumping the version (e.g. during a release), you MUST update:
-    - `VERSION` (the source of truth)
+
+  **Use the tooling.** Do not hand-edit each manifest:
+    - `make bump-version VERSION=X.Y.Z` rewrites every version string below and
+      then greps the tree for stragglers (it wraps `scripts/bump_version.py`).
+    - `make version-check` verifies every manifest already matches `VERSION`
+      (CI guard; no edits).
+
+  The bump script edits all of these (listed here so the contract is reviewable):
+    - `VERSION` (the source of truth).
     - The root `Cargo.toml` `[workspace.package]` `version` field — all workspace member
-      crates inherit from it via `version.workspace = true`, so a single edit covers:
-        `rust/tensogram`, `rust/tensogram-encodings`, `rust/tensogram-sz3`,
-        `rust/tensogram-sz3-sys`, `rust/tensogram-szip`, `rust/tensogram-cli`,
-        `rust/tensogram-ffi`, `rust/benchmarks`, `examples/rust`.
-    - The excluded Cargo.toml files (not workspace members, updated individually):
-        `python/bindings/Cargo.toml`
-        `rust/tensogram-grib/Cargo.toml`
-        `rust/tensogram-netcdf/Cargo.toml`
-        `rust/tensogram-wasm/Cargo.toml`
-      Also update any pinned workspace dependency version strings in the root `Cargo.toml`
-      (e.g. `tensogram-szip = { …, version = "=0.16.1" }`, `tensogram-sz3`, etc.).
-    - `pyproject.toml` in EVERY Python package under `python/`
-      (currently `bindings`, `tensogram-xarray`, `tensogram-zarr`,
-      `tensogram-anemoi`, `tensogram-earthkit`), AND
-      `examples/jupyter/pyproject.toml` (the Jupyter notebook deps manifest).
-    - `package.json` in EVERY JS package — discover them with
-      `find . -name package.json -not -path './**/node_modules/*' -not -path './target/*'`
-      (currently `typescript/` and `examples/typescript/`; the list grows if
-      new JS packages land).
+      crates inherit it via `version.workspace = true` (covers `rust/tensogram`,
+      `rust/tensogram-encodings`, `rust/tensogram-sz3`, `rust/tensogram-sz3-sys`,
+      `rust/tensogram-szip`, `rust/tensogram-cli`, `rust/tensogram-ffi`,
+      `rust/benchmarks`, `examples/rust`).
+    - The non-member Cargo.toml files (own `version` field): `python/bindings`,
+      `rust/tensogram-grib`, `rust/tensogram-netcdf`, `rust/tensogram-wasm`.
+    - Pinned internal workspace dependency strings (`version = "=X.Y.Z"`) wherever
+      one crate references a sibling — these live in `rust/tensogram`,
+      `rust/tensogram-cli`, `rust/tensogram-ffi`, `rust/tensogram-sz3`,
+      `rust/tensogram-grib`, `rust/tensogram-netcdf`, `rust/tensogram-wasm`, and
+      the root `Cargo.toml`.
+    - `pyproject.toml` in EVERY Python package under `python/` (`bindings`,
+      `tensogram-xarray`, `tensogram-zarr`, `tensogram-anemoi`,
+      `tensogram-earthkit`) AND `examples/jupyter/pyproject.toml`.
+    - Version-controlled `package.json` files (`typescript/` and
+      `examples/typescript/`). NOTE: `typescript/wasm/package.json` is
+      **generated by wasm-pack and git-ignored** — never hand-edit it; it is
+      regenerated from the crate version at build time. (The straggler `find`
+      also turns up `tensoscope/`, `tests/remote-parity/drivers/`, and
+      `.opencode/` — none are on the sync list: tensoscope is a standalone app
+      with its own version, the others are tooling.)
     - `fortran/fpm.toml` `version` and the `project(... VERSION ...)` line in
-      `fortran/CMakeLists.txt` (the Fortran binding).
-    - `CHANGELOG.md` (new release entry header).
-  The provenance encoder in `rust/tensogram/src/encode.rs` reads the version via
-  `env!("CARGO_PKG_VERSION")` which comes from Cargo.toml — so keeping Cargo.toml in sync
-  with VERSION is critical for correct provenance in encoded messages.
-  If ANY of these are out of sync, the release is broken. Always grep for the old version
-  string across the repo to catch stragglers.
+      `fortran/CMakeLists.txt`.
+
+  The script does NOT touch (do these by hand): `CHANGELOG.md` (add the new
+  release entry header), and Python dependency *constraint ranges*
+  (`tensogram>=X.Y.Z,<X.Y+1`) — the `<` ceiling is a deliberate compatibility
+  policy, so the script surfaces them for review rather than rewriting them.
+
+  Why it matters: the provenance encoder in `rust/tensogram/src/encode.rs` reads
+  the version via `env!("CARGO_PKG_VERSION")` (from Cargo.toml), so a Cargo.toml
+  out of sync with `VERSION` stamps wrong provenance into encoded messages. If any
+  version string is out of sync the release is broken — `make version-check`
+  catches it.
 
 # Tracking Work Done
 

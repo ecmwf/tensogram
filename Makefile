@@ -10,6 +10,7 @@
 # Run `make help` to see available targets.
 
 .PHONY: help all check test lint fmt docs clean \
+        bump-version version-check \
         rust-check rust-test rust-lint rust-fmt rust-clippy \
         python-build python-dist python-dist-extras python-test python-lint python-fmt \
         earthkit-install earthkit-test earthkit-lint \
@@ -338,6 +339,15 @@ remote-parity-clean: ## Remove parity-harness build artefacts (keeps fixtures)
 	rm -rf $(_PARITY_DIR)/drivers/rust_driver/target/
 	rm -rf $(_PARITY_DRIVERS_DIR)/node_modules/
 	find $(_PARITY_DIR) -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# ── Versioning ────────────────────────────────────────────────────────────
+
+bump-version: ## Bump the project version everywhere: make bump-version VERSION=X.Y.Z
+	@test -n "$(VERSION)" || { echo "usage: make bump-version VERSION=X.Y.Z"; exit 2; }
+	python3 scripts/bump_version.py $(VERSION)
+
+version-check: ## Verify every manifest matches the VERSION file (CI guard)
+	python3 scripts/bump_version.py --check
 
 # ── Aggregates ────────────────────────────────────────────────────────────
 
