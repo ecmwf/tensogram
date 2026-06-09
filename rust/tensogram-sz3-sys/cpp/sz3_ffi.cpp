@@ -143,25 +143,100 @@ SZ3_FFI_IMPL(int64_t,  i64)
 // decompressing the payload.
 // ---------------------------------------------------------------------------
 
+// Sentinel "invalid" config: N == 0 and dims == nullptr.  The Rust
+// caller (`ParsedConfig::from_compressed`) treats N == 0 as a malformed
+// stream and returns an `Err` instead of proceeding.
+static SZ3_Config_C invalid_config() {
+    SZ3_Config_C c{};
+    c.N    = 0;
+    c.dims = nullptr;
+    return c;
+}
+
 extern "C" SZ3_Config_C sz3_decompress_config(const char* data, size_t len) {
     using namespace SZ3;
 
-    auto pos = reinterpret_cast<const unsigned char*>(data);
+    // SECURITY (SEC-010): this parser reads an SZ3 header and a config
+    // trailer from an attacker-controlled buffer.  SZ3's `read()` and
+    // `Config::load()` do NOT bounds-check against the buffer length, so
+    // a truncated or hostile stream causes out-of-bounds reads (ASan
+    // SEGV), reachable from a `.tgm` with `compression=sz3`.  Validate
+    // every access against `len` here.
+
+    // Fixed 16-byte header: magic(4) + version(4) + compressed_size(8).
+    constexpr size_t kHeaderSize = 4 + 4 + 8;
+    if (data == nullptr || len < kHeaderSize) {
+        return invalid_config();
+    }
+
+    auto base = reinterpret_cast<const unsigned char*>(data);
+    auto pos  = base;
 
     Config cfg;
-
-    // Read 16-byte header: magic(4) + version(4) + compressed_size(8)
     read(cfg.sz3MagicNumber, pos);
     read(cfg.sz3DataVer, pos);
 
     uint64_t cmpDataSize = 0;
     read(cmpDataSize, pos);
+    // `pos` is now `base + 16`.  The compressed payload of `cmpDataSize`
+    // bytes follows, then the config trailer.  Reject any `cmpDataSize`
+    // that would push the config offset at or past the end of the
+    // buffer (no room for even a minimal trailer), or that overflows.
+    const size_t consumed = static_cast<size_t>(pos - base);  // == 16
+    if (cmpDataSize > len || consumed > len - cmpDataSize) {
+        return invalid_config();
+    }
+    const size_t conf_off = consumed + static_cast<size_t>(cmpDataSize);
+    if (conf_off >= len) {
+        // No bytes remain for the config trailer.
+        return invalid_config();
+    }
 
-    // The config is stored immediately after the compressed payload.
-    auto confPos = pos + cmpDataSize;
-    cfg.load(confPos);
+    // SZ3's `Config::load` walks the trailer WITHOUT an explicit end
+    // pointer, so a trailer that claims more bytes than remain would
+    // read past `data + len`.  Since `Config::load` is upstream SZ3
+    // (treated as a black box), contain the over-read by copying the
+    // trailer into a generously zero-padded heap buffer: any read past
+    // the real trailer lands in our zero padding instead of out of
+    // bounds.  The padding (64 KiB) comfortably exceeds any legitimate
+    // serialised SZ3 config.
+    const size_t trailer_len = len - conf_off;
+    constexpr size_t kPad     = 64 * 1024;
+    // A legitimate serialised SZ3 config is far smaller than `kPad`
+    // (64 KiB).  A `trailer_len` exceeding that is therefore a malformed
+    // stream — reject it up front rather than allocating, zeroing and
+    // copying the entire remaining buffer (which, for a hostile stream
+    // with a tiny `cmpDataSize`, can approach `len` and amplify memory
+    // pressure pointlessly before SZ3 rejects the garbage).  This bound
+    // also subsumes the `trailer_len + kPad` overflow guard: with
+    // `trailer_len <= kPad`, the padded size is at most `2 * kPad` and
+    // cannot overflow `size_t`.
+    if (trailer_len > kPad) {
+        return invalid_config();
+    }
+    std::vector<unsigned char> trailer;
+    try {
+        trailer.assign(trailer_len + kPad, 0);
+    } catch (...) {
+        return invalid_config();
+    }
+    std::memcpy(trailer.data(), base + conf_off, trailer_len);
 
-    return config_cpp_to_c(cfg);
+    const unsigned char* confPos = trailer.data();
+    try {
+        cfg.load(confPos);
+        // `config_cpp_to_c` heap-allocates `dims` with `new[]`; a hostile
+        // trailer that makes `cfg.dims.size()` huge can throw
+        // `std::bad_alloc`.  Keep the conversion inside the same try so no
+        // exception crosses the `extern "C"` boundary (which would
+        // terminate the process — a hostile-input DoS on the SEC-010 path).
+        return config_cpp_to_c(cfg);
+    } catch (...) {
+        // A malformed trailer can make SZ3 throw (or the dims allocation
+        // can fail); surface as invalid rather than letting the exception
+        // cross the C ABI boundary.
+        return invalid_config();
+    }
 }
 
 // ---------------------------------------------------------------------------

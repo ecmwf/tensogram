@@ -152,3 +152,73 @@ pub(crate) fn with_object_index(e: TensogramError, idx: usize) -> TensogramError
         other => other,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_object_location_some_and_none() {
+        assert_eq!(fmt_object_location(Some(7)), "object 7");
+        // `None` arm renders the neutral "frame" label (used by the
+        // HashMismatch Display path for non-object frames).
+        assert_eq!(fmt_object_location(None), "frame");
+    }
+
+    #[test]
+    fn hash_mismatch_display_uses_object_location() {
+        let with_obj = TensogramError::HashMismatch {
+            object_index: Some(3),
+            expected: "aaaa".to_string(),
+            actual: "bbbb".to_string(),
+        };
+        assert_eq!(
+            with_obj.to_string(),
+            "hash mismatch on object 3: expected aaaa, got bbbb"
+        );
+        let no_obj = TensogramError::HashMismatch {
+            object_index: None,
+            expected: "aaaa".to_string(),
+            actual: "bbbb".to_string(),
+        };
+        assert_eq!(
+            no_obj.to_string(),
+            "hash mismatch on frame: expected aaaa, got bbbb"
+        );
+    }
+
+    #[test]
+    fn with_object_index_stamps_hash_mismatch() {
+        let e = TensogramError::HashMismatch {
+            object_index: None,
+            expected: "x".to_string(),
+            actual: "y".to_string(),
+        };
+        match with_object_index(e, 5) {
+            TensogramError::HashMismatch { object_index, .. } => {
+                assert_eq!(object_index, Some(5));
+            }
+            other => panic!("expected HashMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_object_index_stamps_missing_hash() {
+        let e = TensogramError::MissingHash { object_index: 0 };
+        match with_object_index(e, 9) {
+            TensogramError::MissingHash { object_index } => assert_eq!(object_index, 9),
+            other => panic!("expected MissingHash, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_object_index_passes_other_errors_through() {
+        // The `other => other` arm must leave non-integrity errors
+        // untouched (no index stamping).
+        let e = TensogramError::Framing("boom".to_string());
+        match with_object_index(e, 42) {
+            TensogramError::Framing(msg) => assert_eq!(msg, "boom"),
+            other => panic!("expected Framing passthrough, got {other:?}"),
+        }
+    }
+}

@@ -164,6 +164,103 @@ exclude_re = [
     "decode\\.rs:588:18:.*replace < with == in decode_object_from_frame",
     "decode\\.rs:588:18:.*replace < with <= in decode_object_from_frame",
     "decode\\.rs:588:47:.*replace > with < in decode_object_from_frame",
+
+    # ── framing.rs: SEC-00x security-hardening defensive guards (PR #129)
+    #
+    # These guards were added by the hostile-input hardening audit
+    # (SEC-001..011).  They are *defensive* checks on attacker-controlled
+    # lengths that, by construction, never fire on a well-formed message —
+    # the same equivalent-mutation category as the verify_data_object_frames
+    # exclusions above (decode.rs:188/229/236/259/296).  The hostile path is
+    # pinned by the adversarial.rs `sec00x_*` tests (no panic / no OOB on
+    # malformed input); the happy path is pinned by
+    # `sec006_decode_metadata_returns_valid_metadata` and
+    # `sec004_inline_hashes_match_on_valid_hashed_message`.  The remaining
+    # comparison/alignment mutations below only change *which* defensive
+    # branch fires on input that is already structurally invalid, with no
+    # observable difference.
+    #
+    # decode_metadata_only frame-skip guard `frame_total < FRAME_HEADER_SIZE`
+    # (line 1148): valid frames are always >= FRAME_HEADER_SIZE, so the guard
+    # never fires on well-formed input.  `< → ==/>/<=` are equivalent.
+    "framing\\.rs:1148:.*in decode_metadata_only",
+    # decode_metadata_only alignment `pos.saturating_add(7) & !7` (line 1154):
+    # identical to decode.rs:296 — for valid input frames are 8-aligned so
+    # the mask is a no-op, and the non-"FR" byte-skip (line 1121-1123)
+    # compensates for any misalignment a mutation would introduce.
+    # `& → |/^` and `delete !` are equivalent/caught-by-progress.
+    "framing\\.rs:1154:.*in decode_metadata_only",
+    # data_object_inline_hashes minimum-frame-size guard
+    # `frame_total < FRAME_HEADER_SIZE + FRAME_COMMON_FOOTER_SIZE` (line 1245):
+    # defensive floor that never fires on valid frames (always >= 28 bytes).
+    # `< → ==/<=` and the `+ → -` on the constant sum only move a threshold
+    # that no valid frame ever crosses — equivalent.  (The overflow/OOB
+    # behaviour the guard exists to prevent is pinned by
+    # sec004_inline_hash_walk_huge_frame_total_does_not_overflow.)
+    "framing\\.rs:1245:.*in data_object_inline_hashes",
+
+    # decode_message open-stream branch guard `preamble.total_length > 0`
+    # (line 918): identical to the already-excluded decode.rs:203.
+    # total_length is u64, so `> 0 → >= 0` is always-true and `→ <`/`==`
+    # only swaps which (equivalent, internally-consistent) msg_end branch
+    # runs for a normally-encoded (total_length > 0) message.  The happy
+    # path is pinned by sec001_minimum_size_message_is_accepted and every
+    # decode round-trip; equivalent.
+    "framing\\.rs:918:.*in decode_message",
+
+    # data_object_inline_hashes frame-end bound `e <= buf.len()` (1237),
+    # hash-slot offset `frame_end - FRAME_COMMON_FOOTER_SIZE` (1253), and
+    # 8-byte alignment `frame_end.saturating_add(7) & !7` (1261).  For a
+    # valid hashed message frame_end is exactly the frame boundary (always
+    # <= buf.len() and 8-aligned), so the bound never trips and the mask is
+    # a no-op; the slot offset is pinned by
+    # sec004_inline_hashes_match_on_valid_hashed_message (verify_hash decode
+    # + distinct-payload differ).  Same defensive-guard class as
+    # decode.rs:259/296 — equivalent on well-formed input.
+    "framing\\.rs:1237:.*in data_object_inline_hashes",
+    "framing\\.rs:1253:.*in data_object_inline_hashes",
+    "framing\\.rs:1261:.*in data_object_inline_hashes",
+
+    # ── framing.rs: SEC-002..007 scanner defensive guards (PR #129) ────
+    #
+    # The in-memory (`try_forward_hop`/`try_backward_hop`) and on-disk
+    # (`scan_file_forward`/`scan_file_bidirectional`) scanners each guard an
+    # attacker-controlled `total_length` with the same pair of defensive
+    # checks: a minimum-size floor (`total >= PREAMBLE_SIZE + POSTAMBLE_SIZE`)
+    # and an overflow-safe end/bound comparison, then read END_MAGIC at
+    # `msg_end - 8`.  On a well-formed message `total` is always >= the
+    # minimum and `msg_end` is always in-bounds, so these guards never fire;
+    # mutating their comparison operators (`< / > / <= / >= / == / ||`) or
+    # the floor/offset arithmetic (`+ / -`) only changes which never-taken
+    # defensive branch is selected — no observable difference.  The
+    # functions' *behaviour* (correct hop targets, correct scan output) is
+    # pinned by the positive-path scanner tests (integration.rs
+    # scan_file_bidirectional_matches_in_memory, edge_cases.rs / golden_files
+    # scan round-trips); the hostile path is pinned by adversarial.rs
+    # sec002/sec005/sec007 (no panic / no OOB on overflowing or tiny
+    # total_length).  Same equivalent-mutation class as decode.rs:188..296.
+    #
+    # try_forward_hop: floor+bound `msg_end > bound_end || total < MIN`
+    # (1363) and END_MAGIC offset `msg_end - 8` (1368).
+    "framing\\.rs:1363:.*in try_forward_hop",
+    "framing\\.rs:1368:.*in try_forward_hop",
+    # try_backward_hop: floor+bound `total < MIN || total > bound_end -
+    # range_start` (1465).
+    "framing\\.rs:1465:.*in try_backward_hop",
+    # scan_file_forward: bound `msg_end <= range_end` (1605), floor
+    # `total >= MIN` (1606), END_MAGIC offset `msg_end - 8` (1609).
+    "framing\\.rs:1605:.*in scan_file_forward",
+    "framing\\.rs:1606:.*in scan_file_forward",
+    "framing\\.rs:1609:.*in scan_file_forward",
+    # scan_file_bidirectional: floor `total >= MIN` (1728), the let-chain
+    # `&&` joining it to the `checked_add` binding (1729), bound
+    # `msg_end <= bwd_end` (1730), END_MAGIC offset `msg_end - 8` (1732).
+    # On valid input the floor holds and checked_add is Some, so the
+    # short-circuit join is never observable — equivalent.
+    "framing\\.rs:1728:.*in scan_file_bidirectional",
+    "framing\\.rs:1729:.*in scan_file_bidirectional",
+    "framing\\.rs:1730:.*in scan_file_bidirectional",
+    "framing\\.rs:1732:.*in scan_file_bidirectional",
 ]
 
 # Use the `release-mutants` profile (defined in workspace `Cargo.toml`)

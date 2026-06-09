@@ -373,3 +373,419 @@ fn metadata_getters_on_null_return_default() {
     assert_eq!(tgm_metadata_get_int(ptr::null(), key.as_ptr(), 7), 7);
     assert!((tgm_metadata_get_float(ptr::null(), key.as_ptr(), 1.25) - 1.25).abs() < 1e-9);
 }
+
+// ── tgm_file_append_with_options ───────────────────────────────────────
+
+fn file_append_with_options(
+    file: *mut TgmFile,
+    meta: &CString,
+    data: &[u8],
+    opts: *const TgmEncodeMaskOptions,
+) -> TgmError {
+    let ptrs = [data.as_ptr()];
+    let lens = [data.len()];
+    tgm_file_append_with_options(
+        file,
+        meta.as_ptr(),
+        ptrs.as_ptr(),
+        lens.as_ptr(),
+        1,
+        ptr::null(),
+        0,
+        opts,
+    )
+}
+
+#[test]
+fn file_append_with_options_null_is_default() {
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    let meta = encode_meta(3, "");
+    assert!(matches!(
+        file_append_with_options(file, &meta, &f32_bytes(&[1.0, 2.0, 3.0]), ptr::null()),
+        TgmError::Ok
+    ));
+    let mut count = 0usize;
+    assert!(matches!(
+        tgm_file_message_count(file, &mut count),
+        TgmError::Ok
+    ));
+    assert_eq!(count, 1);
+    tgm_file_close(file);
+}
+
+#[test]
+fn file_append_with_options_allow_nan() {
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    let opts = TgmEncodeMaskOptions {
+        allow_nan: true,
+        allow_inf: false,
+        nan_mask_method: ptr::null(),
+        pos_inf_mask_method: ptr::null(),
+        neg_inf_mask_method: ptr::null(),
+        small_mask_threshold_bytes: 0,
+    };
+    let meta = encode_meta(2, "");
+    assert!(matches!(
+        file_append_with_options(file, &meta, &f32_bytes(&[f32::NAN, 1.0]), &opts),
+        TgmError::Ok
+    ));
+    tgm_file_close(file);
+}
+
+#[test]
+fn file_append_with_options_null_file_is_invalid_arg() {
+    let opts = TgmEncodeMaskOptions {
+        allow_nan: true,
+        allow_inf: false,
+        nan_mask_method: ptr::null(),
+        pos_inf_mask_method: ptr::null(),
+        neg_inf_mask_method: ptr::null(),
+        small_mask_threshold_bytes: 0,
+    };
+    let meta = encode_meta(1, "");
+    assert!(matches!(
+        file_append_with_options(ptr::null_mut(), &meta, &f32_bytes(&[1.0]), &opts),
+        TgmError::InvalidArg
+    ));
+}
+
+#[test]
+fn file_append_with_options_invalid_utf8_metadata_is_invalid_arg() {
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    let bad = [0xff_u8, 0xfe, 0x00];
+    let data = f32_bytes(&[1.0]);
+    let ptrs = [data.as_ptr()];
+    let lens = [data.len()];
+    assert!(matches!(
+        tgm_file_append_with_options(
+            file,
+            bad.as_ptr() as *const std::os::raw::c_char,
+            ptrs.as_ptr(),
+            lens.as_ptr(),
+            1,
+            ptr::null(),
+            0,
+            ptr::null(),
+        ),
+        TgmError::InvalidArg
+    ));
+    tgm_file_close(file);
+}
+
+#[test]
+fn file_append_with_options_bad_mask_method_is_invalid_arg() {
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    let bad_method = cstring("nope-codec");
+    let opts = TgmEncodeMaskOptions {
+        allow_nan: true,
+        allow_inf: false,
+        nan_mask_method: bad_method.as_ptr(),
+        pos_inf_mask_method: ptr::null(),
+        neg_inf_mask_method: ptr::null(),
+        small_mask_threshold_bytes: 0,
+    };
+    let meta = encode_meta(2, "");
+    assert!(matches!(
+        file_append_with_options(file, &meta, &f32_bytes(&[f32::NAN, 1.0]), &opts),
+        TgmError::InvalidArg
+    ));
+    tgm_file_close(file);
+}
+
+// ── tgm_file_append error paths ────────────────────────────────────────
+
+#[test]
+fn file_append_null_file_is_invalid_arg() {
+    let meta = encode_meta(1, "");
+    assert!(matches!(
+        file_append_one(ptr::null_mut(), &meta, &f32_bytes(&[1.0])),
+        TgmError::InvalidArg
+    ));
+}
+
+#[test]
+fn file_append_invalid_utf8_metadata_is_invalid_arg() {
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    let bad = [0xff_u8, 0xfe, 0x00];
+    let data = f32_bytes(&[1.0]);
+    let ptrs = [data.as_ptr()];
+    let lens = [data.len()];
+    assert!(matches!(
+        tgm_file_append(
+            file,
+            bad.as_ptr() as *const std::os::raw::c_char,
+            ptrs.as_ptr(),
+            lens.as_ptr(),
+            1,
+            ptr::null(),
+            0,
+        ),
+        TgmError::InvalidArg
+    ));
+    tgm_file_close(file);
+}
+
+#[test]
+fn file_append_bad_metadata_is_metadata_error() {
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    let bad = cstring("{ not json ");
+    let data = f32_bytes(&[1.0]);
+    let ptrs = [data.as_ptr()];
+    let lens = [data.len()];
+    assert!(matches!(
+        tgm_file_append(
+            file,
+            bad.as_ptr(),
+            ptrs.as_ptr(),
+            lens.as_ptr(),
+            1,
+            ptr::null(),
+            0,
+        ),
+        TgmError::Metadata
+    ));
+    tgm_file_close(file);
+}
+
+// ── tgm_file_open / create error paths ─────────────────────────────────
+
+#[test]
+fn file_open_null_out_is_invalid_arg() {
+    let path = cstring("/tmp/whatever.tgm");
+    assert!(matches!(
+        tgm_file_open(path.as_ptr(), ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+}
+
+#[test]
+fn file_open_invalid_utf8_path_is_invalid_arg() {
+    let bad = [0xff_u8, 0xfe, 0x00];
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_open(bad.as_ptr() as *const std::os::raw::c_char, &mut file),
+        TgmError::InvalidArg
+    ));
+}
+
+#[test]
+fn file_create_invalid_utf8_path_is_invalid_arg() {
+    let bad = [0xff_u8, 0xfe, 0x00];
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(bad.as_ptr() as *const std::os::raw::c_char, &mut file),
+        TgmError::InvalidArg
+    ));
+}
+
+#[test]
+fn file_create_in_missing_dir_is_io_error() {
+    // `TensogramFile::create` runs `create_dir_all(parent)` before
+    // opening the file, so a merely-absent parent directory is created
+    // (and the call succeeds) — especially when the test runs as root in
+    // CI, where even `/nonexistent/...` is creatable.  To get a
+    // deterministic I/O error regardless of privilege, point the path at
+    // a child *under a regular file*: `create_dir_all` then fails with
+    // NotADirectory because a path component is not a directory.
+    let parent = tempfile::NamedTempFile::new().unwrap();
+    let bogus = parent.path().join("sub").join("out.tgm");
+    let path = cstring(bogus.to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(!matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+}
+
+// ── tgm_file_message_count / decode / read null args ───────────────────
+
+#[test]
+fn file_message_count_null_file_is_invalid_arg() {
+    let mut count = 0usize;
+    assert!(matches!(
+        tgm_file_message_count(ptr::null_mut(), &mut count),
+        TgmError::InvalidArg
+    ));
+}
+
+#[test]
+fn file_decode_message_null_args_is_invalid_arg() {
+    let mut msg: *mut TgmMessage = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_decode_message(ptr::null_mut(), 0, 1, 0, 0, &mut msg),
+        TgmError::InvalidArg
+    ));
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    assert!(matches!(
+        tgm_file_decode_message(file, 0, 1, 0, 0, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    tgm_file_close(file);
+}
+
+#[test]
+fn file_read_message_null_args_and_out_of_range() {
+    let mut raw = TgmBytes {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+    assert!(matches!(
+        tgm_file_read_message(ptr::null_mut(), 0, &mut raw),
+        TgmError::InvalidArg
+    ));
+
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    assert!(matches!(
+        file_append_one(file, &encode_meta(1, ""), &f32_bytes(&[1.0])),
+        TgmError::Ok
+    ));
+    assert!(matches!(
+        tgm_file_read_message(file, 0, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    // out-of-range index.
+    let err = tgm_file_read_message(file, 99, &mut raw);
+    assert!(!matches!(err, TgmError::Ok));
+    if !raw.data.is_null() {
+        tgm_bytes_free(raw);
+    }
+    tgm_file_close(file);
+}
+
+#[test]
+fn file_append_raw_null_args_is_invalid_arg() {
+    let buf = [0u8; 4];
+    assert!(matches!(
+        tgm_file_append_raw(ptr::null_mut(), buf.as_ptr(), buf.len()),
+        TgmError::InvalidArg
+    ));
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    assert!(matches!(
+        tgm_file_append_raw(file, ptr::null(), 4),
+        TgmError::InvalidArg
+    ));
+    tgm_file_close(file);
+}
+
+// ── tgm_file_iter error paths ──────────────────────────────────────────
+
+#[test]
+fn file_iter_create_null_args_is_invalid_arg() {
+    let mut iter: *mut TgmFileIter = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_iter_create(ptr::null_mut(), &mut iter),
+        TgmError::InvalidArg
+    ));
+    let f = tempfile::NamedTempFile::new().unwrap();
+    let path = cstring(f.path().to_str().unwrap());
+    let mut file: *mut TgmFile = ptr::null_mut();
+    assert!(matches!(
+        tgm_file_create(path.as_ptr(), &mut file),
+        TgmError::Ok
+    ));
+    assert!(matches!(
+        tgm_file_iter_create(file, ptr::null_mut()),
+        TgmError::InvalidArg
+    ));
+    tgm_file_close(file);
+}
+
+#[test]
+fn file_iter_next_null_args_is_invalid_arg() {
+    let mut out = TgmBytes {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+    assert!(matches!(
+        tgm_file_iter_next(ptr::null_mut(), &mut out),
+        TgmError::InvalidArg
+    ));
+}
+
+// ── tgm_buffer_iter_next null args ─────────────────────────────────────
+
+#[test]
+fn buffer_iter_next_null_args_is_invalid_arg() {
+    let mut out_buf: *const u8 = ptr::null();
+    let mut out_len = 0usize;
+    assert!(matches!(
+        tgm_buffer_iter_next(ptr::null_mut(), &mut out_buf, &mut out_len),
+        TgmError::InvalidArg
+    ));
+}
+
+// ── metadata getters: invalid-utf8 key returns default ─────────────────
+
+#[test]
+fn metadata_getters_invalid_utf8_key_returns_default() {
+    let meta_json = encode_meta(2, r#""base":[{"level":850}]"#);
+    let wire = encode_one(&meta_json, &f32_bytes(&[1.0, 2.0]));
+    let mut meta: *mut TgmMetadata = ptr::null_mut();
+    assert!(matches!(
+        tgm_decode_metadata(wire.as_ptr(), wire.len(), &mut meta),
+        TgmError::Ok
+    ));
+    let bad = [0xff_u8, 0xfe, 0x00];
+    let key = bad.as_ptr() as *const std::os::raw::c_char;
+    assert_eq!(tgm_metadata_get_int(meta, key, 5), 5);
+    assert!((tgm_metadata_get_float(meta, key, 1.5) - 1.5).abs() < 1e-9);
+    assert!(tgm_metadata_get_string(meta, key).is_null());
+    // null key.
+    assert_eq!(tgm_metadata_get_int(meta, ptr::null(), 9), 9);
+    assert!(tgm_metadata_get_string(meta, ptr::null()).is_null());
+    tgm_metadata_free(meta);
+}

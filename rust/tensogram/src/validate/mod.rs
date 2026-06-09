@@ -4166,4 +4166,1329 @@ mod tests {
             report.issues
         );
     }
+
+    // ══ BATCH 3: coverage closers for the remaining uncovered ERROR/ISSUE
+    //    branches identified via `cargo llvm-cov` on validate/{structure,
+    //    metadata,integrity,fidelity}.rs.  Each test targets one path. ══
+
+    /// Re-serialise `cbor` with its top-level map keys reversed.  The
+    /// result still parses (ciborium ignores order) but fails
+    /// `verify_canonical_cbor`, which requires keys in byte-lex order.
+    /// The input map MUST have at least two keys for the reversal to
+    /// produce a non-canonical ordering.
+    fn make_noncanonical_cbor(cbor: &[u8]) -> Vec<u8> {
+        let value: ciborium::Value = ciborium::from_reader(cbor).unwrap();
+        let ciborium::Value::Map(mut pairs) = value else {
+            panic!("expected a CBOR map");
+        };
+        assert!(
+            pairs.len() >= 2,
+            "need >=2 keys to build non-canonical CBOR, got {}",
+            pairs.len()
+        );
+        pairs.reverse();
+        let mut out = Vec::new();
+        ciborium::into_writer(&ciborium::Value::Map(pairs), &mut out).unwrap();
+        out
+    }
+
+    /// A `GlobalMetadata` whose canonical CBOR has multiple top-level
+    /// keys (`_extra_` and `base`), so that key-order reversal yields a
+    /// genuinely non-canonical encoding.  `base` carries one entry to
+    /// stay within the single-object messages used by these tests.
+    fn multikey_metadata() -> GlobalMetadata {
+        let mut base_entry = BTreeMap::new();
+        base_entry.insert(
+            "mars".to_string(),
+            ciborium::Value::Text("param".to_string()),
+        );
+        let mut extra = BTreeMap::new();
+        extra.insert("note".to_string(), ciborium::Value::Text("x".to_string()));
+        GlobalMetadata {
+            base: vec![base_entry],
+            extra,
+            ..GlobalMetadata::default()
+        }
+    }
+
+    /// Build a header-metadata frame around arbitrary (possibly
+    /// non-canonical) metadata CBOR bytes.
+    fn build_metadata_frame_with_cbor(cbor: &[u8]) -> Vec<u8> {
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+        let total_length = (FRAME_HEADER_SIZE + cbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(FRAME_MAGIC);
+        frame.extend_from_slice(&1u16.to_be_bytes()); // HeaderMetadata
+        frame.extend_from_slice(&1u16.to_be_bytes());
+        frame.extend_from_slice(&0u16.to_be_bytes());
+        frame.extend_from_slice(&total_length.to_be_bytes());
+        frame.extend_from_slice(cbor);
+        frame.extend_from_slice(&0u64.to_be_bytes()); // hash slot
+        frame.extend_from_slice(FRAME_END);
+        frame
+    }
+
+    // ── Structure (Level 1) ─────────────────────────────────────────────
+
+    /// structure.rs:252-261 — fewer than 2 bytes remain before `msg_end`
+    /// and they are non-zero, producing a trailing `NonZeroPadding` warning.
+    #[test]
+    fn structure_trailing_single_nonzero_byte() {
+        // Build a valid message, then enlarge it by one non-zero byte
+        // inside the frame region (between the last frame and the
+        // postamble) so the walk ends with `pos + 2 > msg_end`.
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+        let mut msg = build_raw_message(1u16, &[meta_frame, data_frame], None, false);
+
+        // Splice one non-zero byte just before the postamble and bump
+        // total_length / mirrored postamble length so msg_end lands one
+        // byte past the last frame's aligned end.
+        let pa_start = msg.len() - POSTAMBLE_SIZE;
+        msg.insert(pa_start, 0xAB);
+        let new_total = msg.len() as u64;
+        msg[16..24].copy_from_slice(&new_total.to_be_bytes());
+        let new_pa_start = msg.len() - POSTAMBLE_SIZE;
+        msg[new_pa_start + 8..new_pa_start + 16].copy_from_slice(&new_total.to_be_bytes());
+
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NonZeroPadding),
+            "expected trailing NonZeroPadding, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// structure.rs:276-284 — non-zero bytes that are NOT a frame magic
+    /// appear where a frame header is expected (mid-message padding).
+    #[test]
+    fn structure_nonzero_padding_not_frame_magic() {
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+        let mut msg = build_raw_message(1u16, &[meta_frame, data_frame], None, false);
+
+        // Overwrite the first two bytes of the data-object frame header
+        // (the "FR" magic) with non-zero junk that is not FRAME_MAGIC.
+        let (pos, _) = find_data_object_frame(&msg).expect("no DataObject");
+        msg[pos] = 0x11;
+        msg[pos + 1] = 0x22;
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NonZeroPadding),
+            "expected NonZeroPadding for junk-where-frame-expected, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// structure.rs:500-510 — `cbor_offset` is small but out of range
+    /// (`cbor_offset < FRAME_HEADER_SIZE`), producing `CborOffsetInvalid`.
+    #[test]
+    fn structure_cbor_offset_below_header() {
+        let msg = make_test_message();
+        let (pos, fh_total) = find_data_object_frame(&msg).expect("no DataObject");
+        let frame_end = pos + fh_total;
+        // v3 data-object footer is [cbor_offset u64][hash u64][ENDF 4], so
+        // cbor_offset sits 20 bytes before the frame end.
+        let cbor_off_pos = frame_end - 20;
+        let mut patched = msg.clone();
+        // 4 < FRAME_HEADER_SIZE (16) → out of range, but pos+4 doesn't overflow.
+        patched[cbor_off_pos..cbor_off_pos + 8].copy_from_slice(&4u64.to_be_bytes());
+        let report = validate_message(&patched, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::CborOffsetInvalid),
+            "expected CborOffsetInvalid, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// structure.rs:523-529 — CBOR-before layout (flag clear) with a valid
+    /// CBOR descriptor.  The cursor finds the exact CBOR length and the
+    /// object is admitted, exercising the success arm of the cursor parse.
+    #[test]
+    fn structure_cbor_before_valid_descriptor() {
+        use crate::wire::{DATA_OBJECT_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        // Valid descriptor CBOR, then payload, in CBOR-before order.
+        let desc = default_desc();
+        let cbor = crate::metadata::object_descriptor_to_cbor(&desc).unwrap();
+        let payload = vec![0u8; 32];
+        let cbor_offset = FRAME_HEADER_SIZE as u64; // CBOR right after header
+        let body_len = cbor.len() + payload.len() + DATA_OBJECT_FOOTER_SIZE;
+        let total_length = (FRAME_HEADER_SIZE + body_len) as u64;
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(FRAME_MAGIC);
+        frame.extend_from_slice(&9u16.to_be_bytes()); // NTensorFrame
+        frame.extend_from_slice(&1u16.to_be_bytes());
+        frame.extend_from_slice(&0u16.to_be_bytes()); // flags=0 → CBOR before payload
+        frame.extend_from_slice(&total_length.to_be_bytes());
+        frame.extend_from_slice(&cbor);
+        frame.extend_from_slice(&payload);
+        frame.extend_from_slice(&cbor_offset.to_be_bytes());
+        frame.extend_from_slice(&0u64.to_be_bytes()); // hash slot
+        frame.extend_from_slice(FRAME_END);
+
+        let meta_frame = build_metadata_frame();
+        let msg = build_raw_message(1u16, &[meta_frame, frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        // The CBOR-before success path must yield exactly one data object
+        // with no structural CBOR-boundary error.
+        assert_eq!(report.object_count, 1, "issues: {:?}", report.issues);
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::CborBeforeBoundaryUnknown),
+            "valid CBOR-before should not flag boundary unknown: {:?}",
+            report.issues
+        );
+    }
+
+    /// structure.rs:586 — the last frame's aligned end exceeds `msg_end`,
+    /// so `pos` advances to `frame_end` (not the 8-byte-aligned position).
+    /// We build a message whose final data-object frame ends exactly at
+    /// `msg_end` with a length that is not a multiple of 8.
+    #[test]
+    fn structure_last_frame_unaligned_end() {
+        use crate::wire::{DATA_OBJECT_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        // Build a data-object frame with a payload length chosen so the
+        // frame's total_length is NOT a multiple of 8 (e.g. payload=33).
+        let desc = default_desc();
+        let cbor = crate::metadata::object_descriptor_to_cbor(&desc).unwrap();
+        let payload = vec![0u8; 33];
+        let body_len = payload.len() + cbor.len() + DATA_OBJECT_FOOTER_SIZE;
+        let total_length = (FRAME_HEADER_SIZE + body_len) as u64;
+        // CBOR-after layout: payload, then cbor, then footer.
+        let cbor_offset = (FRAME_HEADER_SIZE + payload.len()) as u64;
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(FRAME_MAGIC);
+        frame.extend_from_slice(&9u16.to_be_bytes());
+        frame.extend_from_slice(&1u16.to_be_bytes());
+        frame.extend_from_slice(&crate::wire::DataObjectFlags::CBOR_AFTER_PAYLOAD.to_be_bytes());
+        frame.extend_from_slice(&total_length.to_be_bytes());
+        frame.extend_from_slice(&payload);
+        frame.extend_from_slice(&cbor);
+        frame.extend_from_slice(&cbor_offset.to_be_bytes());
+        frame.extend_from_slice(&0u64.to_be_bytes());
+        frame.extend_from_slice(FRAME_END);
+
+        // Manually assemble so the data-object frame is the LAST frame and
+        // ends exactly at the postamble (no trailing alignment region).
+        use crate::wire::{END_MAGIC, MAGIC, WIRE_VERSION};
+        let meta_frame = build_metadata_frame();
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+        out.extend_from_slice(&1u16.to_be_bytes()); // HEADER_METADATA flag
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes()); // total_length placeholder
+        out.extend_from_slice(&meta_frame);
+        let pad = (8 - (out.len() % 8)) % 8;
+        out.extend(std::iter::repeat_n(0u8, pad));
+        out.extend_from_slice(&frame); // last frame; ends unaligned
+        let pa_offset = out.len();
+        out.extend_from_slice(&(pa_offset as u64).to_be_bytes()); // ffo
+        out.extend_from_slice(&0u64.to_be_bytes()); // total placeholder
+        out.extend_from_slice(END_MAGIC);
+        let total = out.len() as u64;
+        out[16..24].copy_from_slice(&total.to_be_bytes());
+        out[pa_offset + 8..pa_offset + 16].copy_from_slice(&total.to_be_bytes());
+
+        // No panic, and the object is walked successfully.
+        let report = validate_message(&out, &ValidateOptions::default());
+        assert_eq!(report.object_count, 1, "issues: {:?}", report.issues);
+    }
+
+    /// structure.rs:616 — declared `first_footer_offset` does not match the
+    /// observed first footer position, producing a `FooterOffsetMismatch`
+    /// warning.  We add a real FooterMetadata frame but leave the
+    /// postamble's FFO pointing at the postamble (no footers).
+    #[test]
+    fn structure_footer_offset_mismatch_warning() {
+        use crate::wire::{
+            END_MAGIC, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC, MAGIC, WIRE_VERSION,
+        };
+
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+
+        // A real FooterMetadata frame (type 7).
+        let footer_cbor =
+            crate::metadata::global_metadata_to_cbor(&GlobalMetadata::default()).unwrap();
+        let ftl = (FRAME_HEADER_SIZE + footer_cbor.len() + FRAME_END.len()) as u64;
+        let mut footer = Vec::new();
+        footer.extend_from_slice(FRAME_MAGIC);
+        footer.extend_from_slice(&7u16.to_be_bytes());
+        footer.extend_from_slice(&1u16.to_be_bytes());
+        footer.extend_from_slice(&0u16.to_be_bytes());
+        footer.extend_from_slice(&ftl.to_be_bytes());
+        footer.extend_from_slice(&footer_cbor);
+        footer.extend_from_slice(FRAME_END);
+
+        let flags = 1u16 | (1u16 << 1); // HEADER_METADATA | FOOTER_METADATA
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+        out.extend_from_slice(&flags.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes());
+        for f in [&meta_frame, &data_frame, &footer] {
+            out.extend_from_slice(f);
+            let pad = (8 - (out.len() % 8)) % 8;
+            out.extend(std::iter::repeat_n(0u8, pad));
+        }
+        let pa_offset = out.len();
+        // Declare FFO = postamble offset (WRONG — the footer is earlier).
+        out.extend_from_slice(&(pa_offset as u64).to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes());
+        out.extend_from_slice(END_MAGIC);
+        let total = out.len() as u64;
+        out[16..24].copy_from_slice(&total.to_be_bytes());
+        out[pa_offset + 8..pa_offset + 16].copy_from_slice(&total.to_be_bytes());
+
+        let report = validate_message(&out, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::FooterOffsetMismatch),
+            "expected FooterOffsetMismatch, got: {:?}",
+            report.issues
+        );
+    }
+
+    // ── Metadata (Level 2) ──────────────────────────────────────────────
+
+    /// metadata.rs:31-37 — `--canonical` mode flags a non-canonical
+    /// metadata CBOR map with `MetadataCborNonCanonical` (a warning).
+    #[test]
+    fn metadata_cbor_non_canonical_warns() {
+        let canonical = crate::metadata::global_metadata_to_cbor(&multikey_metadata()).unwrap();
+        let noncanon = make_noncanonical_cbor(&canonical);
+        let meta_frame = build_metadata_frame_with_cbor(&noncanon);
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+        let msg = build_raw_message(1u16, &[meta_frame, data_frame], None, false);
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Metadata,
+            check_canonical: true,
+            checksum_only: false,
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::MetadataCborNonCanonical),
+            "expected MetadataCborNonCanonical, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// metadata.rs:109-117 — an index frame with non-CBOR garbage triggers
+    /// `IndexCborParseFailed`.
+    #[test]
+    fn metadata_index_cbor_parse_failed() {
+        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+
+        let garbage = vec![0xFFu8, 0xFF, 0xFF, 0xFF];
+        let idx_total = (FRAME_HEADER_SIZE + garbage.len() + FRAME_END.len()) as u64;
+        let mut idx_frame = Vec::new();
+        idx_frame.extend_from_slice(FRAME_MAGIC);
+        idx_frame.extend_from_slice(&2u16.to_be_bytes()); // HeaderIndex
+        idx_frame.extend_from_slice(&1u16.to_be_bytes());
+        idx_frame.extend_from_slice(&0u16.to_be_bytes());
+        idx_frame.extend_from_slice(&idx_total.to_be_bytes());
+        idx_frame.extend_from_slice(&garbage);
+        idx_frame.extend_from_slice(FRAME_END);
+
+        let flags = 1u16 | (1u16 << 2); // HEADER_METADATA | HEADER_INDEX
+        let msg = build_raw_message(flags, &[meta_frame, idx_frame, data_frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::IndexCborParseFailed),
+            "expected IndexCborParseFailed, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// metadata.rs:157-163 — `--canonical` flags a non-canonical preceder
+    /// metadata CBOR map with `PrecederCborNonCanonical` (a warning).
+    #[test]
+    fn metadata_preceder_cbor_non_canonical_warns() {
+        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        // Preceder base must have exactly one entry to stay error-free;
+        // an extra top-level key gives the reversal something to reorder.
+        let mut prec_base = BTreeMap::new();
+        prec_base.insert("mars".to_string(), ciborium::Value::Text("p".to_string()));
+        let mut prec_extra = BTreeMap::new();
+        prec_extra.insert("note".to_string(), ciborium::Value::Text("x".to_string()));
+        let prec_meta = GlobalMetadata {
+            base: vec![prec_base],
+            extra: prec_extra,
+            ..GlobalMetadata::default()
+        };
+        let prec_cbor = crate::metadata::global_metadata_to_cbor(&prec_meta).unwrap();
+        let noncanon = make_noncanonical_cbor(&prec_cbor);
+        let prec_total = (FRAME_HEADER_SIZE + noncanon.len() + FRAME_END.len()) as u64;
+        let mut preceder = Vec::new();
+        preceder.extend_from_slice(FRAME_MAGIC);
+        preceder.extend_from_slice(&8u16.to_be_bytes()); // PrecederMetadata
+        preceder.extend_from_slice(&1u16.to_be_bytes());
+        preceder.extend_from_slice(&0u16.to_be_bytes());
+        preceder.extend_from_slice(&prec_total.to_be_bytes());
+        preceder.extend_from_slice(&noncanon);
+        preceder.extend_from_slice(FRAME_END);
+
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+        let flags = 1u16 | (1u16 << 6); // HEADER_METADATA | PRECEDER_METADATA
+        let msg = build_raw_message(flags, &[meta_frame, preceder, data_frame], None, false);
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Metadata,
+            check_canonical: true,
+            checksum_only: false,
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::PrecederCborNonCanonical),
+            "expected PrecederCborNonCanonical, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// metadata.rs:180-188 — a preceder frame with non-CBOR garbage
+    /// triggers `PrecederCborParseFailed`.
+    #[test]
+    fn metadata_preceder_cbor_parse_failed() {
+        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        let garbage = vec![0xFFu8, 0xFF, 0xFF, 0xFF];
+        let prec_total = (FRAME_HEADER_SIZE + garbage.len() + FRAME_END.len()) as u64;
+        let mut preceder = Vec::new();
+        preceder.extend_from_slice(FRAME_MAGIC);
+        preceder.extend_from_slice(&8u16.to_be_bytes()); // PrecederMetadata
+        preceder.extend_from_slice(&1u16.to_be_bytes());
+        preceder.extend_from_slice(&0u16.to_be_bytes());
+        preceder.extend_from_slice(&prec_total.to_be_bytes());
+        preceder.extend_from_slice(&garbage);
+        preceder.extend_from_slice(FRAME_END);
+
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+        let flags = 1u16 | (1u16 << 6); // HEADER_METADATA | PRECEDER_METADATA
+        let msg = build_raw_message(flags, &[meta_frame, preceder, data_frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::PrecederCborParseFailed),
+            "expected PrecederCborParseFailed, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// metadata.rs:218-224 — `--canonical` flags a non-canonical per-object
+    /// descriptor CBOR map with `DescriptorCborNonCanonical` (a warning).
+    #[test]
+    fn metadata_descriptor_cbor_non_canonical_warns() {
+        use crate::wire::{
+            DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC,
+        };
+
+        let desc = default_desc();
+        let cbor = crate::metadata::object_descriptor_to_cbor(&desc).unwrap();
+        let noncanon = make_noncanonical_cbor(&cbor);
+
+        let payload = vec![0u8; 32];
+        let cbor_offset = (FRAME_HEADER_SIZE + payload.len()) as u64;
+        let total_length =
+            (FRAME_HEADER_SIZE + payload.len() + noncanon.len() + DATA_OBJECT_FOOTER_SIZE) as u64;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(FRAME_MAGIC);
+        frame.extend_from_slice(&9u16.to_be_bytes());
+        frame.extend_from_slice(&1u16.to_be_bytes());
+        frame.extend_from_slice(&DataObjectFlags::CBOR_AFTER_PAYLOAD.to_be_bytes());
+        frame.extend_from_slice(&total_length.to_be_bytes());
+        frame.extend_from_slice(&payload);
+        frame.extend_from_slice(&noncanon);
+        frame.extend_from_slice(&cbor_offset.to_be_bytes());
+        frame.extend_from_slice(&0u64.to_be_bytes());
+        frame.extend_from_slice(FRAME_END);
+
+        let meta_frame = build_metadata_frame();
+        let msg = build_raw_message(1u16, &[meta_frame, frame], None, false);
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Metadata,
+            check_canonical: true,
+            checksum_only: false,
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::DescriptorCborNonCanonical),
+            "expected DescriptorCborNonCanonical, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// metadata.rs:377-383 — a base entry's `_reserved_` IS a map but is
+    /// missing the required `tensor` key, producing a `ReservedMissingTensor`
+    /// warning.
+    #[test]
+    fn metadata_reserved_missing_tensor_warns() {
+        // Craft base[0]._reserved_ = { "other": 1 } (a map without "tensor").
+        let mut reserved = BTreeMap::new();
+        reserved.insert("other".to_string(), ciborium::Value::Integer(1i64.into()));
+        let reserved_value = ciborium::Value::Map(
+            reserved
+                .into_iter()
+                .map(|(k, v)| (ciborium::Value::Text(k), v))
+                .collect(),
+        );
+        let mut base_entry = BTreeMap::new();
+        base_entry.insert("_reserved_".to_string(), reserved_value);
+        let meta = GlobalMetadata {
+            base: vec![base_entry],
+            ..GlobalMetadata::default()
+        };
+        let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+        let meta_frame = build_metadata_frame_with_cbor(&meta_cbor);
+
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+        let msg = build_raw_message(1u16, &[meta_frame, data_frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::ReservedMissingTensor),
+            "expected ReservedMissingTensor, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// Build a single-object message whose data-object descriptor carries
+    /// a `masks` sub-map.  `payload` is the full payload region (data
+    /// payload + trailing mask bytes); `cbor` is the descriptor CBOR.
+    /// Uses CBOR-after layout and no hashing (HASHES_PRESENT clear).
+    fn build_message_with_descriptor_cbor(cbor: &[u8], payload: &[u8]) -> Vec<u8> {
+        use crate::wire::{
+            DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC,
+        };
+        let cbor_offset = (FRAME_HEADER_SIZE + payload.len()) as u64;
+        let total_length =
+            (FRAME_HEADER_SIZE + payload.len() + cbor.len() + DATA_OBJECT_FOOTER_SIZE) as u64;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(FRAME_MAGIC);
+        frame.extend_from_slice(&9u16.to_be_bytes());
+        frame.extend_from_slice(&1u16.to_be_bytes());
+        frame.extend_from_slice(&DataObjectFlags::CBOR_AFTER_PAYLOAD.to_be_bytes());
+        frame.extend_from_slice(&total_length.to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame.extend_from_slice(cbor);
+        frame.extend_from_slice(&cbor_offset.to_be_bytes());
+        frame.extend_from_slice(&0u64.to_be_bytes());
+        frame.extend_from_slice(FRAME_END);
+        let meta_frame = build_metadata_frame();
+        build_raw_message(1u16, &[meta_frame, frame], None, false)
+    }
+
+    /// metadata.rs:333-348,362 — a descriptor carrying a valid `masks`
+    /// sub-map: Level 2 splits the payload region into (data, mask) using
+    /// the smallest mask offset.  The mask offset is in range, so no error.
+    #[test]
+    fn metadata_masks_split_payload_in_range() {
+        use crate::types::{MaskDescriptor, MasksMetadata};
+
+        // 2 f64 data payload (16 bytes), then a 1-byte mask blob at offset 16.
+        let data_payload = vec![0u8; 16];
+        let mask_blob = vec![0x00u8];
+        let mut payload = data_payload.clone();
+        payload.extend_from_slice(&mask_blob);
+
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: Some(MasksMetadata {
+                nan: Some(MaskDescriptor {
+                    method: "none".to_string(),
+                    offset: 16, // within the 17-byte payload region
+                    length: 1,
+                    params: BTreeMap::new(),
+                }),
+                pos_inf: None,
+                neg_inf: None,
+            }),
+        };
+        let cbor = crate::metadata::object_descriptor_to_cbor(&desc).unwrap();
+        let msg = build_message_with_descriptor_cbor(&cbor, &payload);
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Metadata,
+            check_canonical: false,
+            checksum_only: false,
+        };
+        let report = validate_message(&msg, &opts);
+        // The split must succeed: no mask-offset error.
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|i| matches!(i.code, IssueCode::DescriptorCborParseFailed)
+                    && i.description.contains("mask offset")),
+            "valid in-range mask offset should not error, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// metadata.rs:349-360 — a descriptor whose smallest mask offset is
+    /// beyond the payload region triggers a `DescriptorCborParseFailed`
+    /// error ("mask offset ... out of range").
+    #[test]
+    fn metadata_mask_offset_out_of_range() {
+        use crate::types::{MaskDescriptor, MasksMetadata};
+
+        let payload = vec![0u8; 16]; // 16-byte payload region
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: Some(MasksMetadata {
+                nan: Some(MaskDescriptor {
+                    method: "none".to_string(),
+                    offset: 9999, // far past the 16-byte payload region
+                    length: 1,
+                    params: BTreeMap::new(),
+                }),
+                pos_inf: None,
+                neg_inf: None,
+            }),
+        };
+        let cbor = crate::metadata::object_descriptor_to_cbor(&desc).unwrap();
+        let msg = build_message_with_descriptor_cbor(&cbor, &payload);
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Metadata,
+            check_canonical: false,
+            checksum_only: false,
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::DescriptorCborParseFailed
+                    && i.description.contains("mask offset")),
+            "expected mask-offset-out-of-range error, got: {:?}",
+            report.issues
+        );
+    }
+
+    // ── Integrity (Level 3) ─────────────────────────────────────────────
+
+    /// integrity.rs:175 — two identical aggregate HashFrames (HeaderHash +
+    /// FooterHash carrying the same hash list) take the "identical — fine"
+    /// arm without raising `HashMismatch`.
+    #[test]
+    fn integrity_identical_header_and_footer_hash_frames() {
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+
+        let build_hash_frame = |ft_byte: u16, hex: &str| -> Vec<u8> {
+            let hf = crate::types::HashFrame {
+                algorithm: "xxh3".to_string(),
+                hashes: vec![hex.to_string()],
+            };
+            let hcbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
+            let htl = (FRAME_HEADER_SIZE + hcbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
+            let mut out = Vec::new();
+            out.extend_from_slice(FRAME_MAGIC);
+            out.extend_from_slice(&ft_byte.to_be_bytes());
+            out.extend_from_slice(&1u16.to_be_bytes());
+            out.extend_from_slice(&0u16.to_be_bytes());
+            out.extend_from_slice(&htl.to_be_bytes());
+            out.extend_from_slice(&hcbor);
+            out.extend_from_slice(&0u64.to_be_bytes());
+            out.extend_from_slice(b"ENDF");
+            out
+        };
+        let header_hash = build_hash_frame(3, "aaaaaaaaaaaaaaaa");
+        let footer_hash = build_hash_frame(5, "aaaaaaaaaaaaaaaa"); // identical
+
+        let flags = 1u16 | (1u16 << 4) | (1u16 << 5);
+        let msg = build_raw_message(
+            flags,
+            &[meta_frame, header_hash, data_frame, footer_hash],
+            None,
+            false,
+        );
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::HashMismatch && i.description.contains("disagree")),
+            "identical aggregate HashFrames must not disagree, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// integrity.rs:207-216 — checksum-only mode skips Level 2, so Level 3
+    /// must re-parse the descriptor; when that CBOR is corrupt, Level 3
+    /// reports `HashVerificationError` ("failed to parse descriptor").
+    #[test]
+    fn integrity_descriptor_reparse_failure() {
+        use crate::wire::{
+            DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC,
+        };
+
+        // Data-object frame whose descriptor CBOR region is garbage, but
+        // whose structure (cbor_offset, ENDF, length) is otherwise valid so
+        // the Level-1 walk still admits the object.
+        let payload = vec![0u8; 32];
+        let bad_cbor = vec![0xA5u8, 0xFF, 0xFF, 0xFF]; // map(5) header then junk
+        let cbor_offset = (FRAME_HEADER_SIZE + payload.len()) as u64;
+        let total_length =
+            (FRAME_HEADER_SIZE + payload.len() + bad_cbor.len() + DATA_OBJECT_FOOTER_SIZE) as u64;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(FRAME_MAGIC);
+        frame.extend_from_slice(&9u16.to_be_bytes());
+        frame.extend_from_slice(&1u16.to_be_bytes());
+        frame.extend_from_slice(&DataObjectFlags::CBOR_AFTER_PAYLOAD.to_be_bytes());
+        frame.extend_from_slice(&total_length.to_be_bytes());
+        frame.extend_from_slice(&payload);
+        frame.extend_from_slice(&bad_cbor);
+        frame.extend_from_slice(&cbor_offset.to_be_bytes());
+        frame.extend_from_slice(&0u64.to_be_bytes());
+        frame.extend_from_slice(FRAME_END);
+
+        let meta_frame = build_metadata_frame();
+        // HASHES_PRESENT bit (3) set so Level 3 attempts hash verification
+        // and the descriptor re-parse path runs.
+        let flags = 1u16 | (1u16 << 3);
+        let msg = build_raw_message(flags, &[meta_frame, frame], None, false);
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Integrity,
+            checksum_only: true, // skip Level 2 → Level 3 re-parses descriptor
+            check_canonical: false,
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::HashVerificationError),
+            "expected HashVerificationError on descriptor re-parse, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// integrity.rs:260-271 — the aggregate HashFrame's i-th entry
+    /// disagrees with the i-th inline hash slot, producing a per-object
+    /// `HashMismatch` keyed by object index.
+    #[test]
+    fn integrity_aggregate_disagrees_with_inline_slot() {
+        // Encode a normal hashed message (inline slots correct, aggregate
+        // matches).  Then patch ONLY the aggregate HashFrame's hash list so
+        // it disagrees with the (still-correct) inline slot.
+        let msg = make_test_message();
+        let mut patched = msg.clone();
+
+        // Find the HeaderHash frame (type 3) and rewrite its CBOR hash
+        // string to a value that won't match the inline slot.
+        let mut pos = PREAMBLE_SIZE;
+        let mut hash_frame_pos = None;
+        for _ in 0..64 {
+            if pos + FRAME_HEADER_SIZE > patched.len() || &patched[pos..pos + 2] != b"FR" {
+                break;
+            }
+            let ft = u16::from_be_bytes([patched[pos + 2], patched[pos + 3]]);
+            let tl = u64::from_be_bytes(patched[pos + 8..pos + 16].try_into().unwrap()) as usize;
+            if ft == 3 {
+                hash_frame_pos = Some((pos, tl));
+                break;
+            }
+            pos = (pos + tl + 7) & !7;
+        }
+        let (hpos, htl) = hash_frame_pos.expect("no HeaderHash frame");
+        // The hashes are 16-char lowercase hex strings inside the CBOR.
+        // Replace the first occurrence of such a run with all 'f's so it
+        // differs from the genuine inline slot.
+        let region_start = hpos + FRAME_HEADER_SIZE;
+        let region_end = hpos + htl;
+        let mut replaced = false;
+        let hexset = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+        let mut i = region_start;
+        while i + 16 <= region_end {
+            if (0..16).all(|k| hexset(patched[i + k])) {
+                // Flip to a clearly-different hex string.
+                for k in 0..16 {
+                    patched[i + k] = b'0';
+                }
+                replaced = true;
+                break;
+            }
+            i += 1;
+        }
+        assert!(replaced, "could not find a 16-char hex hash in HashFrame");
+
+        let report = validate_message(&patched, &ValidateOptions::default());
+        assert!(
+            report.issues.iter().any(|issue| issue.code == IssueCode::HashMismatch
+                && issue.object_index == Some(0)),
+            "expected per-object HashMismatch from aggregate/inline disagreement, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// integrity.rs:287-295 — a non-raw (compressed) object whose shape
+    /// product exceeds usize fails pipeline config with
+    /// `PipelineConfigFailed` ("shape product ... does not fit in usize").
+    /// On 64-bit this requires the u64 product to fit in u64 but exceed
+    /// usize — impossible — so we instead drive the sibling path where the
+    /// product itself overflows u64 (`shape_product == None`).  The
+    /// genuine usize-only branch is reported as unreachable on 64-bit.
+    #[test]
+    fn integrity_compressed_shape_overflow_sets_decode_failed() {
+        let msg = make_message_with_patched_descriptor(|v| {
+            cbor_map_set(v, "compression", ciborium::Value::Text("zstd".to_string()));
+            cbor_map_set(v, "ndim", ciborium::Value::Integer(2.into()));
+            cbor_map_set(
+                v,
+                "shape",
+                ciborium::Value::Array(vec![
+                    ciborium::Value::Integer(u64::MAX.into()),
+                    ciborium::Value::Integer(2.into()),
+                ]),
+            );
+            cbor_map_set(
+                v,
+                "strides",
+                ciborium::Value::Array(vec![
+                    ciborium::Value::Integer(8.into()),
+                    ciborium::Value::Integer(8.into()),
+                ]),
+            );
+        });
+        let report = validate_message(&msg, &ValidateOptions::default());
+        // Shape overflow at Level 2 + decode-skip at Level 3 (decode_state
+        // forced to DecodeFailed without a decode attempt).
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::ShapeOverflow),
+            "expected ShapeOverflow, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// integrity.rs:314 — full mode caches decoded bytes for a non-raw
+    /// (zstd) object so Level 4 can reuse them.  Exercises the
+    /// `cache_decoded` success arm.
+    #[test]
+    fn integrity_caches_decoded_for_fidelity() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "zstd".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let data: Vec<u8> = [1.0f64, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .collect();
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        // Full mode runs Integrity with cache_decoded=true, then Fidelity.
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report.is_ok(),
+            "full-mode zstd roundtrip should pass: {:?}",
+            report.issues
+        );
+    }
+
+    // ── Fidelity (Level 4) ──────────────────────────────────────────────
+
+    /// fidelity.rs:73 — an object whose descriptor failed to parse at
+    /// Level 2 is skipped at Level 4 (the `None => continue` arm).
+    #[test]
+    fn fidelity_skips_object_without_descriptor() {
+        // A descriptor with an unknown dtype string fails to parse at
+        // Level 2 (DescriptorCborParseFailed), so Level 4 has no descriptor
+        // and skips the object — no panic, no fidelity issue for it.
+        let msg = make_message_with_patched_descriptor(|v| {
+            cbor_map_set(v, "dtype", ciborium::Value::Text("not_a_dtype".to_string()));
+        });
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::DescriptorCborParseFailed),
+            "expected DescriptorCborParseFailed, got: {:?}",
+            report.issues
+        );
+        // No NaN/Inf/size issues, because the object was skipped at Level 4.
+        assert!(
+            !report.issues.iter().any(|i| matches!(
+                i.code,
+                IssueCode::NanDetected | IssueCode::InfDetected | IssueCode::DecodedSizeMismatch
+            )),
+            "object without descriptor must be skipped at fidelity: {:?}",
+            report.issues
+        );
+    }
+
+    /// fidelity.rs:78 — an object whose Level-3 decode failed
+    /// (`DecodeState::DecodeFailed`) is skipped at Level 4.
+    #[test]
+    fn fidelity_skips_decode_failed_object() {
+        // zstd compression with a corrupt payload: Level 3 records
+        // DecodePipelineFailed and sets decode_state = DecodeFailed, so
+        // Level 4 skips the object via the `DecodeFailed => continue` arm.
+        let msg = make_message_with_patched_descriptor(|v| {
+            cbor_map_set(v, "compression", ciborium::Value::Text("zstd".to_string()));
+        });
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::DecodePipelineFailed),
+            "expected DecodePipelineFailed (drives DecodeFailed skip), got: {:?}",
+            report.issues
+        );
+    }
+
+    /// fidelity.rs:117-130 — the direct-call defensive decode path: a
+    /// NotDecoded non-raw object is decoded in Level 4 and the decoded
+    /// bytes are scanned.  Here the payload is genuinely lz4-compressed so
+    /// decode succeeds and a NaN it contains is reported.
+    #[test]
+    fn fidelity_defensive_decode_success_then_scan() {
+        use crate::validate::fidelity::validate_fidelity;
+        use crate::validate::types::{DecodeState, ObjectContext};
+
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "lz4".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        // Two f64: [NaN, 1.0], compressed through the same pipeline.
+        let raw: Vec<u8> = f64::NAN
+            .to_le_bytes()
+            .iter()
+            .chain(1.0f64.to_le_bytes().iter())
+            .copied()
+            .collect();
+        let config =
+            crate::encode::build_pipeline_config(&desc, 2, Dtype::Float64).expect("config");
+        let compressed = tensogram_encodings::pipeline::encode_pipeline(&raw, &config)
+            .expect("encode")
+            .encoded_bytes;
+        let mut ctx = vec![ObjectContext {
+            descriptor: Some(desc),
+            descriptor_failed: false,
+            cbor_bytes: &[],
+            payload: compressed.as_slice(),
+            mask_region: &[],
+            decode_state: DecodeState::NotDecoded,
+            frame_offset: 200,
+        }];
+        let mut issues = Vec::new();
+        validate_fidelity(&mut ctx, &mut issues);
+        assert!(
+            issues.iter().any(|i| i.code == IssueCode::NanDetected),
+            "defensive decode path should decode and detect NaN, got: {:?}",
+            issues
+        );
+    }
+
+    /// fidelity.rs:121-130 — the direct-call defensive decode path where
+    /// `build_pipeline_config` succeeds but `decode_pipeline` fails on a
+    /// corrupt compressed payload → DecodeObjectFailed ("full decode failed").
+    #[test]
+    fn fidelity_defensive_decode_pipeline_failure() {
+        use crate::validate::fidelity::validate_fidelity;
+        use crate::validate::types::{DecodeState, ObjectContext};
+
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "zstd".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        // A valid zstd config will build, but this payload is NOT a valid
+        // zstd frame, so decode_pipeline fails.
+        let payload = vec![0xFFu8; 16];
+        let mut ctx = vec![ObjectContext {
+            descriptor: Some(desc),
+            descriptor_failed: false,
+            cbor_bytes: &[],
+            payload: payload.as_slice(),
+            mask_region: &[],
+            decode_state: DecodeState::NotDecoded,
+            frame_offset: 0,
+        }];
+        let mut issues = Vec::new();
+        validate_fidelity(&mut ctx, &mut issues);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == IssueCode::DecodeObjectFailed),
+            "expected DecodeObjectFailed on corrupt zstd payload, got: {:?}",
+            issues
+        );
+    }
+
+    /// fidelity.rs:134-143 — the direct-call defensive decode path where
+    /// `build_pipeline_config` fails (unknown compression) → DecodeObjectFailed.
+    #[test]
+    fn fidelity_defensive_decode_config_failure() {
+        use crate::validate::fidelity::validate_fidelity;
+        use crate::validate::types::{DecodeState, ObjectContext};
+
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "totally_unknown_codec".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let payload = vec![0u8; 16];
+        let mut ctx = vec![ObjectContext {
+            descriptor: Some(desc),
+            descriptor_failed: false,
+            cbor_bytes: &[],
+            payload: payload.as_slice(),
+            mask_region: &[],
+            decode_state: DecodeState::NotDecoded,
+            frame_offset: 0,
+        }];
+        let mut issues = Vec::new();
+        validate_fidelity(&mut ctx, &mut issues);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == IssueCode::DecodeObjectFailed),
+            "expected DecodeObjectFailed on bad config, got: {:?}",
+            issues
+        );
+    }
+
+    /// fidelity.rs:96-103 — the defensive decode path where the element
+    /// count cannot be computed from shape (shape product overflows u64).
+    #[test]
+    fn fidelity_defensive_decode_element_count_overflow() {
+        use crate::validate::fidelity::validate_fidelity;
+        use crate::validate::types::{DecodeState, ObjectContext};
+
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 2,
+            shape: vec![u64::MAX, 2],
+            strides: vec![8, 8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "lz4".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let payload = vec![0u8; 16];
+        let mut ctx = vec![ObjectContext {
+            descriptor: Some(desc),
+            descriptor_failed: false,
+            cbor_bytes: &[],
+            payload: payload.as_slice(),
+            mask_region: &[],
+            decode_state: DecodeState::NotDecoded,
+            frame_offset: 0,
+        }];
+        let mut issues = Vec::new();
+        validate_fidelity(&mut ctx, &mut issues);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == IssueCode::DecodeObjectFailed),
+            "expected DecodeObjectFailed on element-count overflow, got: {:?}",
+            issues
+        );
+    }
+
+    /// fidelity.rs:166-173 — the decoded-size check where the shape product
+    /// overflows u64, producing `DecodedSizeMismatch` ("shape product
+    /// overflows, cannot verify decoded size").  We feed a raw object whose
+    /// descriptor shape product overflows u64 but whose pipeline is trivial
+    /// (encoding/filter/compression = none) so decode is skipped and the
+    /// payload is scanned in-place.
+    #[test]
+    fn fidelity_decoded_size_shape_product_overflow() {
+        use crate::validate::fidelity::validate_fidelity;
+        use crate::validate::types::{DecodeState, ObjectContext};
+
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 2,
+            shape: vec![u64::MAX, 2], // product overflows u64
+            strides: vec![8, 8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let payload = vec![0u8; 16];
+        let mut ctx = vec![ObjectContext {
+            descriptor: Some(desc),
+            descriptor_failed: false,
+            cbor_bytes: &[],
+            payload: payload.as_slice(),
+            mask_region: &[],
+            decode_state: DecodeState::NotDecoded,
+            frame_offset: 0,
+        }];
+        let mut issues = Vec::new();
+        validate_fidelity(&mut ctx, &mut issues);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == IssueCode::DecodedSizeMismatch),
+            "expected DecodedSizeMismatch on shape-product overflow, got: {:?}",
+            issues
+        );
+    }
+
+    /// fidelity.rs:211-219 — the mask-set decode fails (bogus method) and is
+    /// reported as `DecodeObjectFailed`.  Driven by a direct call with a
+    /// descriptor carrying a `masks` sub-map whose method is unknown.
+    #[test]
+    fn fidelity_mask_decode_failure() {
+        use crate::types::{MaskDescriptor, MasksMetadata};
+        use crate::validate::fidelity::validate_fidelity;
+        use crate::validate::types::{DecodeState, ObjectContext};
+
+        let masks = MasksMetadata {
+            nan: Some(MaskDescriptor {
+                method: "bogus_method".to_string(),
+                offset: 0,
+                length: 1,
+                params: BTreeMap::new(),
+            }),
+            pos_inf: None,
+            neg_inf: None,
+        };
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: Some(masks),
+        };
+        // Decoded payload (2 finite f64), mask region of 1 byte.
+        let decoded: Vec<u8> = 1.0f64
+            .to_le_bytes()
+            .iter()
+            .chain(2.0f64.to_le_bytes().iter())
+            .copied()
+            .collect();
+        let mask_region = vec![0x00u8];
+        let mut ctx = vec![ObjectContext {
+            descriptor: Some(desc),
+            descriptor_failed: false,
+            cbor_bytes: &[],
+            payload: &[],
+            mask_region: mask_region.as_slice(),
+            decode_state: DecodeState::Decoded(decoded),
+            frame_offset: 0,
+        }];
+        let mut issues = Vec::new();
+        validate_fidelity(&mut ctx, &mut issues);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == IssueCode::DecodeObjectFailed),
+            "expected DecodeObjectFailed on bogus mask method, got: {:?}",
+            issues
+        );
+    }
+
+    /// fidelity.rs:426 — a NaN that sits at a position the mask claims is
+    /// non-finite is suppressed (no `NanDetected`).  Driven by a direct
+    /// call with a valid "none"-method NaN mask marking element 1.
+    #[test]
+    fn fidelity_masked_nan_is_suppressed() {
+        use crate::types::{MaskDescriptor, MasksMetadata};
+        use crate::validate::fidelity::validate_fidelity;
+        use crate::validate::types::{DecodeState, ObjectContext};
+
+        // MSB-first bit packing: element 1 of 2 set → 0b0100_0000 = 0x40.
+        let mask_region = vec![0x40u8];
+        let masks = MasksMetadata {
+            nan: Some(MaskDescriptor {
+                method: "none".to_string(),
+                offset: 0,
+                length: 1,
+                params: BTreeMap::new(),
+            }),
+            pos_inf: None,
+            neg_inf: None,
+        };
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: Some(masks),
+        };
+        // Element 0 finite, element 1 NaN (expected per the mask).
+        let decoded: Vec<u8> = 1.0f64
+            .to_le_bytes()
+            .iter()
+            .chain(f64::NAN.to_le_bytes().iter())
+            .copied()
+            .collect();
+        let mut ctx = vec![ObjectContext {
+            descriptor: Some(desc),
+            descriptor_failed: false,
+            cbor_bytes: &[],
+            payload: &[],
+            mask_region: mask_region.as_slice(),
+            decode_state: DecodeState::Decoded(decoded),
+            frame_offset: 0,
+        }];
+        let mut issues = Vec::new();
+        validate_fidelity(&mut ctx, &mut issues);
+        assert!(
+            !issues.iter().any(|i| i.code == IssueCode::NanDetected),
+            "masked NaN must be suppressed, got: {:?}",
+            issues
+        );
+    }
+
+    /// fidelity.rs:621-622 — `classify_complex_components` returns `None`
+    /// for a fully finite complex element (all of real/imag nan/inf false).
+    /// A two-element complex64 array with the FIRST element finite and the
+    /// SECOND non-finite forces the classifier through the all-false tail
+    /// before the issue is raised.
+    #[test]
+    fn fidelity_complex64_finite_then_nonfinite() {
+        let mut bytes = Vec::with_capacity(16);
+        // Element 0: fully finite (real=1.0, imag=2.0).
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&2.0f32.to_le_bytes());
+        // Element 1: imaginary Inf (so an issue is still produced).
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&f32::INFINITY.to_le_bytes());
+        let msg = make_raw_object_message(Dtype::Complex64, bytes, vec![2]);
+        let report = validate_message(&msg, &full_opts());
+        let inf = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::InfDetected)
+            .expect("expected InfDetected at element 1");
+        assert!(
+            inf.description.contains("element 1"),
+            "issue should point at element 1, got: {}",
+            inf.description
+        );
+    }
 }

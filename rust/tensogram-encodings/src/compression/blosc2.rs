@@ -473,6 +473,23 @@ mod tests {
         assert_eq!(decompressed, data);
     }
 
+    /// `decompress`/`decompress_range`/`from_buffer` on garbage bytes must
+    /// surface a structured `Blosc2` error via `map_err`, never panic.
+    #[test]
+    fn blosc2_decompress_garbage_returns_error() {
+        ensure_blosc2_init();
+        let compressor = small_chunk_compressor();
+        let garbage = vec![0xABu8; 64];
+        assert!(matches!(
+            compressor.decompress(&garbage, 64),
+            Err(CompressionError::Blosc2(_))
+        ));
+        assert!(matches!(
+            compressor.decompress_range(&garbage, &[], 0, 16),
+            Err(CompressionError::Blosc2(_))
+        ));
+    }
+
     /// Regression test for issue #68: a buffer larger than `chunk_bytes`
     /// with a non-multiple size splits into N full chunks plus one short
     /// trailing chunk. Both encode and decode must handle the short tail.

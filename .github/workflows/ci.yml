@@ -858,7 +858,7 @@ jobs:
         # tunable (the others are pinned at 1/-j1 to prevent the
         # nested-fan-out load spikes documented in
         # docs/src/dev/mutation-testing.md "Concurrency").
-        run: make mutants-diff DIFF_FILE="$TMPDIR/mutants-diff.patch" MUTANTS_JOBS=2
+        run: make mutants-diff DIFF_FILE="$TMPDIR/mutants-diff.patch" MUTANTS_JOBS=4
       - uses: actions/upload-artifact@v4
         if: always()
         with:

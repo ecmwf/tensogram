@@ -477,3 +477,404 @@ fn frame_type_4_is_rejected() {
         "expected 'obsolete v2' in the error, got: {msg}"
     );
 }
+
+/// SEC-001 (HIGH, found by `fuzz_decode`): a message whose preamble
+/// `total_length` is non-zero but smaller than `PREAMBLE_SIZE +
+/// POSTAMBLE_SIZE` used to underflow `total_len - POSTAMBLE_SIZE`,
+/// panicking with "attempt to subtract with overflow" — a process-
+/// killing DoS under `panic = "abort"`.  It must now be a clean
+/// structured error.
+///
+/// The bytes below are the exact reproducer libFuzzer minimised: valid
+/// `TENSOGRM` magic, version 3, and `total_length = 10` (< 48).
+#[test]
+fn sec001_undersized_total_length_is_rejected_not_panic() {
+    let crash_input: &[u8] = &[
+        84, 69, 78, 83, 79, 71, 82, 77, // "TENSOGRM"
+        0, 3, // version = 3
+        0, 0, // flags
+        82, 77, 0, 3, // reserved (irrelevant)
+        0, 0, 0, 0, 0, 0, 0, 10, // total_length = 10  (< 48)
+        // trailing junk from the original reproducer
+        0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 24, 10,
+    ];
+    // Must not panic; must return a structured framing error.
+    let err = decode(crash_input, &DecodeOptions::default())
+        .expect_err("undersized total_length must be rejected");
+    assert!(
+        matches!(err, TensogramError::Framing(_)),
+        "expected a Framing error, got: {err:?}"
+    );
+
+    // Sweep every non-zero total_length below the minimum to pin the
+    // whole boundary, not just the one fuzzer sample.  None may panic.
+    use tensogram::wire::{MAGIC, POSTAMBLE_SIZE, PREAMBLE_SIZE, WIRE_VERSION};
+    for bad_total in 1..(PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64 {
+        let mut buf = Vec::with_capacity(PREAMBLE_SIZE + POSTAMBLE_SIZE);
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+        buf.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        buf.extend_from_slice(&bad_total.to_be_bytes()); // total_length
+        // Pad the buffer so the failure is the length check, not a
+        // generic too-short-buffer error.
+        buf.resize(PREAMBLE_SIZE + POSTAMBLE_SIZE, 0);
+        let err = decode(&buf, &DecodeOptions::default())
+            .expect_err("total_length below minimum must be rejected");
+        assert!(
+            matches!(err, TensogramError::Framing(_)),
+            "total_length={bad_total} expected Framing error, got: {err:?}"
+        );
+    }
+}
+
+/// SEC-002 (HIGH, found by `fuzz_scan`): the in-memory scanner computed
+/// `pos + total` where `total` is an attacker-controlled `u64`.  A
+/// near-`usize::MAX` `total_length` overflowed the addition and
+/// panicked ("attempt to add with overflow") — a DoS in `scan`,
+/// reachable from any multi-message read.  It must now scan cleanly
+/// (returning no spurious message) without panicking.
+#[test]
+fn sec002_scan_huge_total_length_does_not_overflow() {
+    use tensogram::wire::{MAGIC, WIRE_VERSION};
+    let mut buf = Vec::new();
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+    buf.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    buf.extend_from_slice(&u64::MAX.to_be_bytes()); // total_length = usize::MAX-ish
+    buf.resize(64, 0); // some trailing bytes
+    // Must not panic; a hostile total_length yields no valid message.
+    let found = scan(&buf);
+    assert!(
+        found.is_empty(),
+        "a preamble with total_length=u64::MAX must not yield a message"
+    );
+
+    // Sweep a range of large values near the overflow boundary.
+    for total in [
+        u64::MAX,
+        u64::MAX - 1,
+        u64::MAX - 7,
+        (usize::MAX as u64) - 3,
+    ] {
+        let mut b = Vec::new();
+        b.extend_from_slice(MAGIC);
+        b.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+        b.extend_from_slice(&0u16.to_be_bytes());
+        b.extend_from_slice(&0u32.to_be_bytes());
+        b.extend_from_slice(&total.to_be_bytes());
+        b.resize(64, 0);
+        let _ = scan(&b); // must not panic for any of these
+    }
+}
+
+/// SEC-004 (HIGH, same class as SEC-002): `data_object_inline_hashes`
+/// walked frames with `pos + frame_total` where `frame_total` is an
+/// attacker-controlled `u64`.  A near-`usize::MAX` frame `total_length`
+/// overflowed and panicked.  It must now return a structured error
+/// instead.
+#[test]
+fn sec004_inline_hash_walk_huge_frame_total_does_not_overflow() {
+    use tensogram::wire::{
+        FRAME_HEADER_SIZE, FRAME_MAGIC, MAGIC, POSTAMBLE_SIZE, PREAMBLE_SIZE, WIRE_VERSION,
+    };
+    // Build a message whose preamble total_length is valid (so the
+    // hash walk runs) but whose first frame claims a huge total_length.
+    let msg_total = (PREAMBLE_SIZE + FRAME_HEADER_SIZE + POSTAMBLE_SIZE) as u64;
+    let mut buf = Vec::new();
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    buf.extend_from_slice(&((1u16) << 7).to_be_bytes()); // HASHES_PRESENT advisory
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf.extend_from_slice(&msg_total.to_be_bytes());
+    // One frame header with a hostile total_length = u64::MAX.
+    buf.extend_from_slice(FRAME_MAGIC);
+    buf.extend_from_slice(&9u16.to_be_bytes()); // NTensorFrame
+    buf.extend_from_slice(&1u16.to_be_bytes()); // version
+    buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+    buf.extend_from_slice(&u64::MAX.to_be_bytes()); // frame total_length
+    buf.resize(msg_total as usize, 0);
+    // Must not panic — a structured error or a clean empty result.
+    let _ = tensogram::data_object_inline_hashes(&buf);
+}
+
+/// SEC-005 (HIGH, found by `fuzz_scan`): the bidirectional scanner's
+/// backward hop computed `msg_start = bound_end - total` and then
+/// sliced `buf[msg_start..msg_start + MAGIC.len()]`.  A tiny postamble
+/// `total_length` (below the preamble size) put `msg_start` too close
+/// to the end, so the 8-byte MAGIC slice ran out of bounds and
+/// panicked.  Scanning must now be panic-free.
+#[test]
+fn sec005_backward_scan_tiny_total_no_oob() {
+    // Exact libFuzzer reproducer.
+    let crash_input: &[u8] = &[
+        164, 164, 164, 164, 195, 195, 195, 195, 195, 195, 195, 195, 195, 0, 0, 0, 0, 84, 69, 78,
+        83, 79, 71, 82, 77, 0, 3, 0, 0, 237, 197, 197, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42,
+        0, 0, 0, 0, 0, 71, 51, 57, 50, 55, 55, 55, 55, 55, 197, 0, 0, 0, 0, 0, 0, 0, 69, 78, 83,
+        79, 71, 197, 0, 3, 237, 82, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        2, 37, 0, 0, 0, 0, 0, 0, 0, 4, 51, 57, 50,
+    ];
+    // Must not panic.
+    let _ = scan(crash_input);
+
+    // Also directly stress a synthetic buffer ending in END_MAGIC with a
+    // tiny mirrored total_length in the postamble.
+    use tensogram::wire::{END_MAGIC, POSTAMBLE_SIZE};
+    for tiny_total in [1u64, 2, 7, 8, 23, (POSTAMBLE_SIZE as u64) - 1] {
+        let mut b = vec![0u8; 128];
+        // Put END_MAGIC at the very end and a tiny total_length 8 bytes
+        // before it (postamble layout: [first_footer(8)][total(8)][magic(8)]).
+        let n = b.len();
+        b[n - 8..].copy_from_slice(END_MAGIC);
+        b[n - 16..n - 8].copy_from_slice(&tiny_total.to_be_bytes());
+        let _ = scan(&b); // must not panic
+    }
+}
+
+/// SEC-006 (HIGH, found by `fuzz_decode_metadata`): the metadata-skip
+/// loop did `pos += frame_total` with an attacker-controlled
+/// `frame_total` (`u64` up to usize::MAX) → add-overflow panic.  A
+/// zero/sub-header `frame_total` could also spin the loop (no
+/// progress).  `decode_metadata` must now reject or skip cleanly
+/// without panicking or hanging.
+#[test]
+fn sec006_decode_metadata_huge_skip_frame_no_overflow() {
+    // Exact libFuzzer reproducer.
+    let crash_input: &[u8] = &[
+        84, 69, 78, 83, 79, 71, 82, 77, 0, 3, 82, 77, 0, 82, 77, 3, 71, 70, 70, 70, 139, 139, 139,
+        139, 139, 139, 139, 139, 70, 82, 0, 3, 70, 70, 70, 246, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255,
+    ];
+    let _ = decode_metadata(crash_input); // must not panic / hang
+}
+
+/// SEC-007 (HIGH): `scan_file`'s bidirectional walker added a
+/// preamble's attacker-controlled `total` to `fwd_pos` without an
+/// overflow check (`fwd_pos + total <= bwd_end`) and computed
+/// `fwd_pos + total - 8`.  A huge or tiny `total_length` in a hostile
+/// on-disk `.tgm` could overflow/underflow and panic.  `scan_file`
+/// must scan hostile files without panicking.
+#[test]
+fn sec007_scan_file_huge_and_tiny_total_no_overflow() {
+    use std::io::Cursor;
+    use tensogram::wire::{END_MAGIC, MAGIC, WIRE_VERSION};
+
+    // (a) Forward preamble with total_length = u64::MAX.
+    let mut buf = Vec::new();
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    buf.extend_from_slice(&0u16.to_be_bytes());
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf.extend_from_slice(&u64::MAX.to_be_bytes());
+    buf.resize(128, 0);
+    buf[120..].copy_from_slice(END_MAGIC); // give the backward walker bait
+    let mut cur = Cursor::new(buf);
+    let _ = tensogram::scan_file(&mut cur); // must not panic
+
+    // (b) Postamble with a tiny mirrored total_length.
+    let mut buf2 = vec![0u8; 96];
+    let n = buf2.len();
+    buf2[..MAGIC.len()].copy_from_slice(MAGIC);
+    buf2[n - 8..].copy_from_slice(END_MAGIC);
+    buf2[n - 16..n - 8].copy_from_slice(&3u64.to_be_bytes()); // tiny total
+    let mut cur2 = Cursor::new(buf2);
+    let _ = tensogram::scan_file(&mut cur2); // must not panic
+}
+
+/// SEC-008 (verified-secure invariant, kept as a no-regression guard):
+/// a CBOR recursion bomb (deeply-nested arrays) in the metadata frame
+/// must NOT exhaust the stack.  `ciborium::from_reader` applies a
+/// default recursion limit (256), so 10k-deep nesting returns a clean
+/// `Err` rather than a stack-overflow abort.  This test pins that the
+/// metadata decoder uses the recursion-limited parser path.
+#[test]
+fn sec008_cbor_recursion_bomb_is_rejected_not_stack_overflow() {
+    // `0x81` = "array of 1 item"; repeating it N times encodes an
+    // N-deep nested array.  N far exceeds ciborium's 256 limit.
+    let depth = 10_000usize;
+    let mut bomb = vec![0x81u8; depth];
+    bomb.push(0x00); // innermost value: integer 0
+    let err = tensogram::metadata::cbor_to_global_metadata(&bomb)
+        .expect_err("a 10k-deep CBOR nesting must be rejected, not overflow the stack");
+    // Any structured error is acceptable; the point is that it returns
+    // instead of crashing.  It is routed through the Metadata category.
+    assert!(
+        matches!(err, TensogramError::Metadata(_)),
+        "expected Metadata error, got: {err:?}"
+    );
+}
+
+// ── Boundary-pinning regression tests for the SEC-00x guards ───────────────
+//
+// The hostile-input tests above pin the *negative* path (sub-minimum /
+// overflowing lengths are rejected without panicking).  On their own they
+// leave the exact comparison operators in the new guards unverified: a
+// mutation that loosens `<` to `<=`/`==`/`>`, flips the alignment `&` to
+// `|`, or turns the hash-slot `+` into `-` still rejects the hostile input
+// and so survives.  The tests below pin the *positive* path — a real,
+// minimally-sized valid message must round-trip with the correct metadata
+// and the correct inline hash — which forces every one of those operators
+// to its exact value.  (Found as MISSED mutants by the CI `cargo-mutants`
+// diff job on framing.rs:895/1148/1154/1245.)
+
+/// A legitimately-encoded message must decode through the *exact* minimum-
+/// size guard at `framing.rs:895` (`total_len < PREAMBLE_SIZE +
+/// POSTAMBLE_SIZE`).  If that `<` is widened to `<=`, the smallest valid
+/// messages are wrongly rejected.  Encoding the smallest object we can
+/// build and asserting it decodes back pins the boundary as *inclusive of
+/// the minimum, exclusive below it* (the sub-minimum half is pinned by
+/// `sec001_…`).
+#[test]
+fn sec001_minimum_size_message_is_accepted() {
+    // Smallest payload: a 0-D scalar (shape []) float32 → 4 bytes.
+    let (global, desc) = make_simple_float32_pair(vec![]);
+    let data = vec![0u8; 4];
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // It must decode cleanly: the minimum-size guard must let it through.
+    let (_md, objs) = decode(&encoded, &DecodeOptions::default())
+        .expect("a legitimately-encoded minimal message must decode, not hit the min-size floor");
+    assert_eq!(objs.len(), 1, "expected exactly one decoded object");
+
+    // Pin the guard threshold itself: total_length equals the encoded
+    // length and must be >= the minimum, and a message exactly at the
+    // minimum boundary must NOT be rejected by the floor.
+    use tensogram::wire::{MAGIC, POSTAMBLE_SIZE, PREAMBLE_SIZE, WIRE_VERSION};
+    assert!(
+        encoded.len() >= PREAMBLE_SIZE + POSTAMBLE_SIZE,
+        "encoded length {} must be at least the minimum message size {}",
+        encoded.len(),
+        PREAMBLE_SIZE + POSTAMBLE_SIZE
+    );
+
+    // Pin the EXACT boundary `total_len < MIN` (not `<=`): a buffer whose
+    // `total_length` is exactly PREAMBLE_SIZE + POSTAMBLE_SIZE describes a
+    // zero-frame message — structurally degenerate, but it must pass the
+    // minimum-size *floor* (the floor only rejects strictly-smaller
+    // values).  A `< → <=` mutation makes the floor reject this exact-
+    // minimum buffer with the distinctive "smaller than the minimum
+    // message size" error; assert that specific error never fires here.
+    let min = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+    let mut buf = Vec::with_capacity(min as usize);
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+    buf.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    buf.extend_from_slice(&min.to_be_bytes()); // total_length == MIN exactly
+    buf.resize(min as usize, 0); // zeroed postamble region
+    let res = decode(&buf, &DecodeOptions::default());
+    // It may still error for other reasons (no metadata frame, bad
+    // postamble magic) — that's fine.  What must NOT happen is rejection
+    // by the minimum-size floor, whose message is unique.
+    if let Err(TensogramError::Framing(msg)) = &res {
+        assert!(
+            !msg.contains("smaller than the minimum message size"),
+            "total_length exactly at the minimum must pass the size floor; \
+             got floor rejection: {msg}"
+        );
+    }
+}
+
+/// `decode_metadata_only` must walk past the data-object frame(s) and
+/// return the real metadata of a *valid* message.  This exercises the
+/// frame-skip guard at `framing.rs:1148` (`frame_total < FRAME_HEADER_SIZE`)
+/// and the alignment step at `framing.rs:1154` (`pos.saturating_add(7) &
+/// !7`): if the comparison is mutated (`< → ==`/`>`/`<=`) or the alignment
+/// mask is flipped (`& → |`, `delete !`), the loop mis-advances and either
+/// fails to find the metadata frame or reads the wrong one.  A valid
+/// round-trip with a non-trivial global-metadata field that we can assert
+/// pins all of those operators.
+#[test]
+fn sec006_decode_metadata_returns_valid_metadata() {
+    use ciborium::Value;
+
+    // Build a message with a couple of objects and a distinctive global
+    // metadata entry so the metadata-skip loop has frames to walk past.
+    let (mut global, desc) = make_simple_float32_pair(vec![4]);
+    global.extra.insert(
+        "producer".to_string(),
+        Value::Text("sec006-pin".to_string()),
+    );
+    let data = vec![1u8; 4 * 4];
+    let encoded = encode(
+        &global,
+        &[(&desc, &data), (&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    // decode_metadata must skip the data-object frames (each at least a
+    // header, aligned to 8) and return the metadata frame's contents.
+    let md = decode_metadata(&encoded)
+        .expect("decode_metadata must return the metadata of a valid multi-object message");
+    assert_eq!(
+        md.extra.get("producer"),
+        Some(&Value::Text("sec006-pin".to_string())),
+        "decode_metadata must recover the exact global metadata after \
+         correctly skipping the (header-sized, 8-byte-aligned) data frames"
+    );
+}
+
+/// `data_object_inline_hashes` must return one hash slot per data-object
+/// frame, read from the *exact* offset `frame_end - FRAME_COMMON_FOOTER_SIZE`.
+/// This pins the minimum-frame-size guard at `framing.rs:1245`
+/// (`frame_total < FRAME_HEADER_SIZE + FRAME_COMMON_FOOTER_SIZE`) and the
+/// `frame_end = pos + frame_total` arithmetic: a `+ → -` mutation or a
+/// loosened comparison would read the slot at the wrong offset and yield a
+/// different (or no) hash.  We encode with hashing enabled and assert the
+/// recovered inline hash equals the hash the verifier computes from the
+/// frame bytes — only the correct operators reproduce it.
+#[test]
+fn sec004_inline_hashes_match_on_valid_hashed_message() {
+    // A normally-encoded object carries a non-zero inline xxh3-64 hash in
+    // its common footer.  `data_object_inline_hashes` must recover it from
+    // the exact `frame_end - FRAME_COMMON_FOOTER_SIZE` offset.
+    let (global, desc) = make_simple_float32_pair(vec![8]);
+    let data: Vec<u8> = (0..8 * 4).map(|i| i as u8).collect();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    let hashes = tensogram::data_object_inline_hashes(&encoded)
+        .expect("inline-hash walk must succeed on a valid message");
+    assert_eq!(
+        hashes.len(),
+        1,
+        "expected exactly one data-object hash slot"
+    );
+    let recovered = hashes[0].expect("a normally-encoded object carries a non-zero inline hash");
+
+    // Pin the slot OFFSET arithmetic (`frame_end = pos + frame_total`,
+    // slot at `frame_end - footer`).  If `+ → -` or the min-frame-size
+    // comparison is mutated, the walker reads the slot from the wrong
+    // place.  Cross-check the recovered value against an independent
+    // verify-hash decode of the same bytes: decoding with `verify_hash`
+    // recomputes xxh3 over the body and checks it against the very slot we
+    // read here, so a successful verified decode proves our offset is
+    // correct.
+    let verify = DecodeOptions {
+        verify_hash: true,
+        ..DecodeOptions::default()
+    };
+    decode(&encoded, &verify)
+        .expect("verify_hash decode must succeed, confirming the inline hash slot is well-located");
+
+    // And pin that the slot is read from real frame data, not a constant:
+    // a different (finite) payload must produce a different recovered hash.
+    // Build it from valid little-batch float32 values so the strict-NaN
+    // encoder check passes.
+    let other_f32: Vec<f32> = (0..8).map(|i| i as f32 * 1.5).collect();
+    let mut other = Vec::with_capacity(8 * 4);
+    for v in &other_f32 {
+        other.extend_from_slice(&v.to_be_bytes());
+    }
+    let encoded2 = encode(&global, &[(&desc, &other)], &EncodeOptions::default()).unwrap();
+    let recovered2 = tensogram::data_object_inline_hashes(&encoded2)
+        .expect("inline-hash walk must succeed")[0]
+        .expect("non-zero inline hash");
+    assert_ne!(
+        recovered, recovered2,
+        "distinct payloads must yield distinct inline hashes — proves the \
+         slot offset reads real frame bytes, not a fixed location"
+    );
+}

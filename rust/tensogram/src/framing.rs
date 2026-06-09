@@ -885,6 +885,19 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 buf.len()
             )));
         }
+        // A claimed `total_length` smaller than the fixed preamble +
+        // postamble cannot describe a real message and would underflow
+        // the `total_len - POSTAMBLE_SIZE` arithmetic below.  Reject it
+        // before computing any offset.  (Without this guard a hostile
+        // 42-byte message with `total_length = 10` panics with
+        // "attempt to subtract with overflow" — a DoS under
+        // `panic = "abort"`.)
+        if total_len < PREAMBLE_SIZE + POSTAMBLE_SIZE {
+            return Err(TensogramError::Framing(format!(
+                "total_length {total_len} smaller than the minimum message size {}",
+                PREAMBLE_SIZE + POSTAMBLE_SIZE
+            )));
+        }
 
         // Validate postamble.  In v3 the postamble carries a mirrored
         // `total_length` that — when non-zero — must match the
@@ -903,8 +916,19 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
 
     let mut pos = PREAMBLE_SIZE;
     let msg_end = if preamble.total_length > 0 {
-        // Safe: validated above that total_length fits in usize
-        preamble.total_length as usize - POSTAMBLE_SIZE
+        // Safe: the `total_length > 0` branch above validated that the
+        // value fits in usize AND is ≥ PREAMBLE_SIZE + POSTAMBLE_SIZE,
+        // so this subtraction cannot underflow.  `checked_sub` is kept
+        // as belt-and-braces: a future refactor that weakens the guard
+        // surfaces a structured error here instead of an under/overflow.
+        (preamble.total_length as usize)
+            .checked_sub(POSTAMBLE_SIZE)
+            .ok_or_else(|| {
+                TensogramError::Framing(format!(
+                    "total_length {} smaller than postamble size {POSTAMBLE_SIZE}",
+                    preamble.total_length
+                ))
+            })?
     } else {
         buf.len().checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
             TensogramError::Framing(format!(
@@ -1115,8 +1139,19 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
                         fh.total_length
                     ))
                 })?;
-                pos += frame_total;
-                pos = (pos + 7) & !7; // align
+                // A frame must be at least a header; a zero/sub-header
+                // `frame_total` would not advance `pos` and could spin.
+                // `saturating_add` also prevents an attacker-controlled
+                // `frame_total` near usize::MAX from overflowing `pos`
+                // into a panic — a saturated `pos` exceeds `msg_end` and
+                // ends the loop cleanly.
+                if frame_total < FRAME_HEADER_SIZE {
+                    return Err(TensogramError::Framing(format!(
+                        "frame at offset {pos} total_length {frame_total} smaller than header size"
+                    )));
+                }
+                pos = pos.saturating_add(frame_total);
+                pos = pos.saturating_add(7) & !7; // align
             }
         }
     }
@@ -1194,22 +1229,36 @@ pub fn data_object_inline_hashes(buf: &[u8]) -> Result<Vec<Option<u64>>> {
                 fh.total_length
             ))
         })?;
-        if pos + frame_total > buf.len() {
+        // `frame_total` is attacker-controlled (up to usize::MAX).
+        // Compute the frame end with `checked_add` so a hostile value
+        // cannot overflow `pos + frame_total` into a panic, and require
+        // at least the common-footer minimum so `frame_end - 12` (the
+        // hash slot) cannot underflow.
+        let frame_end = pos.checked_add(frame_total).filter(|&e| e <= buf.len());
+        let Some(frame_end) = frame_end else {
             return Err(TensogramError::Framing(format!(
-                "frame at offset {pos} extends past buffer end ({} > {})",
-                pos + frame_total,
+                "frame at offset {pos} extends past buffer end (total_length={frame_total}, \
+                 buffer={})",
                 buf.len()
+            )));
+        };
+        if frame_total < FRAME_HEADER_SIZE + crate::wire::FRAME_COMMON_FOOTER_SIZE {
+            return Err(TensogramError::Framing(format!(
+                "frame at offset {pos} total_length {frame_total} smaller than minimum frame size"
             )));
         }
         if fh.frame_type.is_data_object() {
             // Hash slot sits at `frame_end - 12` regardless of
             // frame type (v3 §2.2 common tail).
-            let slot_start = pos + frame_total - crate::wire::FRAME_COMMON_FOOTER_SIZE;
+            let slot_start = frame_end - crate::wire::FRAME_COMMON_FOOTER_SIZE;
             let slot = crate::wire::read_u64_be(buf, slot_start);
             hashes.push(if slot == 0 { None } else { Some(slot) });
         }
-        pos += frame_total;
-        pos = (pos + 7) & !7; // 8-byte alignment padding
+        // `frame_end <= buf.len()`, and aligning up adds at most 7;
+        // saturate so the `(pos + 7) & !7` cannot overflow at the very
+        // top of the address space.  A saturated `pos` is `>= msg_end`,
+        // ending the loop cleanly.
+        pos = frame_end.saturating_add(7) & !7; // 8-byte alignment padding
     }
     Ok(hashes)
 }
@@ -1303,11 +1352,20 @@ fn try_forward_hop(buf: &[u8], pos: usize, bound_end: usize) -> Option<(usize, u
     let preamble = Preamble::read_from(&buf[pos..]).ok()?;
     if preamble.total_length > 0 {
         let total = usize::try_from(preamble.total_length).ok()?;
-        if pos + total > bound_end {
+        // `pos + total` is attacker-controlled (`total` up to usize::MAX)
+        // and must not overflow.  `checked_add` turns an overflow into a
+        // "no valid message here" (None → advance one byte), never a
+        // panic.  A message also cannot be smaller than the fixed
+        // preamble+postamble, so reject `total < PREAMBLE+POSTAMBLE`
+        // before computing the END_MAGIC offset (`pos + total - 8`
+        // would otherwise be meaningless / could precede `pos`).
+        let msg_end = pos.checked_add(total)?;
+        if msg_end > bound_end || total < PREAMBLE_SIZE + POSTAMBLE_SIZE {
             return None;
         }
-        // Validate END_MAGIC lives where the preamble claims.
-        let end_magic_offset = pos + total - 8;
+        // Validate END_MAGIC lives where the preamble claims.  `msg_end
+        // >= PREAMBLE + POSTAMBLE > 8`, so `msg_end - 8` cannot underflow.
+        let end_magic_offset = msg_end - 8;
         if &buf[end_magic_offset..end_magic_offset + 8] == crate::wire::END_MAGIC {
             return Some((pos, total));
         }
@@ -1399,7 +1457,12 @@ fn try_backward_hop(
         Ok(t) => t,
         Err(_) => return BackwardHop::None,
     };
-    if total > bound_end - range_start {
+    // `total` must be at least a full preamble+postamble.  Without this
+    // floor a tiny `total` (e.g. 3) puts `msg_start = bound_end - total`
+    // so close to the end that `msg_start + MAGIC.len()` slices past the
+    // buffer — an out-of-bounds panic.  Requiring the message minimum
+    // guarantees `msg_start + PREAMBLE_SIZE <= bound_end <= buf.len()`.
+    if total < PREAMBLE_SIZE + POSTAMBLE_SIZE || total > bound_end - range_start {
         return BackwardHop::None;
     }
     let msg_start = bound_end - total;
@@ -1533,9 +1596,17 @@ fn scan_file_forward(
                     pos += 1;
                     continue;
                 };
-                if pos + total <= range_end {
+                // `pos + total` is attacker-controlled and must not
+                // overflow `usize` (panic / DoS).  Also reject any
+                // `total` below the fixed preamble+postamble minimum so
+                // `pos + total - 8` is meaningful and cannot underflow.
+                let msg_end = pos.checked_add(total);
+                if let Some(msg_end) = msg_end
+                    && msg_end <= range_end
+                    && total >= PREAMBLE_SIZE + POSTAMBLE_SIZE
+                {
                     // Read end magic to validate
-                    let end_magic_offset = pos + total - 8;
+                    let end_magic_offset = msg_end - 8;
                     file.seek(SeekFrom::Start(end_magic_offset as u64))?;
                     let mut end_buf = [0u8; 8];
                     if file.read_exact(&mut end_buf).is_ok() && &end_buf == crate::wire::END_MAGIC {
@@ -1649,10 +1720,16 @@ fn scan_file_bidirectional(
             && let Ok(preamble) = Preamble::read_from(&preamble_buf)
         {
             if preamble.total_length > 0 {
+                // `total` is attacker-controlled; use checked_add so
+                // `fwd_pos + total` cannot overflow, and require the
+                // preamble+postamble minimum so `… - 8` cannot underflow
+                // and the message is structurally plausible.
                 if let Ok(total) = usize::try_from(preamble.total_length)
-                    && fwd_pos + total <= bwd_end
+                    && total >= PREAMBLE_SIZE + POSTAMBLE_SIZE
+                    && let Some(msg_end) = fwd_pos.checked_add(total)
+                    && msg_end <= bwd_end
                 {
-                    let end_magic_offset = fwd_pos + total - 8;
+                    let end_magic_offset = msg_end - 8;
                     file.seek(SeekFrom::Start(end_magic_offset as u64))?;
                     let mut em = [0u8; 8];
                     if file.read_exact(&mut em).is_ok() && &em == crate::wire::END_MAGIC {
@@ -2459,5 +2536,1107 @@ mod tests {
             err.contains("3") && err.contains("1"),
             "error should mention counts: {err}"
         );
+    }
+
+    // ── Phase 5: read_frame error branches ───────────────────────────────
+
+    /// Hand-build a single non-data-object frame with an explicit,
+    /// possibly bogus, `total_length` written into the header.  Used to
+    /// drive `read_frame`'s structural-validation branches.
+    fn raw_frame_with_total(frame_type: FrameType, total_length: u64, body_len: usize) -> Vec<u8> {
+        let fh = FrameHeader {
+            frame_type,
+            version: 1,
+            flags: 0,
+            total_length,
+        };
+        let mut out = Vec::new();
+        fh.write_to(&mut out);
+        out.extend(std::iter::repeat_n(0u8, body_len));
+        out
+    }
+
+    #[test]
+    fn test_read_frame_total_length_below_minimum() {
+        // total_length smaller than header(16)+footer(12)=28 → rejected
+        // before any buffer-bounds math (framing.rs L178-183).
+        let buf = raw_frame_with_total(FrameType::HeaderMetadata, 10, 64);
+        let err = read_frame(&buf).unwrap_err().to_string();
+        assert!(
+            err.contains("smaller than minimum"),
+            "expected minimum-size error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_read_frame_total_length_exceeds_buffer() {
+        // total_length claims 1000 but the buffer is far shorter
+        // (framing.rs L185-191).
+        let buf = raw_frame_with_total(FrameType::HeaderMetadata, 1000, 40);
+        let err = read_frame(&buf).unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds buffer"),
+            "expected exceeds-buffer error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_read_frame_missing_endf() {
+        // A correctly-sized frame whose final 4 bytes are NOT `ENDF`
+        // (framing.rs L194-199).  Header(16)+payload(4)+hash(8)+endf(4)=32.
+        let mut buf = raw_frame_with_total(FrameType::HeaderMetadata, 32, 32);
+        // Overwrite the trailing 4 bytes with junk instead of ENDF.
+        let n = buf.len();
+        buf[n - 4..].copy_from_slice(b"XXXX");
+        let err = read_frame(&buf).unwrap_err().to_string();
+        assert!(
+            err.contains("missing ENDF"),
+            "expected missing-ENDF error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_read_frame_happy_path_with_padding() {
+        // Exercise the success path including the alignment-padding
+        // consumed accounting (framing.rs L202-212).
+        let mut buf = Vec::new();
+        write_frame(
+            &mut buf,
+            FrameType::HeaderMetadata,
+            1,
+            0,
+            b"hello",
+            false,
+            true,
+        );
+        let (fh, payload, consumed) = read_frame(&buf).unwrap();
+        assert_eq!(fh.frame_type, FrameType::HeaderMetadata);
+        assert_eq!(payload, b"hello");
+        // consumed walks to the 8-byte aligned boundary.
+        assert_eq!(consumed, buf.len());
+        assert_eq!(consumed % 8, 0);
+    }
+
+    // ── Phase 6: decode_data_object_frame error branches ─────────────────
+
+    #[test]
+    fn test_decode_data_object_frame_wrong_type() {
+        // A non-data-object frame fed to the data-object decoder
+        // (framing.rs L343-348).
+        let mut buf = Vec::new();
+        write_frame(&mut buf, FrameType::HeaderMetadata, 1, 0, b"x", false, true);
+        let err = decode_data_object_frame(&buf).unwrap_err().to_string();
+        assert!(
+            err.contains("expected data-object frame"),
+            "expected wrong-type error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_data_object_frame_too_small() {
+        // total_length below the v3 minimum header(16)+footer(20)=36
+        // (framing.rs L358-363).
+        let buf = raw_frame_with_total(FrameType::NTensorFrame, 30, 64);
+        let err = decode_data_object_frame(&buf).unwrap_err().to_string();
+        assert!(
+            err.contains("too small"),
+            "expected too-small error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_data_object_frame_exceeds_buffer() {
+        // total_length larger than the supplied buffer
+        // (framing.rs L364-370).
+        let buf = raw_frame_with_total(FrameType::NTensorFrame, 5000, 48);
+        let err = decode_data_object_frame(&buf).unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds buffer"),
+            "expected exceeds-buffer error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_data_object_frame_missing_endf() {
+        // Correct size but trailing bytes are not ENDF
+        // (framing.rs L373-378).
+        let mut buf = raw_frame_with_total(FrameType::NTensorFrame, 40, 40);
+        let n = buf.len();
+        buf[n - 4..].copy_from_slice(b"NOPE");
+        let err = decode_data_object_frame(&buf).unwrap_err().to_string();
+        assert!(
+            err.contains("missing ENDF"),
+            "expected missing-ENDF error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_data_object_frame_cbor_offset_out_of_range() {
+        // Build a real data-object frame then corrupt the cbor_offset
+        // footer field to point outside the valid range
+        // (framing.rs L405-409).
+        let desc = make_descriptor(vec![4]);
+        let payload = vec![7u8; 16];
+        let mut frame = encode_data_object_frame(&desc, &payload, false, false).unwrap();
+        // Footer layout: [cbor_offset u64][hash u64][ENDF 4].
+        // cbor_offset sits 20 bytes before frame end.
+        let n = frame.len();
+        let cbor_offset_pos = n - DATA_OBJECT_FOOTER_SIZE;
+        // Write a bogus offset (3) that is < FRAME_HEADER_SIZE.
+        frame[cbor_offset_pos..cbor_offset_pos + 8].copy_from_slice(&3u64.to_be_bytes());
+        let err = decode_data_object_frame(&frame).unwrap_err().to_string();
+        assert!(
+            err.contains("out of valid range"),
+            "expected cbor_offset range error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_data_object_frame_cbor_before_bad_cbor() {
+        // cbor_before = true layout (CBOR sits right after the header,
+        // before the payload).  This routes decode through the
+        // Cursor / `ciborium::from_reader` path; corrupting the CBOR
+        // bytes drives its parse-error closure (framing.rs L439-441).
+        let desc = make_descriptor(vec![4]);
+        let payload = vec![1u8; 16];
+        let mut frame = encode_data_object_frame(&desc, &payload, true, false).unwrap();
+        // With cbor_before = true the CBOR descriptor starts at
+        // FRAME_HEADER_SIZE.  Overwrite its first bytes with 0xFF
+        // (CBOR major-type-7 "break") which `from_reader` rejects.
+        for b in &mut frame[FRAME_HEADER_SIZE..FRAME_HEADER_SIZE + 8] {
+            *b = 0xFF;
+        }
+        let err = decode_data_object_frame(&frame).unwrap_err().to_string();
+        assert!(
+            err.contains("descriptor") || err.contains("CBOR") || err.contains("parse"),
+            "expected CBOR parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_data_object_frame_cbor_before_bad_descriptor() {
+        // cbor_before = true, but the CBOR parses to a *valid* Value
+        // that is not a DataObjectDescriptor — drives the
+        // `deserialized()` error closure (framing.rs L447-449).
+        let desc = make_descriptor(vec![4]);
+        let payload = vec![1u8; 16];
+        let mut frame = encode_data_object_frame(&desc, &payload, true, false).unwrap();
+        // Replace the first CBOR byte with 0xF6 (CBOR `null`), a fully
+        // valid single Value that cannot deserialize into the struct.
+        frame[FRAME_HEADER_SIZE] = 0xF6;
+        let err = decode_data_object_frame(&frame).unwrap_err().to_string();
+        assert!(
+            err.contains("deserialize") || err.contains("descriptor"),
+            "expected descriptor deserialize error, got: {err}"
+        );
+    }
+
+    // ── Phase 7: build_hash_frame_cbor ───────────────────────────────────
+
+    #[test]
+    fn test_build_hash_frame_cbor_not_hashing_returns_none() {
+        // hashing=false → Ok(None) early return (framing.rs L489-491).
+        let frames = vec![vec![0u8; 40]];
+        let out = build_hash_frame_cbor(&frames, false).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn test_build_hash_frame_cbor_frame_too_small() {
+        // A frame shorter than the common footer (12) cannot carry a
+        // hash slot (framing.rs L498-504).
+        let frames = vec![vec![0u8; 8]];
+        let err = build_hash_frame_cbor(&frames, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("too small to read inline hash"),
+            "expected too-small error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_build_hash_frame_cbor_happy_path() {
+        // Real hashed frames produce a populated aggregate HashFrame.
+        let desc = make_descriptor(vec![4]);
+        let payload = vec![3u8; 16];
+        let frame = encode_data_object_frame(&desc, &payload, false, true).unwrap();
+        let out = build_hash_frame_cbor(&[frame], true).unwrap();
+        assert!(out.is_some());
+        // The aggregate parses back to a HashFrame with one entry.
+        let hf = metadata::cbor_to_hash_frame(&out.unwrap()).unwrap();
+        assert_eq!(hf.hashes.len(), 1);
+    }
+
+    // ── Phase 8: streaming-mode decode paths ─────────────────────────────
+
+    /// Build a streaming-style message: preamble.total_length = 0,
+    /// postamble.total_length = 0, terminated by END_MAGIC.  Frames are
+    /// the supplied (content, type) list.
+    fn build_streaming_message(frames: &[(&[u8], FrameType)]) -> Vec<u8> {
+        let meta = make_global_meta();
+        let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+        let desc = make_descriptor(vec![4]);
+        let payload = vec![0u8; 16];
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+
+        for (content, frame_type) in frames {
+            match frame_type {
+                FrameType::NTensorFrame => {
+                    let frame = encode_data_object_frame(&desc, &payload, false, false).unwrap();
+                    out.extend_from_slice(&frame);
+                    let pad = (8 - (out.len() % 8)) % 8;
+                    out.extend(std::iter::repeat_n(0u8, pad));
+                }
+                _ => {
+                    let data = if content.is_empty() {
+                        &meta_cbor
+                    } else {
+                        *content
+                    };
+                    write_frame(&mut out, *frame_type, 1, 0, data, false, true);
+                }
+            }
+        }
+
+        // Streaming postamble: total_length stays 0.
+        let postamble_offset = out.len();
+        let postamble = Postamble {
+            first_footer_offset: postamble_offset as u64,
+            total_length: 0,
+        };
+        postamble.write_to(&mut out);
+
+        // Preamble: total_length stays 0 (streaming).
+        let mut flags = MessageFlags::default();
+        flags.set(MessageFlags::HEADER_METADATA);
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags,
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut preamble_bytes = Vec::new();
+        preamble.write_to(&mut preamble_bytes);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&preamble_bytes);
+
+        out
+    }
+
+    #[test]
+    fn test_decode_message_streaming_total_length_zero() {
+        // preamble.total_length = 0 → msg_end computed from buf.len()
+        // (framing.rs L932-939, the streaming branch).
+        let msg = build_streaming_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let decoded = decode_message(&msg).unwrap();
+        assert_eq!(decoded.preamble.total_length, 0);
+        assert_eq!(decoded.objects.len(), 1);
+    }
+
+    #[test]
+    fn test_decode_message_no_metadata_frame() {
+        // A message with only a data object and no metadata frame
+        // → "no metadata frame found" (framing.rs L1051-1053).
+        let msg = build_streaming_message(&[(&[], FrameType::NTensorFrame)]);
+        let err = decode_message(&msg).unwrap_err().to_string();
+        assert!(
+            err.contains("no metadata frame"),
+            "expected no-metadata error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_message_tiny_total_length_rejected() {
+        // A buffered message whose preamble claims a total_length below
+        // the fixed preamble+postamble minimum is rejected before any
+        // offset math (framing.rs L895-899).
+        let meta = make_global_meta();
+        let mut msg = encode_message(&meta, &[], false, Default::default()).unwrap();
+        // total_length lives at preamble bytes [16..24).  Set it to a
+        // value < PREAMBLE_SIZE + POSTAMBLE_SIZE but > 0 and <= len.
+        let tiny = (PREAMBLE_SIZE + POSTAMBLE_SIZE - 1) as u64;
+        msg[16..24].copy_from_slice(&tiny.to_be_bytes());
+        let err = decode_message(&msg).unwrap_err().to_string();
+        assert!(
+            err.contains("smaller than the minimum message size"),
+            "expected minimum-size error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_message_postamble_total_length_mismatch() {
+        // A buffered message whose postamble's mirrored total_length
+        // disagrees with the preamble's is rejected (framing.rs
+        // L909-913).
+        let meta = make_global_meta();
+        let mut msg = encode_message(&meta, &[], false, Default::default()).unwrap();
+        // Postamble sits in the last 24 bytes: [first_footer_offset u64]
+        // [total_length u64][END_MAGIC 8].  Corrupt the mirrored
+        // total_length (offset len-16..len-8) to a non-zero wrong value.
+        let n = msg.len();
+        let wrong = (msg.len() as u64) + 1;
+        msg[n - 16..n - 8].copy_from_slice(&wrong.to_be_bytes());
+        let err = decode_message(&msg).unwrap_err().to_string();
+        assert!(
+            err.contains("does not match preamble total_length"),
+            "expected postamble-mismatch error, got: {err}"
+        );
+    }
+
+    // ── Phase 8b: footer-hash aggregate frame (assemble_message) ─────────
+
+    #[test]
+    fn test_encode_message_with_footer_hash_policy() {
+        // hash_policy.footer = true emits a FooterHash frame and sets
+        // FOOTER_HASHES — exercising the footer-hash branches in
+        // assemble_message / encode_message (framing.rs L665-666,
+        // L672-673, L762-763, L799-800).
+        let meta = make_global_meta();
+        let objects = vec![EncodedObject {
+            descriptor: make_descriptor(vec![4]),
+            encoded_payload: vec![7u8; 16],
+        }];
+        let policy = HashFramePolicy {
+            header: false,
+            footer: true,
+        };
+        let msg = encode_message(&meta, &objects, true, policy).unwrap();
+        let decoded = decode_message(&msg).unwrap();
+        // The aggregate footer-hash frame is parsed into hash_frame.
+        assert!(decoded.hash_frame.is_some());
+        assert!(
+            decoded.preamble.flags.has(MessageFlags::FOOTER_HASHES),
+            "FOOTER_HASHES flag must be set"
+        );
+    }
+
+    // ── Phase 9: decode_metadata_only paths ──────────────────────────────
+
+    #[test]
+    fn test_decode_metadata_only_streaming() {
+        // Streaming message: total_length=0 path through
+        // decode_metadata_only (framing.rs L1108-1115).
+        let mut meta = make_global_meta();
+        meta.extra
+            .insert("k".to_string(), ciborium::Value::Text("v".to_string()));
+        let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+        let msg = build_streaming_message(&[
+            (&meta_cbor, FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let decoded = decode_metadata_only(&msg).unwrap();
+        assert!(decoded.extra.contains_key("k"));
+    }
+
+    #[test]
+    fn test_decode_metadata_only_skips_leading_frames() {
+        // An index frame precedes the metadata frame, forcing the
+        // skip-frame branch (framing.rs L1134-1155) before metadata is
+        // found.
+        let idx = IndexFrame {
+            offsets: vec![0, 64],
+            lengths: vec![40, 40],
+        };
+        let idx_cbor = crate::metadata::index_to_cbor(&idx).unwrap();
+        let mut meta = make_global_meta();
+        meta.extra
+            .insert("after_index".to_string(), ciborium::Value::Bool(true));
+        let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+        let msg = build_streaming_message(&[
+            (&idx_cbor, FrameType::HeaderIndex),
+            (&meta_cbor, FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let decoded = decode_metadata_only(&msg).unwrap();
+        assert!(decoded.extra.contains_key("after_index"));
+    }
+
+    #[test]
+    fn test_decode_metadata_only_no_metadata_frame() {
+        // No metadata frame at all → "no metadata frame found"
+        // (framing.rs L1159-1161).
+        let idx = IndexFrame {
+            offsets: vec![0],
+            lengths: vec![40],
+        };
+        let idx_cbor = crate::metadata::index_to_cbor(&idx).unwrap();
+        let msg = build_streaming_message(&[
+            (&idx_cbor, FrameType::HeaderIndex),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let err = decode_metadata_only(&msg).unwrap_err().to_string();
+        assert!(
+            err.contains("no metadata frame"),
+            "expected no-metadata error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_metadata_only_skip_frame_below_header_size() {
+        // A non-metadata frame whose total_length is below the frame
+        // header size triggers the skip-frame guard
+        // (framing.rs L1148-1151).  Hand-built so the bogus length is
+        // exact.
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+        // HeaderIndex frame header with total_length = 10 (< 16).
+        let fh = FrameHeader {
+            frame_type: FrameType::HeaderIndex,
+            version: 1,
+            flags: 0,
+            total_length: 10,
+        };
+        fh.write_to(&mut out);
+        out.extend(std::iter::repeat_n(0u8, 64));
+        let postamble = Postamble {
+            first_footer_offset: 0,
+            total_length: 0,
+        };
+        postamble.write_to(&mut out);
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags: MessageFlags::default(),
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut pb = Vec::new();
+        preamble.write_to(&mut pb);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&pb);
+        let err = decode_metadata_only(&out).unwrap_err().to_string();
+        assert!(
+            err.contains("smaller than header size"),
+            "expected sub-header error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_metadata_only_walks_leading_padding() {
+        // A stray pad byte before the first frame forces the
+        // byte-at-a-time advance in decode_metadata_only
+        // (framing.rs L1119, L1121-1123).
+        let mut meta = make_global_meta();
+        meta.extra
+            .insert("padded".to_string(), ciborium::Value::Bool(true));
+        let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+        // One stray pad byte before the metadata frame magic.
+        out.push(0u8);
+        write_frame(
+            &mut out,
+            FrameType::HeaderMetadata,
+            1,
+            0,
+            &meta_cbor,
+            false,
+            true,
+        );
+        let postamble = Postamble {
+            first_footer_offset: 0,
+            total_length: 0,
+        };
+        postamble.write_to(&mut out);
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags: MessageFlags::default(),
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut pb = Vec::new();
+        preamble.write_to(&mut pb);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&pb);
+        let decoded = decode_metadata_only(&out).unwrap();
+        assert!(decoded.extra.contains_key("padded"));
+    }
+
+    #[test]
+    fn test_decode_message_walks_internal_padding() {
+        // Put a stray non-FR pad byte AFTER the metadata frame but
+        // before the (re-aligned) data-object frame, forcing the
+        // byte-at-a-time advance in decode_message's main loop
+        // (framing.rs L960-962) without disturbing frame alignment.
+        let mut meta = make_global_meta();
+        meta.extra
+            .insert("p".to_string(), ciborium::Value::Bool(true));
+        let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+        write_frame(
+            &mut out,
+            FrameType::HeaderMetadata,
+            1,
+            0,
+            &meta_cbor,
+            false,
+            true,
+        );
+        // Inject 8 stray pad bytes (a full alignment unit) so the next
+        // frame stays 8-aligned but the loop must walk the padding.
+        out.extend(std::iter::repeat_n(0u8, 8));
+        let frame =
+            encode_data_object_frame(&make_descriptor(vec![4]), &[0u8; 16], false, false).unwrap();
+        out.extend_from_slice(&frame);
+        let pad = (8 - (out.len() % 8)) % 8;
+        out.extend(std::iter::repeat_n(0u8, pad));
+        let postamble = Postamble {
+            first_footer_offset: out.len() as u64,
+            total_length: 0,
+        };
+        postamble.write_to(&mut out);
+        let mut flags = MessageFlags::default();
+        flags.set(MessageFlags::HEADER_METADATA);
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags,
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut pb = Vec::new();
+        preamble.write_to(&mut pb);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&pb);
+        let decoded = decode_message(&out).unwrap();
+        assert_eq!(decoded.objects.len(), 1);
+        assert!(decoded.global_metadata.extra.contains_key("p"));
+    }
+
+    // ── Phase 10: data_object_inline_hashes ──────────────────────────────
+
+    #[test]
+    fn test_data_object_inline_hashes_buffered_hashing() {
+        // Buffered message with hashing on → each NTensorFrame slot
+        // carries a non-zero digest (framing.rs L1250-1256).
+        let meta = make_global_meta();
+        let objects = vec![
+            EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
+            },
+            EncodedObject {
+                descriptor: make_descriptor(vec![2]),
+                encoded_payload: vec![2u8; 8],
+            },
+        ];
+        let msg = encode_message(&meta, &objects, true, Default::default()).unwrap();
+        let hashes = data_object_inline_hashes(&msg).unwrap();
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.iter().all(|h| h.is_some()));
+    }
+
+    #[test]
+    fn test_data_object_inline_hashes_no_hashing_yields_none() {
+        // hashing off → slots are zero → None entries.
+        let meta = make_global_meta();
+        let objects = vec![EncodedObject {
+            descriptor: make_descriptor(vec![4]),
+            encoded_payload: vec![1u8; 16],
+        }];
+        let msg = encode_message(&meta, &objects, false, Default::default()).unwrap();
+        let hashes = data_object_inline_hashes(&msg).unwrap();
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes[0].is_none());
+    }
+
+    #[test]
+    fn test_data_object_inline_hashes_streaming() {
+        // Streaming message (total_length=0) drives the
+        // buf.len()-based msg_end branch (framing.rs L1207-1214).
+        let msg = build_streaming_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let hashes = data_object_inline_hashes(&msg).unwrap();
+        assert_eq!(hashes.len(), 1);
+        // The hand-built frame has hashing off → slot is zero → None.
+        assert!(hashes[0].is_none());
+    }
+
+    #[test]
+    fn test_data_object_inline_hashes_ragged_tail_stops() {
+        // A buffer that ends mid-frame (no FR magic at the cursor)
+        // stops cleanly (framing.rs L1218-1224).
+        let meta = make_global_meta();
+        let objects = vec![EncodedObject {
+            descriptor: make_descriptor(vec![4]),
+            encoded_payload: vec![1u8; 16],
+        }];
+        let mut msg = encode_message(&meta, &objects, true, Default::default()).unwrap();
+        // Append a few stray bytes that aren't a frame; the streaming
+        // (total_length>0) bound already stops the walk, so this just
+        // confirms the happy walk still returns one hash.
+        msg.extend_from_slice(&[0xAB, 0xCD]);
+        let hashes = data_object_inline_hashes(&msg).unwrap();
+        assert_eq!(hashes.len(), 1);
+    }
+
+    #[test]
+    fn test_data_object_inline_hashes_frame_past_buffer() {
+        // A hand-built streaming message whose single frame claims a
+        // total_length running past the buffer end
+        // (framing.rs L1237-1244).
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+        // Frame header claiming a giant total_length.
+        let fh = FrameHeader {
+            frame_type: FrameType::HeaderMetadata,
+            version: 1,
+            flags: 0,
+            total_length: 100_000,
+        };
+        fh.write_to(&mut out);
+        // Pad out so msg_end (buf.len()-POSTAMBLE) is past the header.
+        out.extend(std::iter::repeat_n(0u8, 32));
+        let postamble = Postamble {
+            first_footer_offset: 0,
+            total_length: 0,
+        };
+        postamble.write_to(&mut out);
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags: MessageFlags::default(),
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut pb = Vec::new();
+        preamble.write_to(&mut pb);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&pb);
+        let err = data_object_inline_hashes(&out).unwrap_err().to_string();
+        assert!(
+            err.contains("extends past buffer end"),
+            "expected past-buffer error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_data_object_inline_hashes_frame_below_minimum() {
+        // A frame whose total_length is < header+common-footer
+        // (framing.rs L1245-1249).
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+        let fh = FrameHeader {
+            frame_type: FrameType::HeaderMetadata,
+            version: 1,
+            flags: 0,
+            total_length: 20, // < 16 + 12 = 28
+        };
+        fh.write_to(&mut out);
+        out.extend(std::iter::repeat_n(0u8, 64));
+        let postamble = Postamble {
+            first_footer_offset: 0,
+            total_length: 0,
+        };
+        postamble.write_to(&mut out);
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags: MessageFlags::default(),
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut pb = Vec::new();
+        preamble.write_to(&mut pb);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&pb);
+        let err = data_object_inline_hashes(&out).unwrap_err().to_string();
+        assert!(
+            err.contains("smaller than minimum frame size"),
+            "expected minimum-frame error, got: {err}"
+        );
+    }
+
+    // ── Phase 11: streaming scan (try_forward_hop streaming branch) ───────
+
+    #[test]
+    fn test_scan_streaming_message() {
+        // A streaming message has preamble.total_length=0, so the
+        // forward scanner must search for END_MAGIC
+        // (framing.rs L1374-1384).
+        let msg = build_streaming_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let offsets = scan(&msg);
+        assert_eq!(offsets.len(), 1);
+        assert_eq!(offsets[0], (0, msg.len()));
+    }
+
+    #[test]
+    fn test_scan_streaming_then_buffered() {
+        // A streaming message followed by a buffered one.  The
+        // streaming fallback path runs in scan_bidirectional, then the
+        // forward residual scan finds the buffered message.
+        let stream = build_streaming_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let meta = make_global_meta();
+        let buffered = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![9u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        let mut buf = stream.clone();
+        buf.extend_from_slice(&buffered);
+        let offsets = scan(&buf);
+        assert_eq!(offsets.len(), 2);
+        assert_eq!(offsets[0], (0, stream.len()));
+        assert_eq!(offsets[1], (stream.len(), buffered.len()));
+    }
+
+    #[test]
+    fn test_scan_buffered_message_missing_end_magic() {
+        // A buffered message whose END_MAGIC has been corrupted is not
+        // recognised: try_forward_hop returns None and the scanner
+        // byte-walks (framing.rs L1369-1372).  The scan yields nothing.
+        let meta = make_global_meta();
+        let mut msg = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        // Corrupt the trailing END_MAGIC (last 8 bytes).
+        let n = msg.len();
+        msg[n - 8..].copy_from_slice(b"BADMAGIC");
+        let offsets = scan(&msg);
+        assert!(
+            offsets.is_empty(),
+            "a message with no valid END_MAGIC must not be found: {offsets:?}"
+        );
+    }
+
+    #[test]
+    fn test_scan_file_buffered_message_missing_end_magic() {
+        // File variant: try the seek-based forward scan over a buffered
+        // message with a corrupted END_MAGIC (framing.rs L1609-1617,
+        // the END_MAGIC-mismatch → pos+=1 fall-through).
+        let meta = make_global_meta();
+        let mut msg = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        let n = msg.len();
+        msg[n - 8..].copy_from_slice(b"BADMAGIC");
+        let opts = ScanOptions {
+            bidirectional: false,
+            ..Default::default()
+        };
+        let mut cursor = std::io::Cursor::new(&msg);
+        let offsets = scan_file_with_options(&mut cursor, &opts).unwrap();
+        assert!(offsets.is_empty(), "got: {offsets:?}");
+    }
+
+    #[test]
+    fn test_scan_file_streaming_no_end_magic_advances() {
+        // A streaming preamble (total_length=0) with NO END_MAGIC
+        // anywhere: scan_file's streaming branch searches to the end,
+        // finds nothing, and the outer loop advances one byte
+        // (framing.rs L1649-1654).
+        use crate::wire::{MessageFlags, Preamble, WIRE_VERSION};
+        let mut out = Vec::new();
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags: MessageFlags::default(),
+            reserved: 0,
+            total_length: 0,
+        };
+        preamble.write_to(&mut out);
+        // 64 bytes of non-END_MAGIC filler, no postamble END_MAGIC.
+        out.extend(std::iter::repeat_n(0x11u8, 64));
+        let opts = ScanOptions {
+            bidirectional: false,
+            ..Default::default()
+        };
+        let mut cursor = std::io::Cursor::new(&out);
+        let offsets = scan_file_with_options(&mut cursor, &opts).unwrap();
+        assert!(offsets.is_empty(), "got: {offsets:?}");
+    }
+
+    // ── Phase 12: scan non-bidirectional + scan_file streaming ───────────
+
+    #[test]
+    fn test_scan_with_options_forward_only() {
+        // bidirectional=false routes through scan_forward_all
+        // (framing.rs L1326-1327).
+        let meta = make_global_meta();
+        let msg = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        let mut buf = msg.clone();
+        buf.extend_from_slice(&msg);
+        let opts = ScanOptions {
+            bidirectional: false,
+            ..Default::default()
+        };
+        let offsets = scan_with_options(&buf, &opts);
+        assert_eq!(offsets.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_file_forward_only_option() {
+        // scan_file_with_options with bidirectional=false routes
+        // through scan_file_forward (framing.rs L1564-1565).
+        let meta = make_global_meta();
+        let msg = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        let mut buf = msg.clone();
+        buf.extend_from_slice(&msg);
+        let opts = ScanOptions {
+            bidirectional: false,
+            ..Default::default()
+        };
+        let mut cursor = std::io::Cursor::new(&buf);
+        let offsets = scan_file_with_options(&mut cursor, &opts).unwrap();
+        assert_eq!(offsets.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_file_streaming_message() {
+        // scan_file over a streaming message exercises the chunked
+        // END_MAGIC search (framing.rs L1619-1651).
+        let msg = build_streaming_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let mut cursor = std::io::Cursor::new(&msg);
+        let offsets = scan_file(&mut cursor).unwrap();
+        assert_eq!(offsets.len(), 1);
+        assert_eq!(offsets[0], (0, msg.len()));
+    }
+
+    #[test]
+    fn test_scan_file_streaming_large_message_multichunk() {
+        // A streaming message whose body exceeds the 4096-byte read
+        // chunk forces the multi-chunk END_MAGIC search with 7-byte
+        // overlap (framing.rs L1645-1647).
+        let meta = make_global_meta();
+        let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+        // ~10 KiB payload → frame body crosses several 4096 chunks.
+        let big_payload = vec![0x5Au8; 10_000];
+        let desc = make_descriptor(vec![2500]); // 2500 * f32 = 10000 bytes
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+        write_frame(
+            &mut out,
+            FrameType::HeaderMetadata,
+            1,
+            0,
+            &meta_cbor,
+            false,
+            true,
+        );
+        let frame = encode_data_object_frame(&desc, &big_payload, false, false).unwrap();
+        out.extend_from_slice(&frame);
+        let pad = (8 - (out.len() % 8)) % 8;
+        out.extend(std::iter::repeat_n(0u8, pad));
+        let postamble = Postamble {
+            first_footer_offset: out.len() as u64,
+            total_length: 0,
+        };
+        postamble.write_to(&mut out);
+        let mut flags = MessageFlags::default();
+        flags.set(MessageFlags::HEADER_METADATA);
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags,
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut pb = Vec::new();
+        preamble.write_to(&mut pb);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&pb);
+
+        let buffer_offsets = scan(&out);
+        let mut cursor = std::io::Cursor::new(&out);
+        let file_offsets = scan_file(&mut cursor).unwrap();
+        assert_eq!(file_offsets.len(), 1);
+        assert_eq!(file_offsets[0], (0, out.len()));
+        assert_eq!(buffer_offsets, file_offsets);
+    }
+
+    #[test]
+    fn test_scan_file_streaming_then_buffered() {
+        // Streaming + buffered in a file; scan_file_bidirectional falls
+        // back to forward for the streaming head, then matches scan().
+        let stream = build_streaming_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let meta = make_global_meta();
+        let buffered = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![9u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        let mut buf = stream.clone();
+        buf.extend_from_slice(&buffered);
+
+        let buffer_offsets = scan(&buf);
+        let mut cursor = std::io::Cursor::new(&buf);
+        let file_offsets = scan_file(&mut cursor).unwrap();
+        assert_eq!(buffer_offsets, file_offsets);
+        assert_eq!(file_offsets.len(), 2);
+    }
+
+    // ── Phase 13: try_backward_hop / scan corruption fallbacks ───────────
+
+    #[test]
+    fn test_scan_backward_hop_oversized_total_falls_back() {
+        // Two buffered messages, but the SECOND message's postamble
+        // claims an implausibly large total_length (> max_message_size).
+        // The backward walker bails (try_backward_hop L1451-1454) and
+        // the forward walker still finds both messages.
+        let meta = make_global_meta();
+        let mk = || {
+            encode_message(
+                &meta,
+                &[EncodedObject {
+                    descriptor: make_descriptor(vec![4]),
+                    encoded_payload: vec![1u8; 16],
+                }],
+                false,
+                Default::default(),
+            )
+            .unwrap()
+        };
+        let msg1 = mk();
+        let mut buf = msg1.clone();
+        buf.extend_from_slice(&msg1);
+        // Use a tiny max_message_size so the real postamble total is
+        // rejected by the backward walker → forward-only fallback.
+        let opts = ScanOptions {
+            bidirectional: true,
+            max_message_size: 4,
+        };
+        let offsets = scan_with_options(&buf, &opts);
+        assert_eq!(offsets.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_file_backward_hop_oversized_total_falls_back() {
+        // File variant of the oversized-postamble fallback
+        // (scan_file_bidirectional L1764-1767).
+        let meta = make_global_meta();
+        let msg = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        let mut buf = msg.clone();
+        buf.extend_from_slice(&msg);
+        let opts = ScanOptions {
+            bidirectional: true,
+            max_message_size: 4,
+        };
+        let mut cursor = std::io::Cursor::new(&buf);
+        let offsets = scan_file_with_options(&mut cursor, &opts).unwrap();
+        assert_eq!(offsets.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_file_backward_hop_streaming_postamble_fallback() {
+        // A buffered message followed by a streaming message in a file.
+        // The backward walker reads the trailing streaming postamble
+        // (total_length=0) and falls back to forward scanning
+        // (scan_file_bidirectional L1791-1794).
+        let meta = make_global_meta();
+        let buffered = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        let stream = build_streaming_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let mut buf = buffered.clone();
+        buf.extend_from_slice(&stream);
+
+        let buffer_offsets = scan(&buf);
+        let mut cursor = std::io::Cursor::new(&buf);
+        let file_offsets = scan_file(&mut cursor).unwrap();
+        assert_eq!(buffer_offsets, file_offsets);
+        assert_eq!(file_offsets.len(), 2);
+        assert_eq!(file_offsets[0], (0, buffered.len()));
+        assert_eq!(file_offsets[1], (buffered.len(), stream.len()));
+    }
+
+    #[test]
+    fn test_try_backward_hop_streaming_stop() {
+        // A buffered message followed by a streaming message: the
+        // backward walker reads the streaming postamble (total_length=0)
+        // and yields StreamingStop (try_backward_hop L1447-1449), letting
+        // the forward walker complete.
+        let meta = make_global_meta();
+        let buffered = encode_message(
+            &meta,
+            &[EncodedObject {
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
+            }],
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        let stream = build_streaming_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+        ]);
+        let mut buf = buffered.clone();
+        buf.extend_from_slice(&stream);
+        let offsets = scan(&buf);
+        assert_eq!(offsets.len(), 2);
+        assert_eq!(offsets[0], (0, buffered.len()));
+        assert_eq!(offsets[1], (buffered.len(), stream.len()));
     }
 }

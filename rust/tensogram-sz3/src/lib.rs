@@ -492,7 +492,14 @@ impl<V: SZ3Compressible, T: std::ops::DerefMut<Target = [V]>> DimensionedData<V,
 // ---------------------------------------------------------------------------
 
 /// Errors returned by the SZ3 compression and dimension-building APIs.
+///
+/// `#[non_exhaustive]` (matching this crate's other public enums,
+/// `CompressionAlgorithm` and `ErrorBound`) so new error categories — such
+/// as the `MalformedCompressedStream` variant added for hostile-input
+/// hardening — can be introduced without breaking downstream exhaustive
+/// `match`es.  Callers should include a `_ =>` arm.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum SZ3Error {
     #[error(
         "invalid dimension specification for data of length {len}: already specified dimensions \
@@ -529,6 +536,12 @@ pub enum SZ3Error {
         found: Vec<usize>,
         expected: Vec<usize>,
     },
+    /// The compressed SZ3 stream is too short or its embedded sizes are
+    /// inconsistent with the buffer length (truncated / malformed /
+    /// hostile input).  The C++ header parser signals this by returning
+    /// a config with `N == 0`; see SEC-010 in `plans/SECURITY_ANALYSIS.md`.
+    #[error("malformed or truncated SZ3 compressed stream")]
+    MalformedCompressedStream,
 }
 
 type Result<T> = std::result::Result<T, SZ3Error>;
@@ -618,6 +631,15 @@ impl ParsedConfig {
                 compressed_data.len(),
             )
         };
+        // SECURITY (SEC-010): the C++ shim returns `N == 0` (with a null
+        // `dims`) when the input is too short or its embedded sizes are
+        // inconsistent with the buffer length — a malformed/truncated
+        // SZ3 stream from a hostile `.tgm`.  Reject it here rather than
+        // proceeding to read a null/garbage dims pointer.
+        if raw.N == 0 || raw.dims.is_null() {
+            // Free nothing: an invalid config carries a null dims.
+            return Err(SZ3Error::MalformedCompressedStream);
+        }
         let dims: Vec<usize> = (0..raw.N)
             .map(|i| unsafe { std::ptr::read(raw.dims.add(i as usize)) })
             .collect();
@@ -739,9 +761,28 @@ pub fn decompress<V: SZ3Compressible, T: std::ops::Deref<Target = [u8]>>(
         return Err(SZ3Error::DecompressedDataTypeMismatch);
     }
 
-    let decompressed_data = unsafe {
-        let mut decompressed_data: Vec<V> = Vec::with_capacity(len);
+    // SECURITY (SEC-010): a `len` of 0 only arises from a malformed config
+    // trailer — the dimension builder cannot construct a valid 0-element
+    // payload.  Reject it before calling the native decompressor: with
+    // `len == 0` the `Vec` has no spare capacity, so
+    // `spare_capacity_mut().as_mut_ptr()` is a dangling pointer, and we
+    // cannot rely on the C++ decoder leaving it untouched for a hostile
+    // zero-length stream.
+    if len == 0 {
+        return Err(SZ3Error::MalformedCompressedStream);
+    }
 
+    // SECURITY (SEC-011): `len` is the element count from the parsed
+    // SZ3 config trailer, which is attacker-controlled.  An infallible
+    // `Vec::with_capacity(len)` lets a hostile config claiming a huge
+    // `num` abort the process via OOM.  Reserve fallibly so a
+    // pathological count surfaces as a structured error instead.
+    let mut decompressed_data: Vec<V> = Vec::new();
+    decompressed_data
+        .try_reserve_exact(len)
+        .map_err(|_| SZ3Error::MalformedCompressedStream)?;
+
+    let decompressed_data = unsafe {
         V::decompress(
             compressed_data.as_ptr(),
             compressed_data.len(),

@@ -18,6 +18,7 @@ exclude = [
     "rust/tensogram-grib",
     "rust/tensogram-netcdf",
     "rust/tensogram-wasm",
+    "fuzz",
 ]
 
 [workspace.package]

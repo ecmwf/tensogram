@@ -208,11 +208,21 @@ MUTANTS_ENV = \
 	CMAKE_BUILD_PARALLEL_LEVEL=1 \
 	MAKEFLAGS=-j1
 
+# Feature set enabled during mutation runs.  cargo-mutants forwards
+# `--features` to whatever package set it builds; for `mutants-diff` that
+# set is auto-selected from the changed files, so every feature listed
+# here must be defined by at least one selected package or the unmutated
+# baseline build fails ("none of the selected packages contains this
+# feature").  We therefore enable the async + remote surface via features
+# the core `tensogram` crate defines (`async`, `remote`) rather than the
+# `tensogram-ffi`-only `async-remote` alias — `remote` pulls in the same
+# `tensogram/remote` code path, and a diff that actually touches
+# `tensogram-ffi` selects that crate (which defines `async`) anyway.
 MUTANTS_FLAGS = \
 	--no-shuffle \
 	--jobserver-tasks $(MUTANTS_JOBS) \
 	--timeout-multiplier 3.0 \
-	--features async,async-remote
+	--features async,remote
 
 mutants: mutants-install ## Full-workspace cargo-mutants sweep (long; use mutants-diff for PRs)
 	$(MUTANTS_ENV) cargo mutants $(MUTANTS_FLAGS)

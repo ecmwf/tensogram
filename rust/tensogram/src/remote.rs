@@ -4648,4 +4648,1566 @@ mod bidir_http_tests {
         );
         assert!(result.is_err(), "tiny remote file must be rejected");
     }
+
+    /// Exercise the async `open_async_with_scan_opts` constructor end
+    /// to end over HTTP: URL parsing, `parse_url_opts`, the async
+    /// `head` size probe and the open-time forward scan.  The other
+    /// in-memory tests construct the backend directly, so this is the
+    /// only coverage of the async open path's network preamble.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_open_async_roundtrip() {
+        let buf = concat_messages(vec![make_message(vec![4], 1), make_message(vec![8], 2)]);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_async_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions::default(),
+        )
+        .await
+        .expect("open_async");
+        assert_eq!(backend.message_count_async().await.expect("count"), 2);
+        let _ = backend.source_url();
+    }
+
+    /// Async open must reject a file smaller than the minimum message
+    /// size after the `head` probe, before any scan runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_open_async_too_small_errors() {
+        let server = MockObjectStore::start(vec![0u8; 8]).await.expect("start");
+        let result = RemoteBackend::open_async_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions::default(),
+        )
+        .await;
+        assert!(result.is_err(), "tiny remote file must be rejected (async)");
+    }
+
+    /// Async open of a non-`.tgm` (all-zero) buffer large enough to
+    /// pass the size guard: the open-time scan finds no valid message
+    /// and the constructor surfaces the "no valid messages" error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_open_async_no_valid_messages_errors() {
+        let server = MockObjectStore::start(vec![0u8; 128]).await.expect("start");
+        let result = RemoteBackend::open_async_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions::default(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "no valid messages must be rejected (async)"
+        );
+    }
+}
+
+// ── In-memory store tests (no live network) ──────────────────────────────────
+//
+// These tests construct `RemoteBackend` directly over an
+// `object_store::memory::InMemory` store, feeding crafted (valid and
+// malformed) `.tgm` bytes via the private fields the inline test
+// module can access.  This drives the scan / fetch / decode I/O paths
+// without the hyper HTTP server that `bidir_http_tests` and
+// `tests/remote_http.rs` rely on, letting us reach the format-error,
+// EOF, streaming, oversized-length, footer-discovery and large-frame
+// descriptor branches by simply mutating the in-memory buffer.
+#[cfg(test)]
+mod inmem_tests {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    use object_store::memory::InMemory;
+    use object_store::path::Path as ObjectPath;
+
+    use super::*;
+    use crate::Dtype;
+    use crate::encode::{self, EncodeOptions};
+    use crate::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+
+    const TEST_PATH: &str = "file.tgm";
+
+    /// Drive an async future to completion on the crate's shared
+    /// runtime.  Used by the synchronous setup helpers (e.g. `put`)
+    /// from a non-async test body.
+    fn run<F: std::future::Future>(fut: F) -> F::Output {
+        shared_runtime().expect("shared runtime").block_on(fut)
+    }
+
+    /// Build a header-indexed single-object message via the public
+    /// encoder.  Header-indexed (`HEADER_METADATA | HEADER_INDEX`) is
+    /// the default `encode::encode` layout, exercising the
+    /// `discover_header_layout*` paths and the indexed fast paths.
+    fn make_message(shape: Vec<u64>, fill: u8) -> Vec<u8> {
+        let strides = strides_for(&shape);
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape: shape.clone(),
+            strides,
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let num_bytes = shape.iter().product::<u64>() as usize * 4;
+        let data = vec![fill; num_bytes];
+        let meta = GlobalMetadata {
+            extra: BTreeMap::new(),
+            ..Default::default()
+        };
+        encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .expect("encode test message")
+    }
+
+    /// Footer-indexed message (`FOOTER_METADATA | FOOTER_INDEX`) built
+    /// via the streaming encoder with backfill.  Exercises the
+    /// `discover_footer_layout*` paths.
+    fn make_streaming_message(shape: Vec<u64>, fill: u8) -> Vec<u8> {
+        use crate::streaming::StreamingEncoder;
+        let strides = strides_for(&shape);
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape: shape.clone(),
+            strides,
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let num_bytes = shape.iter().product::<u64>() as usize * 4;
+        let data = vec![fill; num_bytes];
+        let meta = GlobalMetadata {
+            extra: BTreeMap::new(),
+            ..Default::default()
+        };
+        let cursor = std::io::Cursor::new(Vec::<u8>::new());
+        let mut enc = StreamingEncoder::new(cursor, &meta, &EncodeOptions::default())
+            .expect("streaming encoder");
+        enc.write_object(&desc, &data).expect("write object");
+        let cursor = enc.finish_with_backfill().expect("finish_with_backfill");
+        cursor.into_inner()
+    }
+
+    fn strides_for(shape: &[u64]) -> Vec<u64> {
+        if shape.is_empty() {
+            return vec![];
+        }
+        let mut s = vec![1u64; shape.len()];
+        for i in (0..shape.len() - 1).rev() {
+            s[i] = s[i + 1] * shape[i + 1];
+        }
+        s
+    }
+
+    fn dummy_layout(offset: u64, length: u64) -> CachedLayout {
+        CachedLayout {
+            offset,
+            length,
+            preamble: Preamble {
+                version: 3,
+                flags: MessageFlags::default(),
+                reserved: 0,
+                total_length: length,
+            },
+            index: None,
+            global_metadata: None,
+        }
+    }
+
+    fn concat(parts: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut out = Vec::new();
+        for p in parts {
+            out.extend_from_slice(&p);
+        }
+        out
+    }
+
+    /// Construct a `RemoteBackend` directly over an `InMemory` store
+    /// holding `buf`, WITHOUT running the open-time scan.  The caller
+    /// drives whichever scan/read method it wants to exercise.  This
+    /// is the key to reaching malformed-input branches that
+    /// `open_with_scan_opts` would reject up-front.
+    fn raw_backend(buf: Vec<u8>, scan_opts: RemoteScanOptions) -> RemoteBackend {
+        let store = Arc::new(InMemory::new());
+        let path = ObjectPath::from(TEST_PATH);
+        let file_size = buf.len() as u64;
+        {
+            let store = store.clone();
+            let path = path.clone();
+            run(async move {
+                store.put(&path, buf.into()).await.expect("put");
+            });
+        }
+        RemoteBackend {
+            source_url: "memory://file.tgm".to_string(),
+            store,
+            path,
+            file_size,
+            state: Mutex::new(RemoteState {
+                prev_scan_offset: file_size,
+                bwd_active: scan_opts.bidirectional,
+                ..RemoteState::default()
+            }),
+            scan_opts,
+        }
+    }
+
+    /// Same as [`raw_backend`] but mirrors `open_with_scan_opts`: runs
+    /// the initial forward scan so the backend is in the same state a
+    /// real open would leave it.  Returns an error if the buffer is
+    /// too small or has no valid messages, matching production.
+    fn open_backend(buf: Vec<u8>, scan_opts: RemoteScanOptions) -> Result<RemoteBackend> {
+        if (buf.len() as u64) < (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64 {
+            return Err(TensogramError::Remote("too small".to_string()));
+        }
+        let backend = raw_backend(buf, scan_opts);
+        {
+            let mut state = backend.state.lock().expect("lock");
+            backend.scan_next_locked(&mut state)?;
+            if state.layouts.is_empty() {
+                return Err(TensogramError::Remote("no valid messages".to_string()));
+            }
+        }
+        Ok(backend)
+    }
+
+    fn forward_opts() -> RemoteScanOptions {
+        RemoteScanOptions {
+            bidirectional: false,
+        }
+    }
+
+    fn bidir_opts() -> RemoteScanOptions {
+        RemoteScanOptions {
+            bidirectional: true,
+        }
+    }
+
+    fn layout_offsets(backend: &RemoteBackend) -> Vec<(u64, u64)> {
+        let state = backend.state.lock().expect("lock");
+        state.layouts.iter().map(|l| (l.offset, l.length)).collect()
+    }
+
+    // ── Sync forward-scan termination branches ───────────────────────────
+
+    #[test]
+    fn sync_open_too_small_buffer_rejected() {
+        // file_size < PREAMBLE_SIZE + POSTAMBLE_SIZE is rejected before
+        // any scan runs (mirrors open_with_scan_opts guard).
+        let err = open_backend(vec![0u8; 8], forward_opts());
+        assert!(err.is_err(), "tiny buffer must be rejected");
+    }
+
+    #[test]
+    fn sync_scan_bad_magic_terminates_forward() {
+        // A buffer large enough to pass the size guard but whose first
+        // bytes are not MAGIC: forward scan terminates with bad-magic
+        // and produces no layouts.
+        let buf = vec![0u8; 128];
+        let backend = raw_backend(buf, forward_opts());
+        {
+            let mut state = backend.state.lock().expect("lock");
+            backend.scan_next_locked(&mut state).expect("scan");
+            assert!(state.layouts.is_empty(), "bad magic => no layouts");
+            assert!(state.fwd_terminated, "bad magic terminates forward");
+        }
+    }
+
+    #[test]
+    fn sync_scan_eof_when_remaining_below_min() {
+        // Valid first message, then a trailing tail < min_message_size:
+        // after the first hop, the next forward step terminates at EOF.
+        let msg = make_message(vec![4], 1);
+        let mut buf = msg.clone();
+        buf.extend_from_slice(&[0u8; 10]); // < 48-byte min, pure tail
+        let backend = raw_backend(buf, forward_opts());
+        backend.message_count().expect("count");
+        let state = backend.state.lock().expect("lock");
+        assert_eq!(state.layouts.len(), 1, "tail too small => single message");
+        assert!(state.fwd_terminated);
+    }
+
+    #[test]
+    fn sync_scan_preamble_parse_error_terminates() {
+        // Valid MAGIC but a preamble whose version byte is invalid so
+        // Preamble::read_from fails => preamble-parse-error-fwd branch.
+        let mut buf = make_message(vec![4], 1);
+        // Corrupt the version field (offset 8 in the 24-byte preamble:
+        // [MAGIC 8][version 1]...) to an unsupported value.
+        buf[8] = 0xFF;
+        let backend = raw_backend(buf, forward_opts());
+        {
+            let mut state = backend.state.lock().expect("lock");
+            backend.scan_next_locked(&mut state).expect("scan");
+            assert!(state.fwd_terminated, "bad preamble terminates forward");
+            assert!(state.layouts.is_empty());
+        }
+    }
+
+    #[test]
+    fn sync_scan_length_out_of_range_terminates() {
+        // Patch the preamble.total_length (offset 16) to claim a length
+        // larger than the file => length-out-of-range-fwd.
+        let mut buf = make_message(vec![4], 1);
+        let huge = (buf.len() as u64) + 10_000;
+        buf[16..24].copy_from_slice(&huge.to_be_bytes());
+        let backend = raw_backend(buf, forward_opts());
+        {
+            let mut state = backend.state.lock().expect("lock");
+            backend.scan_next_locked(&mut state).expect("scan");
+            assert!(state.fwd_terminated);
+            assert!(state.layouts.is_empty());
+        }
+    }
+
+    // ── Streaming (total_length == 0) forward branches ───────────────────
+
+    /// Turn a backfilled message into a streaming one by zeroing the
+    /// preamble.total_length (offset 16) and the postamble.total_length
+    /// (offset 8 within the trailing 24-byte postamble).  The file-end
+    /// END_MAGIC is left intact so the streaming-tail branch records a
+    /// layout spanning to EOF.
+    fn make_streaming_preamble(shape: Vec<u64>, fill: u8) -> Vec<u8> {
+        let mut buf = make_streaming_message(shape, fill);
+        buf[16..24].copy_from_slice(&0u64.to_be_bytes());
+        let pa_total = buf.len() - POSTAMBLE_SIZE + 8;
+        buf[pa_total..pa_total + 8].copy_from_slice(&0u64.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn sync_scan_streaming_tail_recorded() {
+        // A real streaming message: preamble.total_length == 0,
+        // file-end END_MAGIC present.  Forward records a single
+        // streaming-tail layout spanning to EOF and terminates.
+        let buf = make_streaming_preamble(vec![4], 7);
+        let backend = raw_backend(buf.clone(), forward_opts());
+        backend.message_count().expect("count");
+        let layouts = layout_offsets(&backend);
+        assert_eq!(layouts.len(), 1, "streaming tail => single layout");
+        assert_eq!(layouts[0].0, 0);
+        assert_eq!(layouts[0].1, buf.len() as u64, "tail spans to EOF");
+    }
+
+    #[test]
+    fn sync_scan_streaming_end_magic_mismatch_terminates() {
+        // Streaming preamble but corrupt file-end END_MAGIC: the
+        // streaming-end-magic-mismatch branch terminates without
+        // recording a layout.
+        let mut buf = make_streaming_preamble(vec![4], 7);
+        let len = buf.len();
+        buf[len - 8..].copy_from_slice(b"BADMAGIC");
+        let backend = raw_backend(buf, forward_opts());
+        {
+            let mut state = backend.state.lock().expect("lock");
+            backend.scan_next_locked(&mut state).expect("scan");
+            assert!(state.fwd_terminated);
+            assert!(state.layouts.is_empty(), "mismatch => no layout");
+        }
+    }
+
+    // ── scan_and_discover_next_locked (eager forward + parse) ────────────
+
+    #[test]
+    fn sync_eager_discover_bad_magic_terminates() {
+        // ensure_layout_eager_locked routes forward-only discovery
+        // through scan_and_discover_next_locked.  Feed a buffer whose
+        // second "message" region has no MAGIC so the eager discover
+        // terminates after the first message.
+        let good = make_message(vec![4], 1);
+        let mut buf = good.clone();
+        // append junk >= min message size so the size guard passes but
+        // MAGIC check fails on the second hop.
+        buf.extend_from_slice(&[0u8; 64]);
+        let backend = raw_backend(buf, forward_opts());
+        // read_metadata(0) drives ensure_layout_eager_locked ->
+        // scan_and_discover_next_locked for msg 0 (header-indexed).
+        let meta = backend.read_metadata(0).expect("metadata");
+        let _ = meta;
+        let count = backend.message_count().expect("count");
+        assert_eq!(count, 1, "junk after msg 0 => only one message");
+    }
+
+    #[test]
+    fn sync_eager_discover_streaming_preamble_branch() {
+        // Forward-only eager discovery (scan_and_discover_next_locked)
+        // over a streaming-preamble (total_length == 0) message: the
+        // streaming-tail layout spanning to EOF is recorded via the
+        // streaming branch.  The body still carries footer frames
+        // (the buffer was a real backfilled message before zeroing the
+        // total_length), so the subsequent lazy footer discovery
+        // populates metadata + index.
+        let buf = make_streaming_preamble(vec![4], 5);
+        let backend = raw_backend(buf.clone(), forward_opts());
+        let _meta = backend
+            .read_metadata(0)
+            .expect("footer frames still recoverable on streaming tail");
+        let state = backend.state.lock().expect("lock");
+        assert_eq!(state.layouts.len(), 1, "streaming tail recorded");
+        assert_eq!(
+            state.layouts[0].length,
+            buf.len() as u64,
+            "streaming tail spans to EOF",
+        );
+    }
+
+    #[test]
+    fn sync_eager_discover_streaming_recorded() {
+        // Footer-indexed streaming message read via the eager-discover
+        // forward path: read_metadata must populate metadata + index
+        // through discover_footer_layout_from_suffix_locked.
+        let buf = make_streaming_message(vec![6], 3);
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        let meta = backend.read_metadata(0).expect("metadata");
+        let _ = meta;
+        let (_m, descs) = backend.read_descriptors(0).expect("descriptors");
+        assert_eq!(descs.len(), 1);
+        let state = backend.state.lock().expect("lock");
+        assert!(state.layouts[0].global_metadata.is_some());
+        assert!(state.layouts[0].index.is_some());
+    }
+
+    #[test]
+    fn sync_eager_discover_footer_indexed_second_message() {
+        // Forward-only eager discovery of a footer-indexed message at
+        // index 1 routes through scan_and_discover_next_locked ->
+        // discover_footer_layout_from_suffix_locked.
+        let buf = concat(vec![
+            make_streaming_message(vec![4], 1),
+            make_streaming_message(vec![8], 2),
+        ]);
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        let _meta = backend.read_metadata(1).expect("metadata for message 1");
+        let (_m, descs) = backend.read_descriptors(1).expect("descriptors");
+        assert_eq!(descs.len(), 1);
+        let state = backend.state.lock().expect("lock");
+        assert!(state.layouts[1].global_metadata.is_some());
+        assert!(state.layouts[1].index.is_some());
+    }
+
+    #[test]
+    fn sync_eager_discover_preamble_parse_error_at_second_message() {
+        // Eager forward discovery of message 1 hits a corrupt preamble
+        // (bad version) in scan_and_discover_next_locked => terminate;
+        // requesting message 1 then errors out of range.
+        let good = make_message(vec![4], 1);
+        let good_len = good.len();
+        let mut buf = concat(vec![good, make_message(vec![8], 2)]);
+        buf[good_len + 8] = 0xFF; // corrupt version of 2nd preamble
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        let err = backend.read_metadata(1);
+        assert!(err.is_err(), "corrupt 2nd preamble => message 1 missing");
+        assert_eq!(backend.message_count().expect("count"), 1);
+    }
+
+    #[test]
+    fn sync_eager_discover_length_out_of_range_at_second_message() {
+        // Eager forward discovery of message 1 reads a preamble whose
+        // total_length overruns the file => length-out-of-range-fwd.
+        let good = make_message(vec![4], 1);
+        let good_len = good.len();
+        let second = make_message(vec![8], 2);
+        let mut buf = concat(vec![good.clone(), second]);
+        let huge = (buf.len() as u64) + 50_000;
+        buf[good_len + 16..good_len + 24].copy_from_slice(&huge.to_be_bytes());
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        let err = backend.read_metadata(1);
+        assert!(err.is_err(), "overrun 2nd length => message 1 missing");
+        assert_eq!(backend.message_count().expect("count"), 1);
+    }
+
+    #[test]
+    fn sync_debug_format_includes_message_count() {
+        // Exercise the RemoteBackend Debug impl (locks state, reads
+        // layouts.len()).
+        let buf = make_message(vec![4], 1);
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        backend.message_count().expect("count");
+        let dbg = format!("{backend:?}");
+        assert!(dbg.contains("RemoteBackend"), "debug includes type name");
+        assert!(dbg.contains("messages"), "debug includes message count");
+    }
+
+    // ── Sync read API: indexed multi-message batch paths ─────────────────
+
+    #[test]
+    fn sync_read_object_and_range_batch_multi_message() {
+        // Two header-indexed messages; batch APIs must return one
+        // result per requested message and decode each frame.
+        let buf = concat(vec![make_message(vec![4], 10), make_message(vec![8], 20)]);
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        assert_eq!(backend.message_count().expect("count"), 2);
+        let opts = crate::DecodeOptions::default();
+
+        let obj_batch = backend
+            .read_object_batch(&[0, 1], 0, &opts)
+            .expect("read_object_batch");
+        assert_eq!(obj_batch.len(), 2);
+        assert_eq!(obj_batch[0].2.len(), 4 * 4);
+        assert_eq!(obj_batch[1].2.len(), 8 * 4);
+
+        let range_batch = backend
+            .read_range_batch(&[0, 1], 0, &[(0, 4)], &opts)
+            .expect("read_range_batch");
+        assert_eq!(range_batch.len(), 2);
+        assert_eq!(range_batch[0].1[0].len(), 4 * 4);
+    }
+
+    #[test]
+    fn sync_read_object_out_of_range_obj_idx_errors() {
+        // validate_index_access: obj_idx beyond the single object.
+        let buf = make_message(vec![4], 1);
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        let opts = crate::DecodeOptions::default();
+        let err = backend.read_object(0, 5, &opts);
+        assert!(err.is_err(), "obj idx out of range must error");
+    }
+
+    #[test]
+    fn sync_read_message_index_out_of_range_errors() {
+        let buf = make_message(vec![4], 1);
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        let err = backend.read_message(99);
+        assert!(err.is_err(), "msg idx out of range must error");
+    }
+
+    #[test]
+    fn sync_read_descriptors_large_frame_prefix_path() {
+        // A data object whose frame exceeds DESCRIPTOR_PREFIX_THRESHOLD
+        // (64 KiB) forces read_descriptor_only down the header/footer/
+        // CBOR-prefix path instead of the small-frame fast path.
+        let n = 20_000u64; // 20k float32 = 80 KB payload > 64 KiB
+        let buf = make_message(vec![n], 9);
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        let (_m, descs) = backend
+            .read_descriptors(0)
+            .expect("read_descriptors large frame");
+        assert_eq!(descs.len(), 1);
+        assert_eq!(descs[0].shape, vec![n]);
+    }
+
+    fn one_desc(shape: Vec<u64>) -> DataObjectDescriptor {
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape: shape.clone(),
+            strides: strides_for(&shape),
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        }
+    }
+
+    /// Build a backend whose buffer is exactly one hand-built data
+    /// object frame stored at offset 0.  The buffer is NOT a valid
+    /// `.tgm` message, but `read_descriptor_only` operates purely on
+    /// frame offsets, so we can drive it directly to exercise the
+    /// large-frame header/footer/CBOR-prefix branches.
+    fn frame_backend(frame: Vec<u8>) -> RemoteBackend {
+        let store = Arc::new(InMemory::new());
+        let path = ObjectPath::from(TEST_PATH);
+        let file_size = frame.len() as u64;
+        {
+            let store = store.clone();
+            let path = path.clone();
+            run(async move {
+                store.put(&path, frame.into()).await.expect("put");
+            });
+        }
+        RemoteBackend {
+            source_url: "memory://frame.tgm".to_string(),
+            store,
+            path,
+            file_size,
+            state: Mutex::new(RemoteState {
+                prev_scan_offset: file_size,
+                ..RemoteState::default()
+            }),
+            scan_opts: forward_opts(),
+        }
+    }
+
+    #[test]
+    fn read_descriptor_only_large_cbor_before_prefix_loop() {
+        // cbor_before = true places the CBOR descriptor right after the
+        // 16-byte header; a frame > 64 KiB drives read_descriptor_only
+        // down the `else` (non-cbor-after) prefix-doubling loop.
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let frame = framing::encode_data_object_frame(&desc, &payload, true, false)
+            .expect("cbor-before frame");
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame);
+        let got = backend
+            .read_descriptor_only(0, frame_len, 0, frame_len)
+            .expect("descriptor via prefix loop");
+        assert_eq!(got.shape, vec![20_000]);
+    }
+
+    #[test]
+    fn read_descriptor_only_large_cbor_after() {
+        // cbor_before = false (default): the > 64 KiB branch reads the
+        // CBOR region between cbor_start and footer_start in one shot.
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let frame = framing::encode_data_object_frame(&desc, &payload, false, false)
+            .expect("cbor-after frame");
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame);
+        let got = backend
+            .read_descriptor_only(0, frame_len, 0, frame_len)
+            .expect("descriptor cbor-after");
+        assert_eq!(got.shape, vec![20_000]);
+    }
+
+    #[test]
+    fn read_descriptor_only_large_non_data_object_frame_errors() {
+        // A > 64 KiB frame whose type is not a data object must be
+        // rejected at the `is_data_object()` guard.
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let mut frame =
+            framing::encode_data_object_frame(&desc, &payload, false, false).expect("frame");
+        // Frame header byte layout: [b"FR"][type u8]... Patch the frame
+        // type to a non-data-object value (HeaderMetadata).
+        frame[2] = FrameType::HeaderMetadata as u8;
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame);
+        let err = backend.read_descriptor_only(0, frame_len, 0, frame_len);
+        assert!(err.is_err(), "non-data-object large frame must error");
+    }
+
+    #[test]
+    fn read_descriptor_only_large_cbor_offset_below_header_errors() {
+        // Patch the footer cbor_offset to 0 (< FRAME_HEADER_SIZE) on a
+        // > 64 KiB frame: the "below frame header size" guard fires.
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let mut frame =
+            framing::encode_data_object_frame(&desc, &payload, false, false).expect("frame");
+        let len = frame.len();
+        // cbor_offset = first 8 bytes of the 20-byte data-object footer.
+        let cbor_off_pos = len - DATA_OBJECT_FOOTER_SIZE;
+        frame[cbor_off_pos..cbor_off_pos + 8].copy_from_slice(&0u64.to_be_bytes());
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame);
+        let err = backend.read_descriptor_only(0, frame_len, 0, frame_len);
+        assert!(err.is_err(), "cbor_offset below header size must error");
+    }
+
+    #[test]
+    fn read_descriptor_only_large_cbor_offset_past_footer_errors() {
+        // Patch cbor_offset to land at/after the footer start: the
+        // "cbor_offset points at or past footer" guard fires (cbor_after).
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let mut frame =
+            framing::encode_data_object_frame(&desc, &payload, false, false).expect("frame");
+        let len = frame.len();
+        let cbor_off_pos = len - DATA_OBJECT_FOOTER_SIZE;
+        // frame_length covers the whole frame; setting cbor_offset to
+        // (frame_len - footer) puts cbor_start exactly at footer_start.
+        let footer_rel = (len - DATA_OBJECT_FOOTER_SIZE) as u64;
+        frame[cbor_off_pos..cbor_off_pos + 8].copy_from_slice(&footer_rel.to_be_bytes());
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame);
+        let err = backend.read_descriptor_only(0, frame_len, 0, frame_len);
+        assert!(err.is_err(), "cbor_offset at/past footer must error");
+    }
+
+    #[test]
+    fn read_descriptor_only_large_bad_endf_errors() {
+        // Corrupt the ENDF trailer of a > 64 KiB frame: the footer
+        // ENDF check fires.
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let mut frame =
+            framing::encode_data_object_frame(&desc, &payload, false, false).expect("frame");
+        let len = frame.len();
+        frame[len - 4..].copy_from_slice(b"XXXX");
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame);
+        let err = backend.read_descriptor_only(0, frame_len, 0, frame_len);
+        assert!(err.is_err(), "bad ENDF on large frame must error");
+    }
+
+    // ── parse_header_frames / parse_footer_frames(_into) units ───────────
+
+    /// Build a single frame: `[FrameHeader 16][payload][hash 8][ENDF 4]`.
+    /// `total_length` covers header..end-of-ENDF.
+    fn build_frame(frame_type: FrameType, payload: &[u8]) -> Vec<u8> {
+        let total = FRAME_HEADER_SIZE + payload.len() + FRAME_COMMON_FOOTER_SIZE;
+        let fh = FrameHeader {
+            frame_type,
+            version: 1,
+            flags: 0,
+            total_length: total as u64,
+        };
+        let mut out = Vec::with_capacity(total);
+        fh.write_to(&mut out);
+        out.extend_from_slice(payload);
+        out.extend_from_slice(&[0u8; 8]); // hash slot
+        out.extend_from_slice(FRAME_END);
+        out
+    }
+
+    #[test]
+    fn parse_footer_frames_into_frame_too_small_errors() {
+        // A frame whose declared total_length is below the minimum
+        // (header + ENDF) trips the "smaller than minimum" guard.
+        let mut buf = build_frame(FrameType::FooterMetadata, &[1, 2, 3, 4]);
+        // Patch total_length (offset 8 in the 16-byte frame header) to 1.
+        buf[8..16].copy_from_slice(&1u64.to_be_bytes());
+        let err = RemoteBackend::parse_footer_frames_into(&buf);
+        assert!(err.is_err(), "below-minimum frame total_length must error");
+    }
+
+    #[test]
+    fn parse_footer_frames_into_missing_endf_errors() {
+        // Corrupt the ENDF trailer: the frame-end check fires.
+        let mut buf = build_frame(FrameType::FooterMetadata, &[1, 2, 3, 4]);
+        let len = buf.len();
+        buf[len - 4..].copy_from_slice(b"XXXX");
+        let err = RemoteBackend::parse_footer_frames_into(&buf);
+        assert!(err.is_err(), "missing ENDF trailer must error");
+    }
+
+    #[test]
+    fn parse_footer_frames_into_skips_non_footer_frames() {
+        // A frame whose type is neither FooterMetadata nor FooterIndex
+        // is skipped without populating either option.
+        let buf = build_frame(FrameType::HeaderMetadata, &[9, 9, 9, 9]);
+        let (metadata, index) = RemoteBackend::parse_footer_frames_into(&buf).expect("parse ok");
+        assert!(metadata.is_none() && index.is_none(), "non-footer skipped");
+    }
+
+    #[test]
+    fn parse_footer_frames_missing_metadata_errors() {
+        // parse_footer_frames requires BOTH metadata and index frames;
+        // an empty buffer yields neither and errors.
+        let mut state = RemoteState::default();
+        state.layouts.push(dummy_layout(0, 100));
+        let err = RemoteBackend::parse_footer_frames(&mut state, 0, &[]);
+        assert!(
+            err.is_err(),
+            "footer region without a metadata frame must error",
+        );
+    }
+
+    #[test]
+    fn parse_header_frames_missing_metadata_errors() {
+        // No FR magic at all in the buffer: parse_header_frames finds
+        // no metadata frame and errors.
+        let mut state = RemoteState::default();
+        state.layouts.push(dummy_layout(0, 100));
+        let buf = vec![0u8; PREAMBLE_SIZE + 32];
+        let err = RemoteBackend::parse_header_frames(&mut state, 0, &buf);
+        assert!(err.is_err(), "header region without metadata must error");
+    }
+
+    fn valid_metadata_cbor() -> Vec<u8> {
+        let meta = GlobalMetadata {
+            extra: BTreeMap::new(),
+            ..Default::default()
+        };
+        crate::metadata::global_metadata_to_cbor(&meta).expect("meta cbor")
+    }
+
+    #[test]
+    fn parse_header_frames_missing_index_errors() {
+        // A header region holding only a metadata frame (no index)
+        // populates metadata but errors on the missing index frame.
+        let meta_frame = build_frame(FrameType::HeaderMetadata, &valid_metadata_cbor());
+        let mut buf = vec![0u8; PREAMBLE_SIZE];
+        buf.extend_from_slice(&meta_frame);
+        let mut state = RemoteState::default();
+        state.layouts.push(dummy_layout(0, buf.len() as u64));
+        let err = RemoteBackend::parse_header_frames(&mut state, 0, &buf);
+        assert!(err.is_err(), "header region without an index must error");
+        // metadata WAS populated before the index check failed.
+        assert!(state.layouts[0].global_metadata.is_some());
+    }
+
+    #[test]
+    fn parse_footer_frames_missing_index_errors() {
+        // A footer region holding only a metadata frame (no index)
+        // populates metadata but errors on the missing index frame.
+        let meta_frame = build_frame(FrameType::FooterMetadata, &valid_metadata_cbor());
+        let mut state = RemoteState::default();
+        state.layouts.push(dummy_layout(0, 100));
+        let err = RemoteBackend::parse_footer_frames(&mut state, 0, &meta_frame);
+        assert!(err.is_err(), "footer region without an index must error");
+        assert!(state.layouts[0].global_metadata.is_some());
+    }
+
+    // ── checked_frame_range / validate_index_access units ────────────────
+
+    #[test]
+    fn checked_frame_range_overflow_rejected() {
+        // frame_offset + frame_length overflows u64.
+        let err = RemoteBackend::checked_frame_range(0, 100, u64::MAX, 10);
+        assert!(err.is_err(), "frame offset overflow must error");
+        // frame end exceeds message boundary.
+        let err = RemoteBackend::checked_frame_range(0, 100, 50, 100);
+        assert!(err.is_err(), "frame beyond message boundary must error");
+        // valid range.
+        let ok = RemoteBackend::checked_frame_range(10, 100, 20, 30).expect("valid");
+        assert_eq!(ok, 30..60);
+    }
+
+    #[test]
+    fn validate_index_access_mismatched_lengths_errors() {
+        let index = IndexFrame {
+            offsets: vec![0, 100],
+            lengths: vec![50], // mismatched
+        };
+        let err = RemoteBackend::validate_index_access(&index, 0);
+        assert!(err.is_err(), "mismatched offsets/lengths must error");
+    }
+
+    /// Inject a corrupt index (offsets/lengths length mismatch) plus a
+    /// dummy metadata so `ensure_layout_eager_locked` short-circuits,
+    /// then confirm `read_descriptors` surfaces the corrupt-index error
+    /// before any frame fetch.
+    #[test]
+    fn sync_read_descriptors_corrupt_index_errors() {
+        let buf = make_message(vec![4], 1);
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        {
+            let mut state = backend.state.lock().expect("lock");
+            state.layouts[0].global_metadata = Some(GlobalMetadata::default());
+            state.layouts[0].index = Some(IndexFrame {
+                offsets: vec![0, 100],
+                lengths: vec![50],
+            });
+        }
+        let err = backend.read_descriptors(0);
+        assert!(err.is_err(), "corrupt index must error in read_descriptors");
+    }
+
+    // ── Bidirectional scan over InMemory ─────────────────────────────────
+
+    #[test]
+    fn sync_bidir_matches_forward_only_multi_message() {
+        let parts: Vec<Vec<u8>> = (0..7)
+            .map(|i| make_message(vec![4 + i as u64], i as u8))
+            .collect();
+        let buf = concat(parts);
+        let fwd = open_backend(buf.clone(), forward_opts()).expect("open fwd");
+        fwd.message_count().expect("count");
+        let bidir = open_backend(buf, bidir_opts()).expect("open bidir");
+        bidir.message_count().expect("count");
+        assert_eq!(
+            layout_offsets(&fwd),
+            layout_offsets(&bidir),
+            "bidirectional must match forward-only layouts",
+        );
+        assert_eq!(layout_offsets(&bidir).len(), 7);
+    }
+
+    #[test]
+    fn sync_bidir_one_message_no_duplicate() {
+        let buf = make_message(vec![4], 42);
+        let backend = open_backend(buf, bidir_opts()).expect("open");
+        let count = backend.message_count().expect("count");
+        assert_eq!(count, 1, "1-message bidir must not duplicate");
+    }
+
+    #[test]
+    fn sync_bidir_corrupt_postamble_falls_back_to_forward() {
+        // Corrupt the file-end postamble's END_MAGIC: backward yields
+        // bad-end-magic-bwd, forward still finds both messages.
+        let mut buf = concat(vec![make_message(vec![4], 1), make_message(vec![8], 2)]);
+        let len = buf.len();
+        buf[len - 8..].copy_from_slice(b"BADMAGIC");
+        let backend = open_backend(buf, bidir_opts()).expect("open");
+        let count = backend.message_count().expect("count");
+        assert_eq!(count, 2, "backward corruption => forward still scans");
+    }
+
+    #[test]
+    fn sync_bidir_footer_indexed_eager_populates() {
+        // Footer-indexed multi-message file: backward eager-footer path
+        // pre-populates metadata + index on at least one layout.
+        let parts: Vec<Vec<u8>> = (0..6)
+            .map(|i| make_streaming_message(vec![4 + i as u64], i as u8))
+            .collect();
+        let buf = concat(parts);
+        let backend = open_backend(buf, bidir_opts()).expect("open");
+        let count = backend.message_count().expect("count");
+        assert_eq!(count, 6);
+        let state = backend.state.lock().expect("lock");
+        let any = (0..6).any(|i| {
+            state.layouts[i].global_metadata.is_some() && state.layouts[i].index.is_some()
+        });
+        assert!(any, "eager footer must populate at least one layout");
+    }
+
+    // ── Footer discovery error branches (sync) ───────────────────────────
+
+    #[test]
+    fn sync_footer_discovery_first_footer_offset_too_small_errors() {
+        // Footer-indexed message but patch the postamble's
+        // first_footer_offset to a value < PREAMBLE_SIZE so
+        // discover_footer_layout_locked rejects it.
+        let mut buf = make_streaming_message(vec![6], 3);
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
+        // first_footer_offset is the first u64 of the postamble.
+        buf[pa_start..pa_start + 8].copy_from_slice(&1u64.to_be_bytes());
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        // Force the lazy (non-eager) footer discovery by clearing any
+        // eager population — open in forward-only never eager-populates
+        // footer, so read_metadata drives discover_footer_layout.
+        let err = backend.read_metadata(0);
+        assert!(
+            err.is_err(),
+            "first_footer_offset below preamble end must error",
+        );
+    }
+
+    #[test]
+    fn sync_footer_discovery_first_footer_offset_past_postamble_errors() {
+        // Patch first_footer_offset to a value that lands at/after the
+        // postamble (footer_abs_start >= footer_abs_end), tripping the
+        // "points at or past postamble" guard.
+        let mut buf = make_streaming_message(vec![6], 3);
+        let msg_len = buf.len() as u64;
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
+        // first_footer_offset == msg_len puts footer_abs_start at EOF,
+        // well past footer_abs_end (= msg_end - POSTAMBLE_SIZE).
+        buf[pa_start..pa_start + 8].copy_from_slice(&msg_len.to_be_bytes());
+        let backend = open_backend(buf, forward_opts()).expect("open");
+        let err = backend.read_metadata(0);
+        assert!(
+            err.is_err(),
+            "first_footer_offset past postamble must error",
+        );
+    }
+}
+
+// ── Async in-memory store tests (no live network) ────────────────────────────
+//
+// Mirror of `inmem_tests` for the native async path
+// (`#[cfg(feature = "async")]`).  Drives the async scan / fetch /
+// decode methods (`scan_*_async`, `read_*_async`, `*_batch_async`,
+// `ensure_all_layouts_batch_async`, `discover_*_async`,
+// `read_descriptor_only_async`) over a crafted `InMemory` buffer.
+#[cfg(all(test, feature = "async"))]
+mod inmem_async_tests {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    use object_store::memory::InMemory;
+    use object_store::path::Path as ObjectPath;
+
+    use super::*;
+    use crate::Dtype;
+    use crate::encode::{self, EncodeOptions};
+    use crate::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+
+    const TEST_PATH: &str = "file.tgm";
+
+    fn strides_for(shape: &[u64]) -> Vec<u64> {
+        if shape.is_empty() {
+            return vec![];
+        }
+        let mut s = vec![1u64; shape.len()];
+        for i in (0..shape.len() - 1).rev() {
+            s[i] = s[i + 1] * shape[i + 1];
+        }
+        s
+    }
+
+    fn make_message(shape: Vec<u64>, fill: u8) -> Vec<u8> {
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape: shape.clone(),
+            strides: strides_for(&shape),
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let num_bytes = shape.iter().product::<u64>() as usize * 4;
+        let data = vec![fill; num_bytes];
+        let meta = GlobalMetadata {
+            extra: BTreeMap::new(),
+            ..Default::default()
+        };
+        encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .expect("encode test message")
+    }
+
+    fn make_streaming_message(shape: Vec<u64>, fill: u8) -> Vec<u8> {
+        use crate::streaming::StreamingEncoder;
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape: shape.clone(),
+            strides: strides_for(&shape),
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let num_bytes = shape.iter().product::<u64>() as usize * 4;
+        let data = vec![fill; num_bytes];
+        let meta = GlobalMetadata {
+            extra: BTreeMap::new(),
+            ..Default::default()
+        };
+        let cursor = std::io::Cursor::new(Vec::<u8>::new());
+        let mut enc = StreamingEncoder::new(cursor, &meta, &EncodeOptions::default())
+            .expect("streaming encoder");
+        enc.write_object(&desc, &data).expect("write object");
+        let cursor = enc.finish_with_backfill().expect("finish_with_backfill");
+        cursor.into_inner()
+    }
+
+    fn concat(parts: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut out = Vec::new();
+        for p in parts {
+            out.extend_from_slice(&p);
+        }
+        out
+    }
+
+    async fn raw_backend(buf: Vec<u8>, scan_opts: RemoteScanOptions) -> RemoteBackend {
+        let store = Arc::new(InMemory::new());
+        let path = ObjectPath::from(TEST_PATH);
+        let file_size = buf.len() as u64;
+        store.put(&path, buf.into()).await.expect("put");
+        RemoteBackend {
+            source_url: "memory://file.tgm".to_string(),
+            store,
+            path,
+            file_size,
+            state: Mutex::new(RemoteState {
+                prev_scan_offset: file_size,
+                bwd_active: scan_opts.bidirectional,
+                ..RemoteState::default()
+            }),
+            scan_opts,
+        }
+    }
+
+    /// Build a backend and run the async open-time forward scan so it
+    /// matches the state `open_async_with_scan_opts` would leave.
+    async fn open_backend(buf: Vec<u8>, scan_opts: RemoteScanOptions) -> Result<RemoteBackend> {
+        if (buf.len() as u64) < (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64 {
+            return Err(TensogramError::Remote("too small".to_string()));
+        }
+        let backend = raw_backend(buf, scan_opts).await;
+        backend.scan_next_async().await?;
+        {
+            let state = backend.lock_state()?;
+            if state.layouts.is_empty() {
+                return Err(TensogramError::Remote("no valid messages".to_string()));
+            }
+        }
+        Ok(backend)
+    }
+
+    fn forward_opts() -> RemoteScanOptions {
+        RemoteScanOptions {
+            bidirectional: false,
+        }
+    }
+
+    fn bidir_opts() -> RemoteScanOptions {
+        RemoteScanOptions {
+            bidirectional: true,
+        }
+    }
+
+    // ── Async forward-scan termination branches ──────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_scan_bad_magic_terminates() {
+        let backend = raw_backend(vec![0u8; 128], forward_opts()).await;
+        backend.scan_next_async().await.expect("scan");
+        let state = backend.lock_state().expect("lock");
+        assert!(state.fwd_terminated, "bad magic terminates forward");
+        assert!(state.layouts.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_scan_preamble_parse_error_terminates() {
+        let mut buf = make_message(vec![4], 1);
+        buf[8] = 0xFF; // invalid version
+        let backend = raw_backend(buf, forward_opts()).await;
+        backend.scan_next_async().await.expect("scan");
+        let state = backend.lock_state().expect("lock");
+        assert!(state.fwd_terminated);
+        assert!(state.layouts.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_scan_length_out_of_range_terminates() {
+        let mut buf = make_message(vec![4], 1);
+        let huge = (buf.len() as u64) + 10_000;
+        buf[16..24].copy_from_slice(&huge.to_be_bytes());
+        let backend = raw_backend(buf, forward_opts()).await;
+        backend.scan_next_async().await.expect("scan");
+        let state = backend.lock_state().expect("lock");
+        assert!(state.fwd_terminated);
+        assert!(state.layouts.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_scan_streaming_tail_recorded() {
+        let mut buf = make_streaming_message(vec![4], 7);
+        buf[16..24].copy_from_slice(&0u64.to_be_bytes());
+        let pa_total = buf.len() - POSTAMBLE_SIZE + 8;
+        buf[pa_total..pa_total + 8].copy_from_slice(&0u64.to_be_bytes());
+        let file_len = buf.len() as u64;
+        let backend = raw_backend(buf, forward_opts()).await;
+        backend.message_count_async().await.expect("count");
+        let state = backend.lock_state().expect("lock");
+        assert_eq!(state.layouts.len(), 1);
+        assert_eq!(state.layouts[0].length, file_len, "tail spans to EOF");
+    }
+
+    // ── Async read API roundtrips ────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_api_multi_message() {
+        let buf = concat(vec![make_message(vec![4], 10), make_message(vec![8], 20)]);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        assert_eq!(backend.message_count_async().await.expect("count"), 2);
+        assert_eq!(
+            backend
+                .message_layouts_async()
+                .await
+                .expect("layouts")
+                .len(),
+            2
+        );
+        assert!(
+            !backend
+                .read_message_async(1)
+                .await
+                .expect("read_message")
+                .is_empty()
+        );
+        let opts = crate::DecodeOptions::default();
+
+        let _meta = backend.read_metadata_async(0).await.expect("metadata");
+        let (_m, descs) = backend
+            .read_descriptors_async(1)
+            .await
+            .expect("descriptors");
+        assert_eq!(descs.len(), 1);
+
+        let (_m, _d, decoded) = backend
+            .read_object_async(0, 0, &opts)
+            .await
+            .expect("read_object_async");
+        assert_eq!(decoded.len(), 4 * 4);
+
+        let (_d, parts) = backend
+            .read_range_async(1, 0, &[(0, 8)], &opts)
+            .await
+            .expect("read_range_async");
+        assert_eq!(parts[0].len(), 8 * 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_batch_apis_multi_message() {
+        let buf = concat(vec![
+            make_message(vec![4], 10),
+            make_message(vec![8], 20),
+            make_message(vec![16], 30),
+        ]);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let opts = crate::DecodeOptions::default();
+
+        // ensure_all_layouts_batch_async + read_object_batch_async.
+        let obj_batch = backend
+            .read_object_batch_async(&[0, 1, 2], 0, &opts)
+            .await
+            .expect("read_object_batch_async");
+        assert_eq!(obj_batch.len(), 3);
+        assert_eq!(obj_batch[2].2.len(), 16 * 4);
+
+        let range_batch = backend
+            .read_range_batch_async(&[0, 2], 0, &[(0, 4)], &opts)
+            .await
+            .expect("read_range_batch_async");
+        assert_eq!(range_batch.len(), 2);
+        assert_eq!(range_batch[0].1[0].len(), 4 * 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_batch_empty_indices_is_noop() {
+        let buf = make_message(vec![4], 1);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        backend
+            .ensure_all_layouts_batch_async(&[])
+            .await
+            .expect("empty batch is a no-op");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_batch_out_of_range_index_errors() {
+        let buf = make_message(vec![4], 1);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let err = backend.ensure_all_layouts_batch_async(&[0, 9]).await;
+        assert!(err.is_err(), "out-of-range batch index must error");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_descriptors_large_frame_prefix_path() {
+        // Frame > 64 KiB forces read_descriptor_only_async down the
+        // header/footer/CBOR-prefix branch.
+        let n = 20_000u64;
+        let buf = make_message(vec![n], 9);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let (_m, descs) = backend
+            .read_descriptors_async(0)
+            .await
+            .expect("descriptors");
+        assert_eq!(descs.len(), 1);
+        assert_eq!(descs[0].shape, vec![n]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_message_out_of_range_errors() {
+        let buf = make_message(vec![4], 1);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let err = backend.read_message_async(42).await;
+        assert!(err.is_err(), "out-of-range message index must error");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_descriptors_corrupt_index_errors() {
+        let buf = make_message(vec![4], 1);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        {
+            let mut state = backend.lock_state().expect("lock");
+            state.layouts[0].global_metadata = Some(GlobalMetadata::default());
+            state.layouts[0].index = Some(IndexFrame {
+                offsets: vec![0, 100],
+                lengths: vec![50],
+            });
+        }
+        let err = backend.read_descriptors_async(0).await;
+        assert!(err.is_err(), "corrupt index must error (async)");
+    }
+
+    fn one_desc(shape: Vec<u64>) -> DataObjectDescriptor {
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape: shape.clone(),
+            strides: strides_for(&shape),
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        }
+    }
+
+    async fn frame_backend(frame: Vec<u8>) -> RemoteBackend {
+        let store = Arc::new(InMemory::new());
+        let path = ObjectPath::from(TEST_PATH);
+        let file_size = frame.len() as u64;
+        store.put(&path, frame.into()).await.expect("put");
+        RemoteBackend {
+            source_url: "memory://frame.tgm".to_string(),
+            store,
+            path,
+            file_size,
+            state: Mutex::new(RemoteState {
+                prev_scan_offset: file_size,
+                ..RemoteState::default()
+            }),
+            scan_opts: forward_opts(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_descriptor_only_large_cbor_before_prefix_loop() {
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let frame = framing::encode_data_object_frame(&desc, &payload, true, false)
+            .expect("cbor-before frame");
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame).await;
+        let got = backend
+            .read_descriptor_only_async(0, frame_len, 0, frame_len)
+            .await
+            .expect("descriptor via prefix loop");
+        assert_eq!(got.shape, vec![20_000]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_descriptor_only_large_cbor_after() {
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let frame = framing::encode_data_object_frame(&desc, &payload, false, false)
+            .expect("cbor-after frame");
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame).await;
+        let got = backend
+            .read_descriptor_only_async(0, frame_len, 0, frame_len)
+            .await
+            .expect("descriptor cbor-after");
+        assert_eq!(got.shape, vec![20_000]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_descriptor_only_large_non_data_object_errors() {
+        let desc = one_desc(vec![20_000]);
+        let payload = vec![0u8; 80_000];
+        let mut frame =
+            framing::encode_data_object_frame(&desc, &payload, false, false).expect("frame");
+        frame[2] = FrameType::HeaderMetadata as u8;
+        let frame_len = frame.len() as u64;
+        let backend = frame_backend(frame).await;
+        let err = backend
+            .read_descriptor_only_async(0, frame_len, 0, frame_len)
+            .await;
+        assert!(err.is_err(), "non-data-object large frame must error");
+    }
+
+    // ── Async footer-indexed discovery ───────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_footer_indexed_read_metadata() {
+        let buf = make_streaming_message(vec![6], 3);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let _meta = backend.read_metadata_async(0).await.expect("metadata");
+        let (_m, descs) = backend
+            .read_descriptors_async(0)
+            .await
+            .expect("descriptors");
+        assert_eq!(descs.len(), 1);
+        let state = backend.lock_state().expect("lock");
+        assert!(state.layouts[0].global_metadata.is_some());
+        assert!(state.layouts[0].index.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_footer_first_footer_offset_too_small_errors() {
+        let mut buf = make_streaming_message(vec![6], 3);
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
+        buf[pa_start..pa_start + 8].copy_from_slice(&1u64.to_be_bytes());
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let err = backend.read_metadata_async(0).await;
+        assert!(
+            err.is_err(),
+            "first_footer_offset below preamble must error"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_footer_first_footer_offset_past_postamble_errors() {
+        let mut buf = make_streaming_message(vec![6], 3);
+        let msg_len = buf.len() as u64;
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
+        buf[pa_start..pa_start + 8].copy_from_slice(&msg_len.to_be_bytes());
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let err = backend.read_metadata_async(0).await;
+        assert!(
+            err.is_err(),
+            "first_footer_offset past postamble must error"
+        );
+    }
+
+    // ── Async forward-only eager discovery (scan_and_discover_next_async) ─
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_eager_discover_bad_magic_terminates() {
+        // ensure_layout_eager_async forward-only path routes through
+        // scan_and_discover_next_async; junk after msg 0 terminates it.
+        let mut buf = make_message(vec![4], 1);
+        buf.extend_from_slice(&[0u8; 64]);
+        let backend = raw_backend(buf, forward_opts()).await;
+        let _meta = backend.read_metadata_async(0).await.expect("metadata");
+        let count = backend.message_count_async().await.expect("count");
+        assert_eq!(count, 1, "junk after msg 0 => only one message");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_eager_discover_preamble_parse_error_at_second_message() {
+        let good = make_message(vec![4], 1);
+        let good_len = good.len();
+        let mut buf = concat(vec![good, make_message(vec![8], 2)]);
+        buf[good_len + 8] = 0xFF;
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let err = backend.read_metadata_async(1).await;
+        assert!(err.is_err(), "corrupt 2nd preamble => message 1 missing");
+        assert_eq!(backend.message_count_async().await.expect("count"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_eager_discover_length_out_of_range_at_second_message() {
+        let good = make_message(vec![4], 1);
+        let good_len = good.len();
+        let mut buf = concat(vec![good, make_message(vec![8], 2)]);
+        let huge = (buf.len() as u64) + 50_000;
+        buf[good_len + 16..good_len + 24].copy_from_slice(&huge.to_be_bytes());
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let err = backend.read_metadata_async(1).await;
+        assert!(err.is_err(), "overrun 2nd length => message 1 missing");
+        assert_eq!(backend.message_count_async().await.expect("count"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_eager_discover_streaming_preamble_branch() {
+        // Streaming-preamble message read via the async eager-discover
+        // forward path: scan_and_discover_next_async's streaming branch
+        // records a tail layout; footer frames in the body still feed
+        // the lazy footer discovery.
+        let mut buf = make_streaming_message(vec![4], 5);
+        buf[16..24].copy_from_slice(&0u64.to_be_bytes());
+        let pa_total = buf.len() - POSTAMBLE_SIZE + 8;
+        buf[pa_total..pa_total + 8].copy_from_slice(&0u64.to_be_bytes());
+        let file_len = buf.len() as u64;
+        let backend = raw_backend(buf, forward_opts()).await;
+        let _meta = backend
+            .read_metadata_async(0)
+            .await
+            .expect("footer frames recoverable on streaming tail");
+        let state = backend.lock_state().expect("lock");
+        assert_eq!(state.layouts.len(), 1);
+        assert_eq!(state.layouts[0].length, file_len);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_eager_discover_streaming_end_magic_mismatch() {
+        // Streaming preamble but corrupt file-end END_MAGIC: the async
+        // streaming-end-magic-mismatch branch terminates forward with
+        // no layout, so the metadata read fails with out-of-range.
+        let mut buf = make_streaming_message(vec![4], 5);
+        buf[16..24].copy_from_slice(&0u64.to_be_bytes());
+        let pa_total = buf.len() - POSTAMBLE_SIZE + 8;
+        buf[pa_total..pa_total + 8].copy_from_slice(&0u64.to_be_bytes());
+        let len = buf.len();
+        buf[len - 8..].copy_from_slice(b"BADMAGIC");
+        let backend = raw_backend(buf, forward_opts()).await;
+        let err = backend.read_metadata_async(0).await;
+        assert!(err.is_err(), "streaming end-magic mismatch => no layout");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_footer_indexed_eager_discover_second_message() {
+        // Forward-only eager discovery of a footer-indexed message at
+        // index 1 routes through scan_and_discover_next_async ->
+        // discover_footer_layout_from_suffix_async (the suffix-read
+        // footer path), populating metadata + index inline.
+        let buf = concat(vec![
+            make_streaming_message(vec![4], 1),
+            make_streaming_message(vec![8], 2),
+        ]);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let _meta = backend
+            .read_metadata_async(1)
+            .await
+            .expect("footer metadata for message 1");
+        let (_m, descs) = backend
+            .read_descriptors_async(1)
+            .await
+            .expect("descriptors");
+        assert_eq!(descs.len(), 1);
+        let state = backend.lock_state().expect("lock");
+        assert!(state.layouts[1].global_metadata.is_some());
+        assert!(state.layouts[1].index.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_footer_indexed_batch() {
+        // ensure_all_layouts_batch_async footer branch (Phase 5/6).
+        let buf = concat(vec![
+            make_streaming_message(vec![4], 1),
+            make_streaming_message(vec![8], 2),
+        ]);
+        let backend = open_backend(buf, forward_opts()).await.expect("open");
+        let opts = crate::DecodeOptions::default();
+        let obj_batch = backend
+            .read_object_batch_async(&[0, 1], 0, &opts)
+            .await
+            .expect("footer batch decode");
+        assert_eq!(obj_batch.len(), 2);
+    }
+
+    // ── Async bidirectional / pipelined ──────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_bidir_matches_forward_only() {
+        let parts: Vec<Vec<u8>> = (0..8)
+            .map(|i| make_message(vec![4 + i as u64], i as u8))
+            .collect();
+        let buf = concat(parts);
+        let fwd = open_backend(buf.clone(), forward_opts())
+            .await
+            .expect("open fwd");
+        let fwd_layouts = fwd.message_layouts_async().await.expect("fwd layouts");
+        let bidir = open_backend(buf, bidir_opts()).await.expect("open bidir");
+        let bidir_layouts = bidir.message_layouts_async().await.expect("bidir layouts");
+        assert_eq!(
+            fwd_layouts.len(),
+            bidir_layouts.len(),
+            "bidir must find the same number of messages",
+        );
+        for (a, b) in fwd_layouts.iter().zip(bidir_layouts.iter()) {
+            assert_eq!(a.offset, b.offset);
+            assert_eq!(a.length, b.length);
+        }
+        assert_eq!(bidir_layouts.len(), 8);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_pipelined_one_message_completes_without_fallback() {
+        let buf = make_message(vec![4], 42);
+        let backend = open_backend(buf, bidir_opts()).await.expect("open");
+        let ok = backend.scan_pipelined_async(None).await.expect("pipelined");
+        assert!(ok, "1-message file: pipeline completes without fallback");
+        let state = backend.lock_state().expect("lock");
+        assert_eq!(state.layouts.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_bidir_corrupt_end_magic_forward_still_scans() {
+        let mut buf = concat(vec![make_message(vec![4], 1), make_message(vec![8], 2)]);
+        let len = buf.len();
+        buf[len - 8..].copy_from_slice(b"BADMAGIC");
+        let backend = open_backend(buf, bidir_opts()).await.expect("open");
+        let count = backend.message_count_async().await.expect("count");
+        assert_eq!(count, 2, "backward corruption => forward still scans");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_bidir_footer_indexed_eager_populates() {
+        let parts: Vec<Vec<u8>> = (0..6)
+            .map(|i| make_streaming_message(vec![4 + i as u64], i as u8))
+            .collect();
+        let buf = concat(parts);
+        let backend = open_backend(buf, bidir_opts()).await.expect("open");
+        let count = backend.message_count_async().await.expect("count");
+        assert_eq!(count, 6);
+    }
 }

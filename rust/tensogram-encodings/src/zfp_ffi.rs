@@ -127,26 +127,73 @@ pub fn zfp_decompress_f64(
             return Err(err("zfp_stream_open failed"));
         }
 
-        set_mode(zfp, mode, ztype)?;
+        // RAII-free cleanup helper for the early-return paths below.
+        let cleanup = |field, zfp, stream: Option<_>| {
+            zfp_sys_cc::zfp_field_free(field);
+            zfp_sys_cc::zfp_stream_close(zfp);
+            if let Some(s) = stream {
+                zfp_sys_cc::stream_close(s);
+            }
+        };
 
-        let stream = zfp_sys_cc::stream_open(
-            compressed.as_ptr() as *mut std::ffi::c_void,
-            compressed.len(),
-        );
+        if let Err(e) = set_mode(zfp, mode, ztype) {
+            cleanup(field, zfp, None);
+            return Err(e);
+        }
+
+        // SECURITY (SEC-009): libzfp's decoder does NOT bounds-check the
+        // input bitstream against the requested element count — a
+        // truncated stream with a large `num_values` makes
+        // `stream_read_word` read past the buffer (ASan SEGV / OOB read
+        // / potential info leak), reachable from a hostile `.tgm` with
+        // `compression=zfp`.  Defend at the shim: zfp tells us the
+        // maximum number of bytes it could read for this field+mode via
+        // `zfp_stream_maximum_size`.  We (a) reject a compressed stream
+        // larger than that maximum (malformed), and (b) decode from a
+        // zero-padded buffer of exactly `max_size` bytes so the decoder
+        // can never read past our allocation regardless of how it walks
+        // the stream.  The trailing zero padding is just unused
+        // bitstream to zfp.
+        let max_size = zfp_sys_cc::zfp_stream_maximum_size(zfp, field) as usize;
+        if max_size == 0 || compressed.len() > max_size {
+            cleanup(field, zfp, None);
+            return Err(err(format!(
+                "zfp stream length {} inconsistent with descriptor (max {max_size} for \
+                 {num_values} values) — truncated or malformed payload",
+                compressed.len()
+            )));
+        }
+        // Padded, fallibly-allocated decode buffer.
+        let mut padded: Vec<u8> = Vec::new();
+        if let Err(e) = padded.try_reserve_exact(max_size) {
+            cleanup(field, zfp, None);
+            return Err(err(format!(
+                "failed to reserve {max_size} bytes for zfp input padding: {e}"
+            )));
+        }
+        padded.resize(max_size, 0);
+        padded[..compressed.len()].copy_from_slice(compressed);
+
+        let stream =
+            zfp_sys_cc::stream_open(padded.as_mut_ptr() as *mut std::ffi::c_void, max_size);
+        // `stream_open` allocates and can return null on failure.  Passing
+        // a null bitstream into `zfp_stream_set_bit_stream`/`zfp_decompress`
+        // is undefined behaviour, and this runs on attacker-controlled
+        // input, so bail out with a structured error instead.
+        if stream.is_null() {
+            cleanup(field, zfp, None);
+            return Err(err("zfp stream_open failed (allocation failure)"));
+        }
         zfp_sys_cc::zfp_stream_set_bit_stream(zfp, stream);
         zfp_sys_cc::zfp_stream_rewind(zfp);
 
         let ret = zfp_sys_cc::zfp_decompress(zfp, field);
         if ret == 0 {
-            zfp_sys_cc::zfp_field_free(field);
-            zfp_sys_cc::zfp_stream_close(zfp);
-            zfp_sys_cc::stream_close(stream);
+            cleanup(field, zfp, Some(stream));
             return Err(err("zfp_decompress returned 0"));
         }
 
-        zfp_sys_cc::zfp_field_free(field);
-        zfp_sys_cc::zfp_stream_close(zfp);
-        zfp_sys_cc::stream_close(stream);
+        cleanup(field, zfp, Some(stream));
     }
 
     Ok(output)
@@ -316,6 +363,55 @@ mod tests {
     }
 
     #[test]
+    fn zfp_decompress_rejects_malformed_size_stream_pairings() {
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        // num_values == 0 but a non-empty stream is a malformed descriptor
+        // — must not silently return empty.
+        let err = zfp_decompress_f64(&[1u8, 2, 3, 4], 0, &mode)
+            .expect_err("num_values=0 with data must be rejected");
+        assert!(
+            format!("{err}").contains("malformed zfp descriptor"),
+            "got: {err}"
+        );
+
+        // num_values > 0 but an empty stream is truncated/missing payload.
+        let err = zfp_decompress_f64(&[], 128, &mode)
+            .expect_err("num_values>0 with empty stream must be rejected");
+        assert!(
+            format!("{err}").contains("empty compressed stream"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn zfp_range_offset_plus_count_overflows() {
+        // sample_offset + sample_count overflowing usize must surface the
+        // dedicated checked_add error, not wrap silently.
+        let values = smooth_data(128);
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        let compressed = zfp_compress_f64(&values, &mode).unwrap();
+        let err = zfp_decompress_range_f64(&compressed, values.len(), &mode, usize::MAX, 1)
+            .expect_err("offset+count overflow must be rejected");
+        assert!(
+            format!("{err}").contains("range end overflow"),
+            "expected overflow error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn zfp_range_zero_count_at_end() {
+        // A zero-length range at the exact end is valid and yields an
+        // empty slice (end == all.len()), covering the extend_from_slice
+        // path with an empty range.
+        let values = smooth_data(128);
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        let compressed = zfp_compress_f64(&values, &mode).unwrap();
+        let out =
+            zfp_decompress_range_f64(&compressed, values.len(), &mode, values.len(), 0).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn zfp_accuracy_mode_roundtrip() {
         let values = smooth_data(256);
         let mode = ZfpMode::FixedAccuracy { tolerance: 0.01 };
@@ -346,5 +442,49 @@ mod tests {
             msg.contains("failed to reserve"),
             "error should report allocation failure, got: {msg}"
         );
+    }
+
+    /// SEC-009 (HIGH, found by `fuzz_codec_decode`): libzfp's decoder
+    /// reads the input bitstream without bounds-checking it against the
+    /// requested element count.  A truncated stream (e.g. 1 byte) with a
+    /// large `num_values` made `stream_read_word` read out of bounds
+    /// (ASan SEGV), reachable from a hostile `.tgm` with
+    /// `compression=zfp`.  The shim must now reject the inconsistent
+    /// stream rather than letting zfp read past the buffer.
+    #[test]
+    fn sec009_zfp_truncated_stream_rejected_not_oob() {
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        // The exact fuzzer trigger class: 1 byte of "compressed" data
+        // but a descriptor claiming 131072 values.  The security
+        // invariant is "no out-of-bounds read / SEGV / abort"; the shim
+        // decodes from a zero-padded buffer sized to zfp's maximum, so
+        // the call returns safely (Ok with garbage, or a structured
+        // Err) and never reads past the input.
+        let _ = zfp_decompress_f64(&[87u8], 131072, &mode);
+
+        // A stream LARGER than zfp's maximum for the claimed count is
+        // categorically malformed and is rejected.
+        let err = zfp_decompress_f64(&vec![0u8; 1_000_000], 4, &mode)
+            .expect_err("an over-long stream must be rejected as inconsistent");
+        assert!(
+            format!("{err}").contains("inconsistent"),
+            "expected a stream-length inconsistency error, got: {err}"
+        );
+
+        // Sweep a range of (tiny stream, large count) combinations across
+        // all modes — none may read out of bounds.
+        for mode in [
+            ZfpMode::FixedRate { rate: 16.0 },
+            ZfpMode::FixedPrecision { precision: 32 },
+            ZfpMode::FixedAccuracy { tolerance: 1e-6 },
+        ] {
+            for &stream_len in &[1usize, 2, 7, 8, 16] {
+                for &count in &[1024usize, 65536, 1 << 20] {
+                    let tiny = vec![0xABu8; stream_len];
+                    // Must return (Ok or Err) without OOB / abort.
+                    let _ = zfp_decompress_f64(&tiny, count, &mode);
+                }
+            }
+        }
     }
 }

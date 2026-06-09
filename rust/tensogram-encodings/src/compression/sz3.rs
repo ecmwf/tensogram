@@ -164,6 +164,72 @@ mod tests {
     }
 
     #[test]
+    fn sz3_compress_rejects_misaligned_length() {
+        // 13 bytes is not a multiple of 8 (f64 width) — `bytes_to_f64_native`
+        // must return a structured Sz3 error rather than panicking.
+        let compressor = Sz3Compressor {
+            error_bound: Sz3ErrorBound::Absolute(1e-4),
+            num_values: 1,
+            byte_order: ByteOrder::native(),
+        };
+        let result = compressor.compress(&[0u8; 13]);
+        assert!(result.is_err(), "non-8-aligned input must be rejected");
+        match result {
+            Err(CompressionError::Sz3(msg)) => assert!(msg.contains("multiple of 8")),
+            Err(other) => panic!("expected Sz3 misalignment error, got {other:?}"),
+            Ok(_) => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn sz3_decompress_big_endian_output() {
+        // Drive the `ByteOrder::Big` arm of `f64_to_bytes`: encode native,
+        // decode requesting big-endian serialisation.
+        let data = smooth_data(256);
+        let tol = 1e-4;
+        let compressor = Sz3Compressor {
+            error_bound: Sz3ErrorBound::Absolute(tol),
+            num_values: 256,
+            byte_order: ByteOrder::Big,
+        };
+        let result = compressor.compress(&data).unwrap();
+        let decoded = compressor.decompress(&result.data, data.len()).unwrap();
+        assert_eq!(decoded.len(), data.len());
+
+        // Parse the big-endian output and compare with the native-endian
+        // originals within tolerance — proves the Big branch serialised
+        // correctly.
+        let orig: Vec<f64> = data
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        let dec: Vec<f64> = decoded
+            .chunks_exact(8)
+            .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+            .collect();
+        for (o, d) in orig.iter().zip(dec.iter()) {
+            assert!((o - d).abs() <= tol, "orig={o}, dec={d}");
+        }
+    }
+
+    #[test]
+    fn sz3_round_trip_relative_and_psnr() {
+        // Exercise the `Relative` and `PSNR` arms of `to_sz3_bound`, which
+        // the absolute-only round-trip test never reaches.
+        let data = smooth_data(512);
+        for bound in [Sz3ErrorBound::Relative(1e-3), Sz3ErrorBound::Psnr(80.0)] {
+            let compressor = Sz3Compressor {
+                error_bound: bound,
+                num_values: 512,
+                byte_order: ByteOrder::native(),
+            };
+            let result = compressor.compress(&data).unwrap();
+            let decoded = compressor.decompress(&result.data, data.len()).unwrap();
+            assert_eq!(decoded.len(), data.len());
+        }
+    }
+
+    #[test]
     fn sz3_range_not_supported() {
         let compressor = Sz3Compressor {
             error_bound: Sz3ErrorBound::Absolute(1e-4),
@@ -172,5 +238,35 @@ mod tests {
         };
         let result = compressor.decompress_range(&[0], &[], 0, 1);
         assert!(matches!(result, Err(CompressionError::RangeNotSupported)));
+    }
+
+    /// SEC-010 (HIGH, found by `fuzz_codec_decode`): the SZ3 C++ header
+    /// parser (`sz3_decompress_config`) read the 16-byte header and a
+    /// config trailer from an attacker buffer without bounds-checking it
+    /// against the length, causing out-of-bounds reads (ASan SEGV) in
+    /// `SZ3::read` / `Config::load` — reachable from a hostile `.tgm`
+    /// with `compression=sz3`.  Truncated / malformed streams must now
+    /// return a structured error instead of reading out of bounds.
+    #[test]
+    fn sec010_sz3_truncated_stream_rejected_not_oob() {
+        let compressor = Sz3Compressor {
+            error_bound: Sz3ErrorBound::Absolute(1e-4),
+            num_values: 512,
+            byte_order: ByteOrder::native(),
+        };
+        // The exact fuzzer trigger class: a few bytes claiming many values.
+        let err = compressor
+            .decompress(&[87u8], 512 * 8)
+            .expect_err("a 1-byte SZ3 stream must be rejected, not read OOB");
+        assert!(matches!(
+            err,
+            CompressionError::Sz3(_) | CompressionError::Unknown(_)
+        ));
+
+        // Sweep tiny/short buffers — none may read out of bounds.
+        for len in [0usize, 1, 7, 8, 15, 16, 17, 24] {
+            let tiny = vec![0xCDu8; len];
+            let _ = compressor.decompress(&tiny, 512 * 8); // must not SEGV
+        }
     }
 }

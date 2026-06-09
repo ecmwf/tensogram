@@ -479,3 +479,219 @@ async fn write_padding<W: AsyncWrite + Unpin>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decode::{DecodeOptions, decode};
+    use crate::dtype::Dtype;
+    use crate::types::ByteOrder;
+
+    fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
+        let ndim = shape.len() as u64;
+        let mut strides = vec![0u64; shape.len()];
+        if !shape.is_empty() {
+            strides[shape.len() - 1] = 1;
+            for i in (0..shape.len() - 1).rev() {
+                strides[i] = strides[i + 1] * shape[i + 1];
+            }
+        }
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim,
+            shape,
+            strides,
+            dtype,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        }
+    }
+
+    fn finite_f32_bytes(n: usize) -> Vec<u8> {
+        (0..n)
+            .flat_map(|i| (i as f32 * 0.5).to_ne_bytes())
+            .collect()
+    }
+
+    /// `bytes_written()` getter must reflect progress as frames are
+    /// emitted (covers the accessor).
+    #[tokio::test]
+    async fn bytes_written_tracks_progress() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4], Dtype::Float32);
+        let data = vec![0u8; 16];
+
+        let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+            .await
+            .unwrap();
+        let after_header = enc.bytes_written();
+        assert!(after_header > 0, "header should advance byte counter");
+        enc.write_object(&desc, &data).await.unwrap();
+        assert!(
+            enc.bytes_written() > after_header,
+            "writing an object should advance byte counter"
+        );
+        let _ = enc.finish().await.unwrap();
+    }
+
+    /// Drive the parallel codec path: with a non-zero thread budget and a
+    /// zero parallel threshold, `should_parallelise` returns true so the
+    /// `intra = self.intra_codec_threads` arm and the parallel-backend
+    /// pipeline-config arm are taken.
+    #[tokio::test]
+    async fn parallel_intra_codec_path_round_trip() {
+        let meta = GlobalMetadata::default();
+        let mut desc = make_descriptor(vec![1024], Dtype::Float32);
+        // zstd is axis-B-friendly so a non-zero intra budget is meaningful.
+        desc.compression = "zstd".to_string();
+        let data = finite_f32_bytes(1024);
+
+        let options = EncodeOptions {
+            threads: 2,
+            parallel_threshold_bytes: Some(0),
+            ..Default::default()
+        };
+        let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &options)
+            .await
+            .unwrap();
+        enc.write_object(&desc, &data).await.unwrap();
+        let result = enc.finish().await.unwrap();
+
+        let (_, objects) = decode(&result, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].1, data);
+    }
+
+    /// szip compression emits `block_offsets`, exercising the
+    /// `result.block_offsets` insertion into the descriptor params.
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[tokio::test]
+    async fn szip_block_offsets_are_recorded() {
+        let meta = GlobalMetadata::default();
+        let mut desc = make_descriptor(vec![256], Dtype::Float32);
+        desc.compression = "szip".to_string();
+        desc.params
+            .insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
+        desc.params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(16.into()),
+        );
+        desc.params
+            .insert("szip_flags".to_string(), ciborium::Value::Integer(0.into()));
+        let data = finite_f32_bytes(256);
+
+        let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+            .await
+            .unwrap();
+        enc.write_object(&desc, &data).await.unwrap();
+        let result = enc.finish().await.unwrap();
+
+        let (_, objects) = decode(&result, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].1, data);
+        // The roundtripped descriptor should carry szip block offsets.
+        assert!(
+            objects[0].0.params.contains_key("szip_block_offsets"),
+            "szip encode should record block offsets"
+        );
+    }
+
+    /// Pre-encoded szip path: extract real szip payload + descriptor (which
+    /// carries `szip_block_offsets`) from a sync-encoded message and feed it
+    /// to `write_object_pre_encoded`, driving the szip-offset validation arm.
+    ///
+    /// Uses `simple_packing` as the encoding wrapper: `validate_object`
+    /// enforces a raw-size check only when `encoding == "none"`, so a
+    /// non-trivial-compression pre-encoded payload must wear a non-"none"
+    /// encoding (same constraint the sync `encode_pre_encoded` tests rely on).
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    #[tokio::test]
+    async fn pre_encoded_szip_validates_block_offsets() {
+        use crate::encode::encode;
+        use tensogram_encodings::simple_packing;
+
+        let values: Vec<f64> = (0..4096).map(|i| 250.0 + i as f64 * 0.1).collect();
+        let raw: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let p = simple_packing::compute_params(&values, 16, 0).unwrap();
+
+        let mut desc = make_descriptor(vec![4096], Dtype::Float64);
+        desc.byte_order = ByteOrder::Big;
+        desc.encoding = "simple_packing".to_string();
+        desc.compression = "szip".to_string();
+        desc.params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(p.reference_value),
+        );
+        desc.params.insert(
+            "sp_binary_scale_factor".to_string(),
+            ciborium::Value::Integer((p.binary_scale_factor as i64).into()),
+        );
+        desc.params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            ciborium::Value::Integer((p.decimal_scale_factor as i64).into()),
+        );
+        desc.params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer((p.bits_per_value as i64).into()),
+        );
+        desc.params
+            .insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
+        desc.params.insert(
+            "szip_block_size".to_string(),
+            ciborium::Value::Integer(16.into()),
+        );
+        desc.params.insert(
+            "szip_flags".to_string(),
+            ciborium::Value::Integer(8_i64.into()),
+        );
+
+        let meta = GlobalMetadata::default();
+
+        // Encode once to obtain real szip payload + the descriptor with
+        // `szip_block_offsets` populated by the encoder.
+        let msg = encode(&meta, &[(&desc, &raw)], &EncodeOptions::default()).unwrap();
+        let dec = crate::framing::decode_message(&msg).unwrap();
+        assert_eq!(dec.objects.len(), 1);
+        let (extracted_desc, payload_slice, _mask, _off) = &dec.objects[0];
+        let extracted_desc = extracted_desc.clone();
+        let payload = payload_slice.to_vec();
+        assert!(
+            extracted_desc.params.contains_key("szip_block_offsets"),
+            "encoder should have populated szip_block_offsets"
+        );
+
+        let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+            .await
+            .unwrap();
+        enc.write_object_pre_encoded(&extracted_desc, &payload)
+            .await
+            .unwrap();
+        let result = enc.finish().await.unwrap();
+
+        let (_, objects) = decode(&result, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 1);
+        assert!(objects[0].0.params.contains_key("szip_block_offsets"));
+    }
+
+    /// `compose_payload_region` / `substitute_and_mask` error propagation:
+    /// a non-finite payload without an allow flag must surface as an error
+    /// from `write_object` (covers the `?` on the mask/compose helpers).
+    #[tokio::test]
+    async fn write_object_rejects_non_finite_without_allow() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4], Dtype::Float32);
+        // NaN at index 0, default options forbid NaN without a mask method.
+        let mut data = vec![0u8; 16];
+        data[..4].copy_from_slice(&f32::NAN.to_ne_bytes());
+
+        let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+            .await
+            .unwrap();
+        let err = enc.write_object(&desc, &data).await;
+        assert!(err.is_err(), "non-finite data must be rejected");
+    }
+}

@@ -2146,4 +2146,406 @@ mod tests {
         assert!(result.is_err());
         Ok(())
     }
+
+    // ── ensure_scanned() open failure (214-218) ──────────────────────────
+
+    /// Opening a handle defers scanning until first use. If the backing
+    /// file is deleted before that first scan, `ensure_scanned()`'s
+    /// `File::open` `map_err` closure must yield a path-tagged `Io` error
+    /// rather than panicking.
+    #[test]
+    fn test_ensure_scanned_open_failure_returns_io_error()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("scan_then_gone.tgm");
+
+        {
+            let mut writer = TensogramFile::create(&path)?;
+            let meta = make_global_meta();
+            let desc = make_descriptor(vec![2]);
+            writer.append(
+                &meta,
+                &[(&desc, vec![0u8; 8].as_slice())],
+                &EncodeOptions::default(),
+            )?;
+        }
+
+        // Open a fresh handle but do NOT scan it yet, then delete the file.
+        let reader = TensogramFile::open(&path)?;
+        std::fs::remove_file(&path)?;
+
+        // First use triggers ensure_scanned(), whose File::open must fail.
+        let result = reader.message_count();
+        let msg = match result {
+            Ok(_) => panic!("expected message_count to fail after file deletion"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("scan_then_gone.tgm")
+                || msg.contains("No such")
+                || msg.contains("not found"),
+            "expected path-tagged I/O error, got: {msg}"
+        );
+        Ok(())
+    }
+
+    // ── create() parent-directory creation failure (148-153) ─────────────
+
+    /// When a path component that should become a directory is already a
+    /// regular file, `fs::create_dir_all(parent)` fails. `create()` must
+    /// wrap that into a typed `Io` error mentioning the parent directory.
+    #[test]
+    fn test_create_parent_is_a_file_returns_io_error()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        // Make `blocker` a regular file, then ask create() to put a file
+        // *inside* it — create_dir_all must fail because the parent path
+        // traverses through a non-directory.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"i am a file, not a dir")?;
+        let target = blocker.join("sub").join("out.tgm");
+
+        let result = TensogramFile::create(&target);
+        let msg = match result {
+            Ok(_) => panic!("expected Io error: parent component is a file, got Ok"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("cannot create parent directory") || msg.contains("cannot create"),
+            "expected parent-directory creation error, got: {msg}"
+        );
+        Ok(())
+    }
+
+    // ── append() open failure (300-304) ──────────────────────────────────
+
+    /// `append()` opens the backing path with `OpenOptions`. If the path
+    /// can no longer be opened for append (its parent directory has been
+    /// removed), the open `map_err` closure must produce a typed `Io`
+    /// error tagged with the path.
+    #[test]
+    fn test_append_open_failure_returns_io_error()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let subdir = dir.path().join("gone");
+        std::fs::create_dir(&subdir)?;
+        let path = subdir.join("doomed.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        // Remove the whole parent directory out from under the handle so the
+        // OpenOptions::open() inside append() fails.
+        std::fs::remove_dir_all(&subdir)?;
+
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![2]);
+        let data = vec![0u8; 8];
+        let result = file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        );
+        assert!(
+            result.is_err(),
+            "expected append to fail when parent dir is gone"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("doomed.tgm") || msg.contains("No such") || msg.contains("not found"),
+            "expected path-tagged I/O error, got: {msg}"
+        );
+        Ok(())
+    }
+
+    // ── open_mmap() open failure (178-182) ───────────────────────────────
+
+    /// `open_mmap()` on a path that does not exist must surface the
+    /// `File::open` error through its `map_err` closure (path-tagged Io).
+    #[cfg(feature = "mmap")]
+    #[test]
+    fn test_open_mmap_nonexistent_returns_io_error() {
+        // A fresh tempdir plus a name we never create is guaranteed-missing
+        // regardless of environment (no reliance on a hard-coded /tmp path
+        // that could coincidentally exist on shared/self-hosted runners).
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no_such_mmap_tensogram.tgm");
+        let result = TensogramFile::open_mmap(&missing);
+        match result {
+            Ok(_) => panic!("expected error for nonexistent mmap file"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("no_such_mmap_tensogram.tgm")
+                        || msg.contains("No such")
+                        || msg.contains("not found"),
+                    "expected path-tagged I/O error, got: {msg}"
+                );
+            }
+        }
+    }
+
+    // ── batch decode on local backend → error arm (449-479) ──────────────
+
+    /// `decode_range_batch` and `decode_object_batch` are only meaningful
+    /// for remote backends. Invoking them on a local file must hit the
+    /// non-remote error arm and return a typed `Io` error.
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_batch_decode_on_local_backend_errors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("local_batch.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let range_result = file.decode_range_batch(&[0], 0, &[(0, 1)], &DecodeOptions::default());
+        assert!(range_result.is_err());
+        assert!(
+            range_result
+                .unwrap_err()
+                .to_string()
+                .contains("requires a remote backend"),
+            "expected remote-backend requirement error from decode_range_batch"
+        );
+
+        let obj_result = file.decode_object_batch(&[0], 0, &DecodeOptions::default());
+        assert!(obj_result.is_err());
+        assert!(
+            obj_result
+                .unwrap_err()
+                .to_string()
+                .contains("requires a remote backend"),
+            "expected remote-backend requirement error from decode_object_batch"
+        );
+        Ok(())
+    }
+
+    // ── async batch decode on local backend → error arm (756-788) ────────
+
+    /// Async batch decode helpers on a local file must hit the non-remote
+    /// error arm and return a typed `Io` error.
+    #[cfg(all(feature = "remote", feature = "async"))]
+    #[tokio::test]
+    async fn test_async_batch_decode_on_local_backend_errors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("local_async_batch.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let async_file = TensogramFile::open_async(&path).await?;
+
+        // prefetch_layouts_async is a no-op (Ok) on local backends.
+        async_file.prefetch_layouts_async(&[0]).await?;
+
+        let obj_result = async_file
+            .decode_object_batch_async(&[0], 0, &DecodeOptions::default())
+            .await;
+        assert!(obj_result.is_err());
+        assert!(
+            obj_result
+                .unwrap_err()
+                .to_string()
+                .contains("requires a remote backend"),
+            "expected remote-backend requirement error from decode_object_batch_async"
+        );
+
+        let range_result = async_file
+            .decode_range_batch_async(&[0], 0, &[(0, 1)], &DecodeOptions::default())
+            .await;
+        assert!(range_result.is_err());
+        assert!(
+            range_result
+                .unwrap_err()
+                .to_string()
+                .contains("requires a remote backend"),
+            "expected remote-backend requirement error from decode_range_batch_async"
+        );
+        Ok(())
+    }
+
+    // ── read_message_async lazy-scan branch (600-611) ────────────────────
+
+    /// `read_message_async` on a handle whose offsets have not yet been
+    /// populated must run the blocking scan branch before reading.
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_read_message_async_lazy_scan()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("read_async_lazy.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![77u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        // Fresh handle 1: message_count_async on an unscanned handle drives
+        // its own spawn_blocking scan branch.
+        let h1 = TensogramFile::open(&path)?;
+        assert_eq!(h1.message_count_async().await?, 1);
+
+        // Fresh handle 2: open() (sync) leaves message_offsets unpopulated,
+        // so the first read_message_async hits the spawn_blocking scan branch.
+        let reopened = TensogramFile::open(&path)?;
+        let msg = reopened.read_message_async(0).await?;
+        let (_meta, objs) = crate::decode::decode(&msg, &DecodeOptions::default())?;
+        assert_eq!(objs[0].1, data);
+
+        // Out-of-range index now goes through checked_offsets on the
+        // freshly-populated offsets.
+        let oor = reopened.read_message_async(9).await;
+        assert!(oor.is_err());
+        Ok(())
+    }
+
+    // ── message_layouts_async on local backend (567-593) ─────────────────
+
+    /// `message_layouts_async` on a freshly-opened (unscanned) local file
+    /// must trigger the blocking scan path and return correct layouts.
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_message_layouts_async_local()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("layouts_async.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        // Open fresh so message_offsets is unpopulated, forcing the
+        // spawn_blocking scan branch inside message_layouts_async.
+        let async_file = TensogramFile::open(&path)?;
+        let layouts = async_file.message_layouts_async().await?;
+        assert_eq!(layouts.len(), 2);
+        assert_eq!(layouts[0].offset, 0);
+        assert!(layouts[0].length > 0);
+        assert_eq!(layouts[1].offset, layouts[0].length);
+
+        // Sync message_layouts must agree.
+        let sync_layouts = async_file.message_layouts()?;
+        assert_eq!(sync_layouts, layouts);
+        Ok(())
+    }
+
+    // ── open_async() open failure (520-524) ──────────────────────────────
+
+    /// `open_async()` checks existence first, then opens the file. A path
+    /// that exists but cannot be opened for reading (mode 000) drives the
+    /// `File::open` `map_err` closure inside the blocking task.
+    #[cfg(all(unix, feature = "async"))]
+    #[tokio::test]
+    async fn test_open_async_unreadable_file_errors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("unreadable_async.tgm");
+
+        {
+            let mut file = TensogramFile::create(&path)?;
+            let meta = make_global_meta();
+            let desc = make_descriptor(vec![2]);
+            file.append(
+                &meta,
+                &[(&desc, vec![0u8; 8].as_slice())],
+                &EncodeOptions::default(),
+            )?;
+        }
+
+        // Strip all read permissions on the file itself.
+        let original = std::fs::metadata(&path)?.permissions();
+        let mut noperm = original.clone();
+        noperm.set_mode(0o000);
+        std::fs::set_permissions(&path, noperm)?;
+
+        // Probe: if we can still open it (root / CAP_DAC_OVERRIDE), the
+        // test premise cannot be met — restore and skip gracefully.
+        let can_read = std::fs::File::open(&path).is_ok();
+        if can_read {
+            std::fs::set_permissions(&path, original)?;
+            return Ok(());
+        }
+
+        let result = TensogramFile::open_async(&path).await;
+
+        // Restore so the tempdir cleans up regardless of outcome.
+        std::fs::set_permissions(&path, original)?;
+
+        let msg = match result {
+            Ok(_) => panic!("expected open_async to fail on a mode-000 file"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("unreadable_async.tgm")
+                || msg.contains("permission")
+                || msg.contains("denied"),
+            "expected permission-related I/O error, got: {msg}"
+        );
+        Ok(())
+    }
+
+    // ── open_source_async() local dispatch (650-655) ─────────────────────
+
+    /// `open_source_async` with a non-URL path must dispatch to
+    /// `open_async` and yield a working local handle.
+    #[cfg(all(feature = "remote", feature = "async"))]
+    #[tokio::test]
+    async fn test_open_source_async_local_path()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("open_source_async_local.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![3u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let path_str = path.to_str().unwrap();
+        let opened = TensogramFile::open_source_async(path_str, None).await?;
+        assert!(!opened.is_remote());
+        assert_eq!(opened.message_count_async().await?, 1);
+        let (_meta, objs) = opened
+            .decode_message_async(0, &DecodeOptions::default())
+            .await?;
+        assert_eq!(objs[0].1, data);
+        Ok(())
+    }
 }

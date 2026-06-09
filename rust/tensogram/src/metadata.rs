@@ -1489,4 +1489,369 @@ mod tests {
         assert_eq!(remaining[0].len(), 1);
         assert_eq!(remaining[1].len(), 1);
     }
+
+    // ── cbor_to_global_metadata error paths ──────────────────────────
+
+    fn to_cbor(value: &ciborium::Value) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(value, &mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn cbor_to_global_metadata_rejects_non_map_top_level() {
+        // A bare array (not a map) at the top level must error.
+        let bytes = to_cbor(&ciborium::Value::Array(vec![ciborium::Value::Integer(
+            1.into(),
+        )]));
+        let err = cbor_to_global_metadata(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("not a map"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_global_metadata_rejects_invalid_cbor() {
+        // Truncated / garbage bytes surface as a parse error.
+        let err = cbor_to_global_metadata(&[0xff, 0xff, 0xff]).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("failed to parse"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_global_metadata_rejects_base_wrong_shape() {
+        // `base` must deserialize to a Vec<Map>; supplying an integer
+        // triggers the deserialize-error branch.
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![(
+            Value::Text("base".to_string()),
+            Value::Integer(42.into()),
+        )]));
+        let err = cbor_to_global_metadata(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("deserialize base"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_global_metadata_rejects_reserved_wrong_shape() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![(
+            Value::Text("_reserved_".to_string()),
+            Value::Integer(42.into()),
+        )]));
+        let err = cbor_to_global_metadata(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("deserialize _reserved_"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_global_metadata_rejects_extra_wrong_shape() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![(
+            Value::Text("_extra_".to_string()),
+            Value::Integer(42.into()),
+        )]));
+        let err = cbor_to_global_metadata(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("deserialize _extra_"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── cbor_kind_label covers every non-text variant (138-145) ──────
+
+    #[test]
+    fn cbor_to_global_metadata_non_text_key_labels() {
+        use ciborium::Value;
+        // Each non-text top-level key produces a distinctive label in
+        // the error message — exercises the cbor_kind_label arms.
+        let cases: Vec<(Value, &str)> = vec![
+            (Value::Float(1.0), "float"),
+            (Value::Bool(true), "boolean"),
+            (Value::Null, "null"),
+            (Value::Tag(1, Box::new(Value::Integer(0.into()))), "tagged"),
+            (Value::Array(vec![]), "array"),
+            (Value::Bytes(vec![1]), "byte-string"),
+        ];
+        for (key, needle) in cases {
+            let bytes = to_cbor(&Value::Map(vec![(key, Value::Integer(0.into()))]));
+            let err = cbor_to_global_metadata(&bytes).unwrap_err();
+            match err {
+                TensogramError::Metadata(msg) => {
+                    assert!(msg.contains(needle), "expected {needle:?} in: {msg}")
+                }
+                other => panic!("expected Metadata error, got: {other:?}"),
+            }
+        }
+    }
+
+    // ── cbor_value_kind covers every variant (157-169) ───────────────
+
+    #[test]
+    fn cbor_value_kind_labels_all_variants() {
+        use ciborium::Value;
+        assert_eq!(cbor_value_kind(&Value::Integer(0.into())), "integer");
+        assert_eq!(cbor_value_kind(&Value::Bytes(vec![])), "byte-string");
+        assert_eq!(cbor_value_kind(&Value::Float(0.0)), "float");
+        assert_eq!(cbor_value_kind(&Value::Bool(false)), "boolean");
+        assert_eq!(cbor_value_kind(&Value::Null), "null");
+        assert_eq!(
+            cbor_value_kind(&Value::Tag(1, Box::new(Value::Null))),
+            "tagged value"
+        );
+        assert_eq!(cbor_value_kind(&Value::Array(vec![])), "array");
+        assert_eq!(cbor_value_kind(&Value::Map(vec![])), "map");
+        assert_eq!(cbor_value_kind(&Value::Text(String::new())), "text");
+    }
+
+    // ── cbor_to_index error paths (236-238, 273-277, 266) ────────────
+
+    #[test]
+    fn cbor_to_index_rejects_non_map() {
+        let bytes = to_cbor(&ciborium::Value::Integer(7.into()));
+        let err = cbor_to_index(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("not a map"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_index_rejects_length_mismatch() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![
+            (
+                Value::Text("offsets".to_string()),
+                Value::Array(vec![Value::Integer(0.into()), Value::Integer(10.into())]),
+            ),
+            (
+                Value::Text("lengths".to_string()),
+                Value::Array(vec![Value::Integer(10.into())]),
+            ),
+        ]));
+        let err = cbor_to_index(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("offsets.len()"), "msg: {msg}");
+                assert!(msg.contains("lengths.len()"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_index_ignores_unknown_text_key() {
+        // Forward-compat: an unknown text key is ignored, not rejected.
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![
+            (
+                Value::Text("offsets".to_string()),
+                Value::Array(vec![Value::Integer(0.into())]),
+            ),
+            (
+                Value::Text("lengths".to_string()),
+                Value::Array(vec![Value::Integer(5.into())]),
+            ),
+            (
+                Value::Text("future_field".to_string()),
+                Value::Integer(99.into()),
+            ),
+        ]));
+        let index = cbor_to_index(&bytes).unwrap();
+        assert_eq!(index.offsets, vec![0]);
+        assert_eq!(index.lengths, vec![5]);
+    }
+
+    // ── cbor_to_hash_frame error paths (322-372) ─────────────────────
+
+    #[test]
+    fn cbor_to_hash_frame_rejects_non_map() {
+        let bytes = to_cbor(&ciborium::Value::Integer(7.into()));
+        let err = cbor_to_hash_frame(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => assert!(msg.contains("not a map"), "msg: {msg}"),
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_hash_frame_rejects_non_text_algorithm() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![(
+            Value::Text("algorithm".to_string()),
+            Value::Integer(1.into()),
+        )]));
+        let err = cbor_to_hash_frame(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("algorithm must be text"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_hash_frame_rejects_non_array_hashes() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![(
+            Value::Text("hashes".to_string()),
+            Value::Integer(1.into()),
+        )]));
+        let err = cbor_to_hash_frame(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("hashes must be an array"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_hash_frame_rejects_non_text_hash_entry() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![(
+            Value::Text("hashes".to_string()),
+            Value::Array(vec![Value::Integer(1.into())]),
+        )]));
+        let err = cbor_to_hash_frame(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("hash entry must be text"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_hash_frame_ignores_unknown_text_key() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![
+            (
+                Value::Text("algorithm".to_string()),
+                Value::Text("xxh3".to_string()),
+            ),
+            (
+                Value::Text("hashes".to_string()),
+                Value::Array(vec![Value::Text("ab".to_string())]),
+            ),
+            // Legacy v2 keys ignored as unknown.
+            (
+                Value::Text("object_count".to_string()),
+                Value::Integer(1.into()),
+            ),
+        ]));
+        let hf = cbor_to_hash_frame(&bytes).unwrap();
+        assert_eq!(hf.algorithm, "xxh3");
+        assert_eq!(hf.hashes, vec!["ab".to_string()]);
+    }
+
+    // ── cbor_to_u64 / cbor_to_u64_array error paths (485-499) ────────
+
+    #[test]
+    fn cbor_to_index_rejects_negative_offset() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![
+            (
+                Value::Text("offsets".to_string()),
+                Value::Array(vec![Value::Integer((-1i64).into())]),
+            ),
+            (
+                Value::Text("lengths".to_string()),
+                Value::Array(vec![Value::Integer(5.into())]),
+            ),
+        ]));
+        let err = cbor_to_index(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("out of u64 range"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_index_rejects_non_integer_offset() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![(
+            Value::Text("offsets".to_string()),
+            Value::Array(vec![Value::Text("nope".to_string())]),
+        )]));
+        let err = cbor_to_index(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("must be an integer"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cbor_to_index_rejects_offsets_not_array() {
+        use ciborium::Value;
+        let bytes = to_cbor(&Value::Map(vec![(
+            Value::Text("offsets".to_string()),
+            Value::Integer(5.into()),
+        )]));
+        let err = cbor_to_index(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("must be an array"), "msg: {msg}")
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── Round-trip edge cases: empty + large structures ──────────────
+
+    #[test]
+    fn index_round_trip_empty() {
+        let index = IndexFrame {
+            offsets: vec![],
+            lengths: vec![],
+        };
+        let bytes = index_to_cbor(&index).unwrap();
+        let decoded = cbor_to_index(&bytes).unwrap();
+        assert!(decoded.offsets.is_empty());
+        assert!(decoded.lengths.is_empty());
+    }
+
+    #[test]
+    fn hash_frame_round_trip_empty() {
+        let hf = HashFrame {
+            algorithm: "xxh3".to_string(),
+            hashes: vec![],
+        };
+        let bytes = hash_frame_to_cbor(&hf).unwrap();
+        let decoded = cbor_to_hash_frame(&bytes).unwrap();
+        assert_eq!(decoded.algorithm, "xxh3");
+        assert!(decoded.hashes.is_empty());
+    }
+
+    #[test]
+    fn index_round_trip_large() {
+        let n = 10_000u64;
+        let index = IndexFrame {
+            offsets: (0..n).map(|i| i * 16).collect(),
+            lengths: (0..n).map(|_| 16).collect(),
+        };
+        let bytes = index_to_cbor(&index).unwrap();
+        verify_canonical_cbor(&bytes).unwrap();
+        let decoded = cbor_to_index(&bytes).unwrap();
+        assert_eq!(decoded.offsets.len(), n as usize);
+        assert_eq!(decoded.lengths.len(), n as usize);
+        assert_eq!(decoded.offsets, index.offsets);
+    }
 }
