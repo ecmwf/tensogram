@@ -157,8 +157,10 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
     - **npm publish pipeline.** Choose an npm org (`@ecmwf.int/tensogram`
       already exists in `package.json`), wire a GitHub Actions job that
       publishes on tagged releases and enforces semver lock-step with
-      the root `VERSION` file (add `typescript/package.json` to the
-      VERSION-sync list in CLAUDE.md — already noted but not wired).
+      the root `VERSION` file. `typescript/package.json` is already on the
+      VERSION-sync list (kept in step by `make bump-version` /
+      `make version-check`); the remaining work is the CI lock-step gate
+      on tagged releases.
     - **Browser-environment CI.** Today the `typescript` CI job runs
       Vitest in Node only. Add a browser lane (Vitest `browser` mode
       via Playwright, or a dedicated Playwright job) so regressions
