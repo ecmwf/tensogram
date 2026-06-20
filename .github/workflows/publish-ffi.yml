@@ -139,25 +139,13 @@ jobs:
   build-macos:
     name: Build macos-aarch64
     needs: resolve-ref
-    # Self-hosted Apple Silicon runner — same one ci.yml's macos jobs
-    # use.  Drops the macos-14 GitHub-hosted queue + brings the macOS
-    # leg into the same sccache bucket as everything else.
-    runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
+    # GitHub-hosted arm64 macOS (the self-hosted Apple Silicon runner is
+    # offline). sccache is disabled — its ECMWF-internal backend is
+    # unreachable from GitHub-hosted runners.
+    runs-on: macos-14
     env:
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup
-      CARGO_HOME: ${{ github.workspace }}/.cargo
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
       CARGO_C_VERSION: "0.10.21"
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BUCKET: tensogram-ci-cache
-      SCCACHE_ENDPOINT: "https://object-store.os-api.cci1.ecmwf.int"
-      SCCACHE_REGION: us-east-1
-      SCCACHE_S3_USE_SSL: "true"
-      SCCACHE_S3_KEY_PREFIX: tensogram/
-      SCCACHE_BASEDIRS: ${{ github.workspace }}
-      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-      AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
         with:
@@ -169,15 +157,11 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
-      - name: Install sccache and pkg-config
+      - name: Install pkg-config
         # pkg-config is what the smoke test below uses to discover the
-        # staged tensogram.pc.  GitHub-hosted macos-14 had it pre-installed;
-        # the ECMWF self-hosted Apple Silicon pool does not guarantee it,
-        # so install on demand.  brew is idempotent — `brew list` returns
+        # staged tensogram.pc.  brew is idempotent — `brew list` returns
         # 0 if the formula is already linked.
-        run: |
-          brew list sccache &>/dev/null || brew install sccache
-          brew list pkg-config &>/dev/null || brew install pkg-config
+        run: brew list pkg-config &>/dev/null || brew install pkg-config
 
       - name: Install cargo-c
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
@@ -209,15 +193,6 @@ jobs:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET }}
 
-      - name: sccache stats
-        if: always()
-        run: sccache --show-adv-stats || true
-
-      - name: Cleanup
-        if: always()
-        run: |
-          sccache --stop-server || true
-          rm -rf "$TMPDIR" target staging .rustup .cargo .sccache
 
   release:
     name: Attach binaries to GitHub Release
