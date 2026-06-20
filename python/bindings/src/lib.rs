@@ -2995,6 +2995,15 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // read it without having to decode a message first.
     m.add("WIRE_VERSION", tensogram_lib::WIRE_VERSION)?;
 
+    // Package version (`tensogram.__version__`).  Sourced from the
+    // bindings crate's `CARGO_PKG_VERSION` at compile time, so it always
+    // matches the compiled extension and tracks the project `VERSION`
+    // file via the `make bump-version` single-source-of-truth tooling
+    // (the same env! the provenance encoder reads).  `__init__.py`
+    // re-exports it explicitly because `from .tensogram import *` skips
+    // dunder names.
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     // Decode-time integrity exceptions — see `to_py_err` for the
     // hierarchy and `plans/DESIGN.md` §"Integrity Hashing" for
     // the full contract.

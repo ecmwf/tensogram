@@ -22,7 +22,6 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 import tensogram
-
 from tensogram_zarr import TensogramStore
 from tensogram_zarr.mapping import (
     build_array_zarr_json,

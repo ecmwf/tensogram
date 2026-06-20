@@ -1,0 +1,16 @@
+# Code owners for tensogram.
+#
+# GitHub automatically requests a review from these maintainers on every pull
+# request. Handles are taken from the CONTRIBUTORS file. The full review /
+# approval / merge policy — including the two-approval rule for the elevated
+# paths flagged below — is in AGENTS.md and CONTRIBUTING.md ("Review & merge").
+
+*                               @tlmquintino @sametd @HCookie @tmi
+
+# Elevated review (two approvals): wire format, C ABI / generated header, and
+# security-sensitive code.
+/plans/WIRE_FORMAT.md           @tlmquintino @sametd @HCookie @tmi
+/plans/SECURITY_ANALYSIS.md     @tlmquintino @sametd @HCookie @tmi
+/rust/tensogram/src/wire.rs     @tlmquintino @sametd @HCookie @tmi
+/rust/tensogram/src/framing.rs  @tlmquintino @sametd @HCookie @tmi
+/rust/tensogram-ffi/            @tlmquintino @sametd @HCookie @tmi

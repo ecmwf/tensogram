@@ -10,6 +10,8 @@
 **/build/
 docs/book/
 python/**/dist/
+# Release wheel staging from `make python-dist-extras` / `make release-check`
+/dist/
 python/bindings/Cargo.lock
 rust/tensogram-grib/Cargo.lock
 rust/tensogram-netcdf/Cargo.lock

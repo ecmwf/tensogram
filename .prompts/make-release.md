@@ -12,107 +12,53 @@ Create a new release of Tensogram.
 Provide the version as argument, e.g. `/make-release 0.14.0`
 If no version given, auto-increment MINOR from the current VERSION file.
 
+> **Canonical procedure:** `docs/src/dev/releasing.md`. This skill automates it;
+> keep the two in sync.
+
 ## Pre-release Checks
 
-Run ALL of the following. If ANY step fails, STOP and prompt the user.
+Run these in order. If ANY step fails, STOP and prompt the user.
 
-### 1. Clean Working Tree
+### 1. Clean working tree
 ```bash
-git status  # must be clean — all changes committed and pushed
-git diff --stat origin/main  # must be empty
+git status                    # must be clean — all changes committed
+git diff --stat origin/main   # must be empty (also pushed)
 ```
 
-### 2. Full Build and Test
+### 2. Full gate
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo test -p tensogram --features "remote,async"
-cargo test --manifest-path rust/tensogram-grib/Cargo.toml
-cargo test --manifest-path rust/tensogram-netcdf/Cargo.toml
+make all            # build + test + lint across every language
+make release-check  # version-check, crate packaging + leaf dry-run publish,
+                    # cargo-c header-drift diff, wheels + twine, npm wasm-blob guard
 ```
 
-### 3. Python
-```bash
-source .venv/bin/activate
-uv pip install -e "python/tensogram-xarray/[dask]"
-uv pip install -e python/tensogram-zarr/
-ruff check --config python/bindings/pyproject.toml python/tests/
-python -m pytest python/tests/ -v
-python -m pytest python/tensogram-xarray/tests/ -v
-python -m pytest python/tensogram-zarr/tests/ -v
-```
-
-### 4. Examples Build
-```bash
-cargo build --workspace
-```
-
-### 5. Documentation
-```bash
-which mdbook && mdbook build docs/ || echo "mdbook not installed, skip"
-```
-
-If ANY of the above fails, STOP and report the failure to the user.
+`make all` + `make release-check` are the single source of truth for the local
+release gate — do not re-list the underlying `cargo` / `ruff` / `pytest`
+commands here. The grib/netcdf and macOS matrices and the real dry-run publishes
+run on a clean checkout in the `release-preflight` CI workflow (step 4 below).
 
 ## Release Process
 
-### 1. Version Bump
+### 1. Version bump
 
-Read the current version from `VERSION` file. Bump to the target version.
+`VERSION` is the single source of truth. Bump every manifest with the tooling —
+never hand-edit them:
 
-Update ALL of these locations (they MUST all match):
-- `VERSION` (the source of truth)
-- Root `Cargo.toml` `[workspace.package] version` — since #74 the 9
-  in-workspace member crates (tensogram, tensogram-encodings, tensogram-szip,
-  tensogram-sz3, tensogram-sz3-sys, tensogram-cli, tensogram-ffi, benchmarks,
-  examples/rust) inherit via `version.workspace = true`, so this single edit
-  covers all of them.
-- `Cargo.toml` of each EXCLUDED crate (not workspace members — must be bumped
-  individually): tensogram-python (at `python/bindings/Cargo.toml`),
-  tensogram-grib, tensogram-netcdf, tensogram-wasm.
-- `pyproject.toml` in EVERY Python package: python/bindings, python/tensogram-xarray,
-  python/tensogram-zarr, python/tensogram-anemoi, examples/jupyter
-- `typescript/package.json` AND `examples/typescript/package.json`
-- `CHANGELOG.md` — add new release entry header with today's date
-
-Also bump inter-crate dependency version pins (`version = "=X.Y.Z"` in path
-dependencies). These locations contain exact version pins that must match:
-- Root `Cargo.toml` workspace deps (tensogram-szip, tensogram-sz3, tensogram-sz3-sys)
-- `rust/tensogram-sz3/Cargo.toml` dep on tensogram-sz3-sys
-- `rust/tensogram/Cargo.toml` dep on tensogram-encodings
-- `rust/tensogram-grib/Cargo.toml` deps on tensogram + tensogram-encodings
-- `rust/tensogram-netcdf/Cargo.toml` deps on tensogram + tensogram-encodings
-- `rust/tensogram-cli/Cargo.toml` deps on tensogram + tensogram-grib + tensogram-netcdf
-- `rust/tensogram-ffi/Cargo.toml` deps on tensogram + tensogram-encodings
-- `rust/tensogram-wasm/Cargo.toml` dep on tensogram
-- `python/tensogram-anemoi/pyproject.toml` dependency pin on `tensogram`
-  (uses `>=X.Y.Z,<X.(Y+1)` — bump both bounds, mirrors the jupyter example)
-- `examples/jupyter/pyproject.toml` dependency pins on `tensogram` and
-  `tensogram[xarray]` (uses `>=X.Y.Z,<X.(Y+1).0` — bump both bounds)
-
-Verify no stale version strings remain in first-party files only:
 ```bash
-# Rust
-grep -r 'version = "OLD_VERSION"' --include='Cargo.toml' \
-  VERSION Cargo.toml rust/tensogram-*/Cargo.toml python/bindings/Cargo.toml \
-  rust/benchmarks/Cargo.toml examples/rust/Cargo.toml
-# Python
-grep 'version = "OLD_VERSION"' \
-  python/bindings/pyproject.toml \
-  python/tensogram-xarray/pyproject.toml \
-  python/tensogram-zarr/pyproject.toml \
-  python/tensogram-anemoi/pyproject.toml \
-  examples/jupyter/pyproject.toml
-# TypeScript
-grep '"version": "OLD_VERSION"' \
-  typescript/package.json \
-  examples/typescript/package.json
+make bump-version VERSION=X.Y.Z   # rewrites every manifest, then greps for stragglers
+make version-check                # confirms everything matches VERSION
 ```
 
-**WARNING**: Do NOT grep all `pyproject.toml` files recursively — the vendored
-`rust/tensogram-sz3-sys/SZ3/tools/pysz/pyproject.toml` has `version = "1.0.3"`
-which must NOT be changed.
+`make bump-version` (wrapping `scripts/bump_version.py`) is the authoritative
+list of what carries a version string — including the workspace `version`, the
+excluded-crate Cargo.tomls, the internal `version = "=X.Y.Z"` pins, every Python
+`pyproject.toml`, the `package.json` files, and `fortran/`. It already knows to
+skip the vendored `rust/tensogram-sz3-sys/SZ3/.../pyproject.toml`. The full
+contract is in AGENTS.md "Version control".
+
+It deliberately does NOT touch `CHANGELOG.md` or the Python dependency
+*constraint ranges* (`tensogram>=X.Y.Z,<X.(Y+1)`) — handle those by hand (next
+step).
 
 ### 2. Write CHANGELOG Entry
 

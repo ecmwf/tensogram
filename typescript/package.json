@@ -41,6 +41,7 @@
     "build:wasm": "wasm-pack build ../rust/tensogram-wasm --release --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm",
     "build:ts": "tsc",
     "build": "npm run build:wasm && npm run build:ts",
+    "prepack": "node -e \"require('fs').rmSync('wasm/.gitignore', { force: true })\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
