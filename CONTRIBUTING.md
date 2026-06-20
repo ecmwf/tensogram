@@ -184,7 +184,8 @@ or do it by hand:
   generated header, or security-sensitive code.
 - CI must be green. Run `/copilot-review-loop` to convergence and
   `/address-pr-comments` to resolve threads.
-- Merge with a **squash merge** and delete the branch. (Mutation testing,
+- Merge with whichever strategy fits — squash, rebase, or a merge commit — and
+  delete the branch. (Mutation testing,
   `make mutants-diff`, is heavy and run only by deliberate human choice.)
 
 The full review / approval / merge policy is in [AGENTS.md](AGENTS.md) under

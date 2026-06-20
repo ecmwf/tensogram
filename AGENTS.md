@@ -225,8 +225,10 @@ human-facing version of this list.
 - Run `/copilot-review-loop` to convergence before requesting human review;
   `/address-pr-comments` resolves threads. Pushing new commits dismisses stale
   approvals, so re-request review after addressing feedback.
-- Merge with a **squash merge** (GitHub "Squash and merge"), then delete the
-  branch.
+- Merge with whichever GitHub strategy fits the change — **squash**, **rebase**,
+  or a **merge commit** (all are enabled) — then delete the branch. Release PRs
+  default to **rebase** (`/make-release` takes an optional `merge|squash|rebase`
+  override).
 - Agents NEVER push, merge, or open a PR without explicit user approval.
 
 # Version control
