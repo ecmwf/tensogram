@@ -12,6 +12,11 @@ from collections import namedtuple
 
 from .tensogram import *  # noqa: F403
 
+# `from .tensogram import *` skips dunder names, so re-export the package
+# version explicitly. It is stamped into the compiled extension from the
+# crate's CARGO_PKG_VERSION, so it always matches the installed binary.
+from .tensogram import __version__ as __version__
+
 Message = namedtuple("Message", ["metadata", "objects"])
 """Decoded message with named fields.
 
