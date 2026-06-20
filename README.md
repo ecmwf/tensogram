@@ -1,28 +1,17 @@
-<p align="center">
-  <img src="logo.png" alt="Tensogram" width="200">
-</p>
+![tensogram logo](https://raw.githubusercontent.com/ecmwf/tensogram/main/logo.png)
 
-<p align="center">
-  <em>A fast, efficient 'telegram' for multidimensional tensors</em>
-</p>
+[![license](https://img.shields.io/github/license/ecmwf/tensogram)](https://www.apache.org/licenses/LICENSE-2.0.html)
+[![tag release](https://img.shields.io/github/v/release/ecmwf/tensogram?sort=semver)](https://github.com/ecmwf/tensogram)
+[![docs](https://img.shields.io/badge/docs-online-blue)](https://sites.ecmwf.int/docs/tensogram/main)
+[![ci](https://img.shields.io/github/actions/workflow/status/ecmwf/tensogram/ci.yml)](https://github.com/ecmwf/tensogram/actions)
+[![crates.io](https://img.shields.io/crates/v/tensogram.svg)](https://crates.io/crates/tensogram)
+[![PyPI](https://img.shields.io/pypi/v/tensogram.svg)](https://pypi.org/project/tensogram/)
+[![npm](https://img.shields.io/npm/v/@ecmwf.int/tensogram.svg)](https://www.npmjs.com/package/@ecmwf.int/tensogram)
+[![maturity](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity/emerging_badge.svg)](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity#emerging)
 
-<p align="center">
-  <a href="https://crates.io/crates/tensogram">
-    <img src="https://img.shields.io/crates/v/tensogram.svg" alt="crates.io">
-  </a>
-  <a href="https://pypi.org/project/tensogram/">
-    <img src="https://img.shields.io/pypi/v/tensogram.svg" alt="PyPI">
-  </a>
-  <a href="https://www.npmjs.com/package/@ecmwf.int/tensogram">
-    <img src="https://img.shields.io/npm/v/@ecmwf.int/tensogram.svg" alt="npm">
-  </a>
-  <a href="https://sites.ecmwf.int/docs/tensogram/main">
-    <img src="https://img.shields.io/badge/docs-online-blue" alt="Documentation">
-  </a>
-  <a href="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity#emerging">
-    <img src="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity/emerging_badge.svg" alt="Emerging">
-  </a>
-</p>
+# tensogram
+
+**A fast, efficient 'telegram' for multidimensional tensors**
 
 > [!IMPORTANT]
 > This software is **Emerging** and subject to ECMWF's guidelines on [Software Maturity](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity).
