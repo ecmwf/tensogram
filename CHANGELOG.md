@@ -5,6 +5,87 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — npm package now ships the WASM blob
+
+The published `@ecmwf.int/tensogram` npm package was missing its entire
+`wasm/` directory — including `tensogram_wasm_bg.wasm` — making the
+package unusable for consumers. `wasm-pack` writes a `.gitignore`
+containing `*` into its output directory, and `npm` honours that nested
+ignore file when building the tarball, silently dropping every file in
+`wasm/` even though `wasm` is listed in the package `files` allowlist.
+A `prepack` script now removes that generated `.gitignore` before the
+tarball is built, so the WASM glue and binary are included. The
+`publish-npm` workflow gained a guard step that fails the publish if the
+`.wasm` blob is absent from the packed tarball, so the regression cannot
+recur silently.
+
+### Added — `tensogram.__version__` in the Python package
+
+The Python `tensogram` module now exposes `__version__` (e.g.
+`"0.21.0"`). It is stamped into the compiled extension from the bindings
+crate's `CARGO_PKG_VERSION`, so it always matches the installed binary
+and tracks the project `VERSION` file through the existing
+`make bump-version` single-source-of-truth tooling.
+
+### Fixed — CONTRIBUTING project-structure tree
+
+The project-structure tree in `CONTRIBUTING.md` was missing several
+directories that have since been added: the `python/tensogram-anemoi`
+and `python/tensogram-earthkit` packages, the top-level `fortran/`,
+`typescript/`, and `tensoscope/` trees, and the `fortran/`, `typescript/`,
+and `jupyter/` example directories. The tree now reflects the current
+layout.
+
+### Changed — `make` build targets and full-stack `make all`
+
+`make all` now compiles **every** language surface before the test and
+lint gates, via a new `build` aggregate: `rust-build`, `python-build`,
+`ts-build`, `cpp-build`, `wasm-build`, `cargo-c-build`, and the Fortran
+binding (linked against a repo-local cargo-c install prefix at
+`build/ffi-prefix`, so there are no writes outside the tree and
+`make clean` removes it). New standalone targets `rust-build`
+(`cargo build --workspace`) and `wasm-build` (`wasm-pack` →
+git-ignored `build/wasm`), plus a `docs` alias for `docs-build`. The
+`cargo-c-smoke` target is renamed `cargo-c-test` and now runs the
+`tensogram-ffi` unit/integration tests in addition to the cargo-c
+install smoke test.
+
+### Added — `make release-check` release-readiness gate
+
+A new `make release-check` runs the release-only gates that `make all`
+does not: `version-check`, the optional-feature test surface
+(`remote` / `remote,async`), crate-tarball packaging plus a leaf-crate
+`cargo publish --dry-run`, the cargo-c header-drift diff, Python wheel +
+`twine` metadata validation, and an npm-tarball wasm-blob guard. Run it
+after a green `make all` when preparing a release; it is the
+locally-runnable subset of the `release-preflight` CI workflow. The full
+release procedure is documented in `docs/src/dev/releasing.md` and
+`AGENTS.md`.
+
+### Added — documented end-to-end development workflow + `CODEOWNERS`
+
+`AGENTS.md` and `CONTRIBUTING.md` now carry a single "Development workflow"
+section that maps each lifecycle phase (onboard → plan → branch → develop →
+PR → review → release) to the bundled `.prompts/` slash-command skills (and,
+where available, specialised subagents), and documents a branch-naming
+convention (`<type>/<kebab-summary>`, matching the commit types). The
+`prepare-make-pr` and `make-release` skills and CONTRIBUTING's gate step now
+defer to `make all` (and `make release-check` / `make bump-version` for
+releases) instead of re-listing raw per-tool commands, removing duplicate
+sources of truth. A new `.github/CODEOWNERS` auto-requests review from the
+maintainers, and a "Review & merge" policy documents PR-only landing on
+`main`, code-owner approvals (two for the wire format / C ABI / security code),
+green CI, and merge-commit merges. Mutation testing stays a deliberate,
+human-initiated step and is explicitly excluded from the default gate.
+
+### Fixed — `resolve_compression` unused-parameter warnings under `--no-default-features`
+
+`resolve_compression`'s `encoding`/`filter` parameters are consumed only
+by the feature-gated `szip`/`blosc2` arms, so a `--no-default-features`
+build (exercised by `make check`) warned they were unused. Scoped an
+`allow(unused_variables)` precisely to that build configuration rather
+than suppressing it globally.
+
 ### Added — version-bump tooling (`make bump-version` / `make version-check`)
 
 A new `scripts/bump_version.py` (zero-dependency, run with plain `python3`)
