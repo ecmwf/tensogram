@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ecmwf/tensogram/main/logo.png" width="200" alt="tensogram logo">
+  <img src="https://raw.githubusercontent.com/ecmwf/tensogram/main/logo.png" width="300" alt="tensogram logo">
 </p>
 
 [![license](https://img.shields.io/github/license/ecmwf/tensogram)](https://www.apache.org/licenses/LICENSE-2.0.html)
