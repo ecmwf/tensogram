@@ -333,11 +333,13 @@ jobs:
   # ── macOS: lint + test + GRIB + NetCDF + Python ────────────────
   main-macos:
     name: Main (macOS)
-    runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
+    # GitHub-hosted arm64 macOS — the self-hosted runner is offline (the org
+    # pays for these minutes). sccache is disabled (RUSTC_WRAPPER="") because
+    # its backend is the ECMWF-internal object store, unreachable from
+    # GitHub-hosted runners.
+    runs-on: macos-14
     env:
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup
-      CARGO_HOME: ${{ github.workspace }}/.cargo
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
@@ -348,9 +350,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-
-      - name: Install sccache
-        run: brew list sccache &>/dev/null || brew install sccache
 
       - name: Install system dependencies
         run: |
@@ -416,15 +415,6 @@ jobs:
           ruff format --check python/tensogram-earthkit/
           python -m pytest python/tensogram-earthkit/tests/ -v
 
-      - name: sccache stats
-        if: always()
-        run: sccache --show-adv-stats || true
-
-      - name: Cleanup
-        if: always()
-        run: |
-          sccache --stop-server || true
-          rm -rf "$TMPDIR" .venv build .rustup .cargo .sccache .llvm target
 
   # ── C++: Linux ─────────────────────────────────────────────────
   cpp-linux:
@@ -601,37 +591,22 @@ jobs:
   # ── C++: macOS ─────────────────────────────────────────────────
   cpp-macos:
     name: C++ (macOS)
-    runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
+    # GitHub-hosted arm64 macOS (self-hosted runner offline). sccache disabled
+    # — its ECMWF-internal backend is unreachable from GitHub-hosted runners.
+    runs-on: macos-14
     env:
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup
-      CARGO_HOME: ${{ github.workspace }}/.cargo
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install sccache
-        run: brew list sccache &>/dev/null || brew install sccache
-
       - name: Build and test
         run: |
           cargo build --release -p tensogram-ffi
-          cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j
           ctest --test-dir build --output-on-failure
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-adv-stats || true
-
-      - name: Cleanup
-        if: always()
-        run: |
-          sccache --stop-server || true
-          rm -rf "$TMPDIR" build .rustup .cargo .sccache target
 
   # ── Remote parity: Rust ↔ TS HTTP Range parity harness ────────
   # Drives both backends against a Python mock server (see
