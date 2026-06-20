@@ -102,6 +102,10 @@ python-build: ## Build Python bindings via maturin (dev install into .venv)
 
 python-dist: ## Build tensogram distributable wheels for the current platform
 	if [ ! -d .venv ] ; then uv venv ; fi
+	# `python-dist` must be self-contained: install maturin into .venv (it is
+	# not pre-installed in a fresh CI job — locally it only worked because a
+	# prior `python-build` had installed it). `[patchelf]` for Linux rpath.
+	uv pip install 'maturin[patchelf]'
 	cd python/bindings && $(MATURIN) build --release --out dist $(MATURIN_INTERP_ARGS) $(MATURIN_COMPAT_ARG)
 
 python-dist-extras: ## Build distributable wheels for pure-Python extra packages
