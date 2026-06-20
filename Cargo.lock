@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "built",
  "bytes",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-benchmarks"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "ciborium",
  "clap",
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-cli"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "ciborium",
  "clap",
@@ -2270,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-encodings"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "blosc2",
  "blosc2-rs-sys",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-ffi"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "cbindgen",
  "ciborium",
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-grib"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "ciborium",
  "eccodes",
@@ -2319,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-netcdf"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "ciborium",
  "netcdf",
@@ -2330,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-rust-examples"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "ciborium",
  "serde_json",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-sz3"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "tensogram-sz3-sys",
  "thiserror",
@@ -2353,7 +2353,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-sz3-sys"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "cc",
  "zstd-sys",
@@ -2361,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-szip"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "libaec-sys",
  "proptest",
