@@ -113,10 +113,14 @@ version-bump/changelog edits uncommitted — the packaging checks pass
 `--allow-dirty` for exactly this reason. The *real* publish always runs on the
 clean tagged commit.
 
-### 5. Commit and push
+### 5. Open a release PR and merge it
 
-Commit the version bump and changelog edits and push. **If anything is
-uncommitted, STOP** — a tag must point at a clean tree.
+Releases land on `main` through a PR like every other change (see the
+"Review & merge" policy in `AGENTS.md`) — do not push the release commit
+directly. Branch as `chore/release-X.Y.Z`, commit, push, open the PR, get it
+green/reviewed, then **squash-merge** and delete the branch. Sync `main`
+before tagging. **If anything is uncommitted, STOP** — the tag must point at a
+clean tree on `main`.
 
 ### 6. (Optional but recommended) Dispatch the CI preflight
 

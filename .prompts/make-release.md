@@ -67,23 +67,40 @@ Summarize changes since the last release using `git log <last-tag>..HEAD --oneli
 Organize into Added / Changed / Fixed / Removed sections.
 Include a Stats section with test counts and coverage.
 
-### 3. Commit and Push
+### 3. Commit and open a release PR
+
+Releases land on `main` through a PR like every other change (see AGENTS.md
+"Review & merge") — NEVER push the release commit straight to `main`.
+
 ```bash
-cargo check --workspace  # verify Cargo.lock updates cleanly
-git add -A  # but NOT build artifacts
+cargo check --workspace                 # verify Cargo.lock updates cleanly
+git checkout -b chore/release-X.Y.Z
+git add -A                              # but NOT build artifacts (dist/, build/, target/)
 git commit -m "chore: release X.Y.Z"
-git push
+git push -u origin chore/release-X.Y.Z
+gh pr create --base main --title "chore: release X.Y.Z" --body "release X.Y.Z"
+```
+
+Get it green/reviewed, then **squash-merge** and delete the branch (add
+`--admin` only to bypass a check that is red for known-infra reasons):
+
+```bash
+gh pr merge --squash --delete-branch
+git checkout main && git pull            # sync before tagging
 ```
 
 ### 4. Preflight and Tag
+
+With the release PR squash-merged and `main` checked out:
+
 ```bash
 # Trigger release-preflight.yml workflow (workflow_dispatch, input: version)
 # Wait for it to pass — all green required.
-# release-preflight now also exercises `cargo cbuild -p tensogram-ffi` and
-# the C-API smoke test, so a broken cargo-c metadata or header drift is
-# caught here before tagging.
-git tag X.Y.Z
-git push --tags
+# release-preflight also exercises `cargo cbuild -p tensogram-ffi` and the
+# C-API smoke test, so broken cargo-c metadata or header drift is caught
+# here before tagging.
+git tag X.Y.Z                            # on main, NO 'v' prefix
+git push origin X.Y.Z
 ```
 
 Pushing the tag also triggers `publish-ffi.yml`, which builds the four
