@@ -225,8 +225,8 @@ human-facing version of this list.
 - Run `/copilot-review-loop` to convergence before requesting human review;
   `/address-pr-comments` resolves threads. Pushing new commits dismisses stale
   approvals, so re-request review after addressing feedback.
-- Merge with a **merge commit** (GitHub "Create a merge commit"), then delete
-  the branch.
+- Merge with a **squash merge** (GitHub "Squash and merge"), then delete the
+  branch.
 - Agents NEVER push, merge, or open a PR without explicit user approval.
 
 # Version control

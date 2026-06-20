@@ -77,7 +77,7 @@ releases) instead of re-listing raw per-tool commands, removing duplicate
 sources of truth. A new `.github/CODEOWNERS` auto-requests review from the
 maintainers, and a "Review & merge" policy documents PR-only landing on
 `main`, code-owner approvals (two for the wire format / C ABI / security code),
-green CI, and merge-commit merges. Mutation testing stays a deliberate,
+green CI, and squash merges. Mutation testing stays a deliberate,
 human-initiated step and is explicitly excluded from the default gate.
 
 ### Fixed — `resolve_compression` unused-parameter warnings under `--no-default-features`
