@@ -881,6 +881,16 @@ fn resolve_filter(desc: &DataObjectDescriptor) -> Result<FilterType> {
 /// Resolve the compression type from a descriptor, using the resolved
 /// encoding and filter for any codec that depends on them (szip bits_per_sample,
 /// blosc2 typesize).
+///
+/// `encoding` and `filter` are consumed only by the feature-gated `szip` and
+/// `blosc2` arms below.  With every codec that needs them disabled (e.g. a
+/// `--no-default-features` build) they are genuinely unused, so the `allow`
+/// is scoped precisely to that build configuration rather than applied
+/// unconditionally.
+#[cfg_attr(
+    not(any(feature = "szip", feature = "szip-pure", feature = "blosc2")),
+    allow(unused_variables)
+)]
 fn resolve_compression(
     desc: &DataObjectDescriptor,
     dtype: Dtype,
@@ -1653,7 +1663,7 @@ fn mask_params_cbor(method: &MaskMethod) -> BTreeMap<String, ciborium::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{DecodeOptions, decode};
+    use crate::decode::{decode, DecodeOptions};
     use crate::types::{ByteOrder, GlobalMetadata};
     use std::collections::BTreeMap;
 
