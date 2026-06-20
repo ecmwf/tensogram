@@ -30,6 +30,20 @@ jobs:
       - name: Build WASM + TypeScript (wasm-pack → typescript/wasm, tsc → dist)
         run: make ts-build
 
+      - name: Verify the wasm blob is in the publishable tarball
+        working-directory: typescript
+        # Regression guard. wasm-pack writes a `.gitignore` ("*") into its
+        # output directory; npm honours that nested ignore file when packing
+        # and silently drops the entire wasm/ directory from the tarball
+        # (this is what shipped broken in @ecmwf.int/tensogram@0.21.0). The
+        # package's `prepack` script removes that file before packing; this
+        # step proves the resulting tarball actually carries the wasm blob,
+        # failing the publish loudly rather than shipping an unusable package.
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e "const f=require('./pack.json')[0].files.map(x=>x.path); if(!f.includes('wasm/tensogram_wasm_bg.wasm')){console.error('FATAL: wasm blob missing from npm tarball. wasm/ entries present:', f.filter(p=>p.startsWith('wasm'))); process.exit(1);} console.log('ok: wasm blob present in tarball');"
+          rm -f pack.json
+
       - name: Check if version already published
         id: version-check
         run: |
