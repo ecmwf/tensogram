@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-06-20
+
 ### Fixed — npm package now ships the WASM blob
 
 The published `@ecmwf.int/tensogram` npm package was missing its entire
