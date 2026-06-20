@@ -9,16 +9,18 @@
 # Top-level Makefile dispatching builds and tests for all languages.
 # Run `make help` to see available targets.
 
-.PHONY: help all check test lint fmt docs clean \
+.PHONY: help all build check test lint fmt docs clean \
         bump-version version-check \
-        rust-check rust-test rust-lint rust-fmt rust-clippy \
+        release-check feature-tests crates-verify cargo-c-header-check \
+        python-release-check npm-pack-check \
+        rust-check rust-build rust-test rust-lint rust-fmt rust-clippy \
         python-build python-dist python-dist-extras python-test python-lint python-fmt \
         earthkit-install earthkit-test earthkit-lint \
         cpp-build cpp-test \
         fortran-build fortran-test fortran-fpm-test fortran-f2008-check \
-        cargo-c-build cargo-c-install cargo-c-smoke \
+        cargo-c-build cargo-c-install cargo-c-test \
         mutants-install mutants mutants-diff mutants-shard \
-        wasm-test docs-build doc-examples \
+        wasm-build wasm-test docs-build doc-examples \
         ts-install ts-build ts-test ts-typecheck \
         remote-parity-rust-build remote-parity-ts-install remote-parity-fixtures \
         remote-parity-build remote-parity remote-parity-clean
@@ -29,13 +31,16 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-all: check test lint ## Run all checks, tests, and lints
+all: check build test lint ## Build every language surface, then run all checks, tests, and lints
 
 # ── Rust ──────────────────────────────────────────────────────────────────
 
 rust-check: ## Check Rust workspace compiles
 	cargo check --workspace
 	cargo check -p tensogram --no-default-features
+
+rust-build: ## Build the Rust workspace (debug binaries + libs)
+	cargo build --workspace
 
 rust-test: ## Run all Rust tests
 	cargo test --workspace
@@ -80,7 +85,17 @@ MATURIN_COMPAT_ARG = $(if $(MATURIN_COMPAT),--compatibility $(MATURIN_COMPAT))
 
 python-build: ## Build Python bindings via maturin (dev install into .venv)
 	if [ ! -d .venv ] ; then uv venv ; fi
-	uv pip install maturin
+	# `[patchelf]` ships the patchelf binary maturin uses to set the
+	# shared-library rpath on Linux (matches release-preflight CI; without
+	# it maturin only warns).
+	uv pip install 'maturin[patchelf]'
+	# Force a fresh cdylib link. Across repeated `maturin develop --uv`
+	# runs, cargo/maturin can leave a 0-byte, hardlinked libtensogram.so in
+	# target/ while cargo's fingerprint still reads "fresh", so cargo never
+	# relinks and the next develop aborts with "Object is too small".
+	# Removing the artifacts makes cargo relink a valid, unshared library.
+	rm -f python/bindings/target/release/libtensogram.so python/bindings/target/release/deps/libtensogram*.so
+	rm -rf python/bindings/target/maturin
 	cd python/bindings && $(MATURIN) develop --release --uv
 	uv pip install ./python/tensogram-xarray
 	uv pip install ./python/tensogram-zarr
@@ -177,7 +192,8 @@ cargo-c-build: ## Build the C library + pkg-config + header via cargo-c
 cargo-c-install: ## Install via cargo-c into PREFIX (default $HOME/.local)
 	cargo cinstall --release -p tensogram-ffi --prefix=$(PREFIX) --libdir=lib
 
-cargo-c-smoke: cargo-c-install ## Install + run the C-API smoke test against the install prefix
+cargo-c-test: cargo-c-install ## Run all C-API tests: tensogram-ffi unit/integration tests + cargo-c install smoke test
+	cargo test -p tensogram-ffi --features async-remote
 	bash cpp/tests/test_cargo_c_smoke.sh $(PREFIX)
 
 # ── Mutation testing (cargo-mutants) ──────────────────────────────────────
@@ -269,6 +285,13 @@ mutants-shard: mutants-install ## Run a single mutant shard (SHARD=N/M, e.g. SHA
 
 # ── WASM ──────────────────────────────────────────────────────────────────
 
+# `--out-dir` is resolved relative to the crate directory, so `../../build/wasm`
+# lands at <repo>/build/wasm — git-ignored and removed by `make clean`. This is
+# a standalone "does the wasm crate build" target; the copy the TypeScript
+# wrapper actually consumes is produced by `ts-build` into typescript/wasm.
+wasm-build: ## Build the tensogram-wasm crate to a wasm package (wasm-pack)
+	wasm-pack build rust/tensogram-wasm --release --target web --out-dir ../../build/wasm --out-name tensogram_wasm
+
 wasm-test: ## Run WASM tests
 	wasm-pack test --node rust/tensogram-wasm
 
@@ -287,6 +310,8 @@ ts-typecheck: ts-build ## Strict typecheck source + tests
 	cd typescript && npx tsc --noEmit -p tsconfig.test.json
 
 # ── Docs ──────────────────────────────────────────────────────────────────
+
+docs: docs-build ## Build the documentation site (alias for docs-build)
 
 docs-build: ## Build mdbook documentation
 	mdbook build docs/
@@ -349,9 +374,74 @@ bump-version: ## Bump the project version everywhere: make bump-version VERSION=
 version-check: ## Verify every manifest matches the VERSION file (CI guard)
 	python3 scripts/bump_version.py --check
 
+# ── Release readiness ─────────────────────────────────────────────────────
+#
+# `make release-check` runs the release-only gates that `make all` does NOT,
+# so run it AFTER a green `make all`, before tagging. It mirrors the locally
+# runnable subset of .github/workflows/release-preflight.yml (the authoritative
+# pre-tag CI gate, which additionally runs the grib/netcdf + macOS matrices and
+# the real dry-run publishes on a clean checkout). Full procedure:
+# docs/src/dev/releasing.md.
+
+# Host target triple — cargo-c emits its artefacts under target/<triple>/.
+_HOST_TRIPLE = $(shell rustc -vV | sed -n 's/^host: //p')
+
+feature-tests: ## Test the optional-feature surface that make-all's default-feature run skips
+	cargo test -p tensogram --features remote
+	cargo test -p tensogram --features "remote,async"
+
+crates-verify: ## List every workspace crate tarball + dry-run publish the leaf crates
+	# `--allow-dirty`: release-check is meant to run before the final release
+	# commit (version bump / changelog edits may still be uncommitted). The
+	# real publish runs on the clean tagged commit via publish-crates.yml.
+	for crate in tensogram-szip tensogram-sz3-sys tensogram-sz3 \
+	             tensogram-encodings tensogram tensogram-ffi tensogram-cli; do \
+	  echo "==> cargo package -p $$crate --list"; \
+	  cargo package -p "$$crate" --list --allow-dirty >/dev/null || exit 1; \
+	done
+	# Leaf crates have no path-only deps, so a real dry-run publish compiles
+	# the packaged tarball — catching missing `include` files or bad metadata.
+	# (Crates with sibling path deps cannot be dry-run-published until the deps
+	# are on crates.io; the publish-crates workflow handles their ordering.)
+	cargo publish --dry-run --allow-dirty -p tensogram-szip
+	cargo publish --dry-run --allow-dirty -p tensogram-sz3-sys
+
+cargo-c-header-check: cargo-c-build ## Diff the in-tree FFI header against cargo-c's generated header (drift guard)
+	diff -u rust/tensogram-ffi/tensogram.h \
+	        target/$(_HOST_TRIPLE)/release/include/tensogram/tensogram.h
+
+python-release-check: python-dist python-dist-extras ## Build all wheels + validate their metadata with twine
+	uv pip install twine
+	$(PYTHON) -m twine check python/bindings/dist/*.whl dist/extras/*
+
+npm-pack-check: ts-build ## Verify the published npm tarball would include the wasm blob
+	cd typescript && set -o pipefail && npm pack --dry-run --json 2>/dev/null | \
+	  node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const f=JSON.parse(d)[0].files.map(x=>x.path); if(!f.includes('wasm/tensogram_wasm_bg.wasm')){console.error('FATAL: wasm blob missing from npm tarball');process.exit(1)} console.log('ok: wasm blob present in npm tarball')})"
+
+release-check: version-check feature-tests crates-verify cargo-c-header-check python-release-check npm-pack-check ## Release-readiness gate — run AFTER `make all`, before tagging
+	@echo ""
+	@echo "release-check: all release gates passed."
+	@echo "Next: see docs/src/dev/releasing.md for the bump / tag / publish steps."
+
 # ── Aggregates ────────────────────────────────────────────────────────────
 
 check: rust-check ## Check all builds
+
+# `build` compiles every language surface in one shot: Rust, Python (maturin),
+# TypeScript (wasm-pack + tsc), C++ (CMake), WASM (wasm-pack), and the cargo-c C
+# library. The Fortran binding links that C ABI via pkg-config, so it is built
+# last against a repo-local install prefix (build/ffi-prefix — no writes outside
+# the tree; `make clean` removes it). The build/fortran CMake dir is wiped first
+# so the configure always re-queries pkg-config against the freshly installed
+# prefix; otherwise a stale cache can pin an absolute include dir from an earlier
+# prefix and fail the generate step. Heavier system prerequisites than the other
+# aggregates: a C/C++ toolchain + CMake, gfortran + pkg-config, wasm-pack,
+# cargo-c, uv, and Node.
+build: rust-build python-build ts-build cpp-build wasm-build cargo-c-build ## Build every language surface (Rust, Python, TS, C++, WASM, cargo-c, Fortran)
+	$(MAKE) cargo-c-install PREFIX=$(CURDIR)/build/ffi-prefix
+	rm -rf $(CURDIR)/build/fortran
+	PKG_CONFIG_PATH="$(CURDIR)/build/ffi-prefix/lib/pkgconfig:$$PKG_CONFIG_PATH" $(MAKE) fortran-build
+
 test: rust-test python-test ts-test ## Run all tests
 lint: rust-lint python-lint python-fmt ts-typecheck ## Run all lints
 fmt: rust-fmt python-fmt ## Check all formatting
