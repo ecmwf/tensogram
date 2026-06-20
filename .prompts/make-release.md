@@ -1,5 +1,5 @@
 ---
-description: "Cut a new release — usage: /make-release <X.Y.Z>"
+description: "Cut a new release — usage: /make-release <X.Y.Z> [merge|squash|rebase]"
 agent: build
 ---
 
@@ -9,8 +9,13 @@ Create a new release of Tensogram.
 
 ## Arguments
 
-Provide the version as argument, e.g. `/make-release 0.14.0`
+Provide the version as the first argument, e.g. `/make-release 0.14.0`.
 If no version given, auto-increment MINOR from the current VERSION file.
+
+An optional second argument selects the merge strategy for the release PR —
+one of `merge`, `squash`, or `rebase`. It defaults to **`rebase`**
+(e.g. `/make-release 0.14.0 squash`). Pass it as the `--<strategy>` flag in the
+`gh pr merge` step below.
 
 > **Canonical procedure:** `docs/src/dev/releasing.md`. This skill automates it;
 > keep the two in sync.
@@ -81,11 +86,12 @@ git push -u origin chore/release-X.Y.Z
 gh pr create --base main --title "chore: release X.Y.Z" --body "release X.Y.Z"
 ```
 
-Get it green/reviewed, then **squash-merge** and delete the branch (add
-`--admin` only to bypass a check that is red for known-infra reasons):
+Get it green/reviewed, then merge with the chosen strategy (default
+**rebase**) and delete the branch (add `--admin` only to bypass a check that
+is red for known-infra reasons):
 
 ```bash
-gh pr merge --squash --delete-branch
+gh pr merge --rebase --delete-branch     # or --merge / --squash per the strategy arg
 git checkout main && git pull            # sync before tagging
 ```
 

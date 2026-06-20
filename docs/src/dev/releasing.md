@@ -118,9 +118,10 @@ clean tagged commit.
 Releases land on `main` through a PR like every other change (see the
 "Review & merge" policy in `AGENTS.md`) — do not push the release commit
 directly. Branch as `chore/release-X.Y.Z`, commit, push, open the PR, get it
-green/reviewed, then **squash-merge** and delete the branch. Sync `main`
-before tagging. **If anything is uncommitted, STOP** — the tag must point at a
-clean tree on `main`.
+green/reviewed, then merge and delete the branch. Releases default to a
+**rebase merge** (`gh pr merge --rebase`); `/make-release` takes an optional
+`merge|squash|rebase` argument to override. Sync `main` before tagging. **If
+anything is uncommitted, STOP** — the tag must point at a clean tree on `main`.
 
 ### 6. (Optional but recommended) Dispatch the CI preflight
 
