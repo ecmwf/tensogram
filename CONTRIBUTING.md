@@ -16,18 +16,26 @@ Thank you for your interest in contributing. This guide will get you from zero t
 git clone https://github.com/ecmwf/tensogram.git
 cd tensogram
 
-# Build everything
+# Rust-only quick check (needs no optional toolchains)
 cargo build --workspace
-
-# Run the test suite
 cargo test --workspace
-
-# Check formatting and lints
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-If all of that passes, you're ready to go.
+The **canonical gate** — what CI runs and what you must pass before committing —
+is the top-level Makefile, which covers every language (Rust, Python,
+TypeScript, C++, WASM, cargo-c, Fortran):
+
+```bash
+make all          # build + test + lint, across all languages
+make help         # list every target
+```
+
+`make all` needs the optional toolchains listed under Prerequisites (uv, Node +
+`wasm-pack`, a C/C++ compiler + CMake, gfortran + pkg-config, cargo-c). When
+preparing a release, also run `make release-check` (see
+[docs/src/dev/releasing.md](docs/src/dev/releasing.md)).
 
 ## Project Structure
 
@@ -53,15 +61,23 @@ tensogram/
 │   ├── bindings/               # Python bindings (PyO3, excluded from default build)
 │   ├── tensogram-xarray/       # xarray backend engine
 │   ├── tensogram-zarr/         # Zarr v3 store backend
+│   ├── tensogram-anemoi/       # anemoi-inference output plugin
+│   ├── tensogram-earthkit/     # earthkit-data source + encoder plugin
 │   └── tests/                  # Python test suite
 ├── cpp/
-│   ├── include/                # C++ wrapper header + C header
+│   ├── include/                # C++ wrapper header + C header (incl. async/)
 │   ├── tests/                  # C++ GoogleTest suite
 │   └── CMakeLists.txt          # CMake build system
+├── fortran/                    # Fortran 2008 binding over the C FFI (CMake + fpm)
+├── typescript/                 # TypeScript wrapper over the WASM crate (npm pkg)
+├── tensoscope/                 # Browser-based interactive .tgm viewer (React + WASM)
 ├── examples/
 │   ├── rust/                   # Runnable Rust examples (NN_description.rs)
 │   ├── cpp/                    # C++ examples using the wrapper
-│   └── python/                 # Python examples using the PyO3 bindings
+│   ├── python/                 # Python examples using the PyO3 bindings
+│   ├── fortran/                # Fortran examples using the binding
+│   ├── typescript/             # TypeScript examples using the WASM wrapper
+│   └── jupyter/                # Narrative Jupyter notebook walk-throughs
 ├── docs/                       # mdbook documentation source
 ├── plans/                      # Design docs, implementation status, TODOs
 │   └── ARCHITECTURE.md         # How the crates fit together
@@ -71,9 +87,32 @@ tensogram/
 
 ## Development Workflow
 
+> **Agents:** the full lifecycle (onboard → plan → branch → develop → PR →
+> review → release) and the bundled `/`-skill that drives each phase are
+> documented in [AGENTS.md](AGENTS.md) under "Development workflow". The bundled
+> skills live in `.prompts/` (e.g. `/onboard`, `/prepare-make-pr`,
+> `/make-release`). The steps below are the human-facing version.
+
+### Branch naming
+
+Branch off `main`. Names follow `<type>/<kebab-summary>`, where `<type>` is one
+of the conventional-commit types also used for commit messages:
+
+```
+feat/<summary>      fix/<summary>       docs/<summary>
+chore/<summary>     refactor/<summary>  test/<summary>
+ci/<summary>        perf/<summary>      build/<summary>
+```
+
+Audit / longer-lived work also uses `security/<summary>` and
+`hardening/<summary>`. Examples from history: `feat/fortran-interface`,
+`fix/python-packages-build-system`, `docs/reorganize-documentation`,
+`ci/manylinux-2-28`, `security/hardening-audit`. (`feature/…` appears in older
+history; new branches use the short `feat/` form to match the commit types.)
+
 ### 1. Make your changes
 
-Work on a branch. The codebase follows these conventions:
+Work on a branch (see Branch naming above). The codebase follows these conventions:
 
 - **No panics in library code.** All fallible operations return `Result<T, TensogramError>`.
 - **Immutability by default.** Use `let` unless mutation is required.
@@ -82,18 +121,22 @@ Work on a branch. The codebase follows these conventions:
 
 See the [Code Style](#code-style) section below for the full style guide.
 
-### 2. Run the checks
+### 2. Run the gate
 
-Before submitting, run all four:
+Before submitting, run the full multi-language gate:
 
 ```bash
-cargo build --workspace
-cargo fmt
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+make all          # = make check test lint, across all languages
 ```
 
-All four must pass with zero warnings. The CI pipeline runs the same commands.
+It must pass with zero warnings — CI runs the same gate. `make all` wraps the
+underlying `cargo` / `ruff` / `vitest` / CMake commands, so there is one source
+of truth (see the Makefile or `make help`). For a fast Rust-only inner loop you
+can still run:
+
+```bash
+cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace
+```
 
 ### 3. Test optional features
 
@@ -127,6 +170,25 @@ cargo doc --workspace --no-deps
 ### 5. Add examples
 
 If you add a new API surface, add a runnable example in `examples/rust/`. The naming convention is `NN_description.rs` (e.g. `11_new_feature.rs`).
+
+### 6. Open a pull request
+
+Use `/prepare-make-pr` (it runs `make all`, commits, pushes, and opens the PR),
+or do it by hand:
+
+- Branch name follows **Branch naming** above; commits use conventional-commit
+  messages.
+- Fill in the PR template (`.github/PULL_REQUEST_TEMPLATE.md`), including the CLA.
+- `.github/CODEOWNERS` auto-requests review from the maintainers. A PR needs at
+  least one code-owner approval — **two** for the wire format, the C ABI /
+  generated header, or security-sensitive code.
+- CI must be green. Run `/copilot-review-loop` to convergence and
+  `/address-pr-comments` to resolve threads.
+- Merge with a **merge commit** and delete the branch. (Mutation testing,
+  `make mutants-diff`, is heavy and run only by deliberate human choice.)
+
+The full review / approval / merge policy is in [AGENTS.md](AGENTS.md) under
+"Review & merge".
 
 ## Code Style
 

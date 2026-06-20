@@ -167,6 +167,68 @@ cd tensoscope && make build && make run
 ```
 Serves at http://localhost:8000/ (set BASE_PATH env var to deploy under a subpath)
 
+# Development workflow
+
+The lifecycle below maps each phase to the bundled slash-command skills in
+`.prompts/` (opencode resolves them via `.opencode/commands` → `.prompts`) and,
+when your agent harness provides them, to specialised subagents. Humans follow
+the same phases, just without the `/`-commands. CONTRIBUTING.md carries the
+human-facing version of this list.
+
+1. **Onboard** — `/onboard` reads the docs and surveys the code (use a
+   codebase-explorer subagent for the survey).
+2. **Pick work** — take an item from `plans/TODO.md` (the accepted backlog).
+   `plans/IDEAS.md` is speculative and is NOT committed direction.
+3. **Plan** — before writing code, say how you will verify it, plan the TDD
+   tests, take a behaviour-driven approach, ask clarifying questions, and
+   summarise the design + implementation plan (see Guidelines above). Use a
+   planner subagent if you have one; an external-research subagent for
+   unfamiliar formats/libraries.
+4. **Branch** — branch off `main` using the convention in CONTRIBUTING.md
+   ("Branch naming"): `<type>/<kebab-summary>`, where `<type>` matches the
+   commit types (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`,
+   `perf`, `build`; plus `security` / `hardening` for audit work).
+5. **Develop** — follow the conventions here and CONTRIBUTING.md's Code Style.
+   Document new features under `docs/` and add a runnable `examples/<lang>/`
+   example for any new public API. Record every user-facing change in
+   `CHANGELOG.md [Unreleased]` as you go — that is the only work-tracking
+   record (no separate status file, no issue ordinals). A domain-specialist
+   subagent fits the implementation; a security-auditor subagent for wire
+   format / FFI / adversarial-sensitive changes.
+6. **Quality passes** — `/make-further-pass` (strictness-graded), plus, as
+   needed, `/improve-code-coverage`, `/improve-edge-cases`,
+   `/improve-error-handling`, and `/doc-fact-check`. A reviewer/auditor subagent
+   fits here. Mutation testing (`make mutants-diff`) is heavy to run locally and
+   is ALWAYS a deliberate human decision — it is NOT part of the default gate.
+7. **Gate** — `make all` must be green (the single pre-commit gate; see
+   Build / lint / test above).
+8. **Open the PR** — `/prepare-make-pr` runs `make all`, then commits on a
+   feature branch with a conventional-commit message, pushes, and opens the PR
+   against `.github/PULL_REQUEST_TEMPLATE.md`. Only commit / push / open a PR
+   when the user has asked you to.
+9. **Review loop** — `/copilot-review-loop` drives the Copilot reviewer to
+   convergence; `/address-pr-comments` resolves human review threads and waits
+   on CI (`gh pr checks --watch`). Review ownership is in `.github/CODEOWNERS`.
+10. **Release** — `/make-release`; full procedure in `docs/src/dev/releasing.md`
+    and "Release process" below.
+
+## Review & merge
+
+- All changes land on `main` through a pull request from a `<type>/…` branch;
+  `main` is protected against direct pushes.
+- `.github/CODEOWNERS` auto-requests review from the maintainers. A PR needs at
+  least one approving review from a code owner — **two** for the wire format
+  (`plans/WIRE_FORMAT.md`, `rust/tensogram/src/wire.rs` / `framing.rs`), the C
+  ABI / generated header (`rust/tensogram-ffi/`), or security-sensitive code.
+- CI (`ci.yml`) must be green before merge; `release-preflight` must be green
+  before any release tag.
+- Run `/copilot-review-loop` to convergence before requesting human review;
+  `/address-pr-comments` resolves threads. Pushing new commits dismisses stale
+  approvals, so re-request review after addressing feedback.
+- Merge with a **merge commit** (GitHub "Create a merge commit"), then delete
+  the branch.
+- Agents NEVER push, merge, or open a PR without explicit user approval.
+
 # Version control
 - Git project in github.com/ecmwf/tensogram
 - IMPORTANT: 
@@ -174,11 +236,27 @@ Serves at http://localhost:8000/ (set BASE_PATH env var to deploy under a subpat
     - NEVER update MAJOR unless users says so. 
     - Increment MINOR for new features. MICRO for bugfixes and documentation updates.
 - NEVER prepend git tag or releases with 'v'
-- REMEBER on releases:
-    - check all is commited and pushed upstream, otherwise STOP and warn user
-    - update the VERSION file
-    - git tag with version
-    - push and create release in github
+- Release process (canonical ordered procedure; full rationale + per-step
+  detail in `docs/src/dev/releasing.md`):
+    1. Ensure `main` is green and every user-facing change is recorded in
+       `CHANGELOG.md` under `[Unreleased]`.
+    2. `make bump-version VERSION=X.Y.Z` — rewrites every manifest from the
+       `VERSION` source of truth (see the list below). By hand, move the
+       `[Unreleased]` CHANGELOG entries under a new `## [X.Y.Z] - DATE` heading.
+    3. `make all` — the full build/test/lint gate (Rust + Python + TS + C++ +
+       WASM + cargo-c + Fortran).
+    4. `make release-check` — the release-only gates `make all` does NOT run
+       (version-check, crate packaging + leaf-crate dry-run publish, the
+       cargo-c header-drift diff, Python wheel + `twine` metadata, npm
+       wasm-blob guard). Requires `cargo-c`, `uv`, and Node on PATH.
+    5. Commit and push everything. STOP and warn the user if anything is
+       uncommitted — a tag must point at a clean tree.
+    6. Optionally dispatch the `release-preflight` GitHub workflow — the
+       authoritative pre-tag gate, which additionally runs the grib/netcdf +
+       macOS matrices and real dry-run publishes on a clean checkout.
+    7. `git tag X.Y.Z` (NO `v` prefix), push the tag, and create the GitHub
+       release. The tag push triggers the `publish-crates` / `publish-pypi` /
+       `publish-npm` / `publish-ffi` workflows.
 
 - NOTE: SINGLE SOURCE OF TRUTH FOR VERSION — The `VERSION` file at the repo root is the
   canonical version for the ENTIRE project. ALL version strings everywhere MUST match it.

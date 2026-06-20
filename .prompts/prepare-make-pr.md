@@ -9,36 +9,21 @@ Final preparation check and PR creation workflow.
 
 ## Pre-flight Checks
 
-Run ALL of the following. If ANY step fails, STOP and report the failure.
+Run the full gate. If it fails, STOP and report the failure — do not open the PR.
 
-### 1. Rust
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo test -p tensogram --features "remote,async"
+make all          # build + test + lint across Rust, Python, TS, C++, WASM, cargo-c, Fortran
 ```
 
-### 2. Python
-```bash
-source .venv/bin/activate
-ruff check --config python/bindings/pyproject.toml python/tests/
-ruff format --check --config python/bindings/pyproject.toml python/tests/
-python -m pytest python/tests/ -v
-python -m pytest python/tensogram-xarray/tests/ -v
-python -m pytest python/tensogram-zarr/tests/ -v
-```
+`make all` is the single source of truth for the pre-commit gate; it wraps the
+underlying `cargo` / `ruff` / `vitest` / CMake commands (run `make help` for the
+individual targets). Do NOT run a narrower subset in its place.
 
-### 3. Examples
-```bash
-cargo build --workspace  # Rust examples built as part of workspace
-```
+Mutation testing (`make mutants-diff`) is heavy and is a deliberate human
+decision — do not run it as part of opening a PR unless explicitly asked.
 
-### 4. Documentation
-```bash
-# Verify docs build if mdbook is available
-which mdbook && mdbook build docs/ || echo "mdbook not installed, skip"
-```
+(Releases have an extra gate, `make release-check`, and their own skill —
+see `/make-release` and `docs/src/dev/releasing.md`.)
 
 ## PR Creation
 
