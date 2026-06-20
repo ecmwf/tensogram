@@ -1,4 +1,4 @@
-![tensogram logo](https://raw.githubusercontent.com/ecmwf/tensogram/main/logo.png)
+![tensogram logo](https://raw.githubusercontent.com/ecmwf/tensogram/main/logo.png){width=200}
 
 [![license](https://img.shields.io/github/license/ecmwf/tensogram)](https://www.apache.org/licenses/LICENSE-2.0.html)
 [![tag release](https://img.shields.io/github/v/release/ecmwf/tensogram?sort=semver)](https://github.com/ecmwf/tensogram)
