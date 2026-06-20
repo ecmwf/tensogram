@@ -1663,7 +1663,7 @@ fn mask_params_cbor(method: &MaskMethod) -> BTreeMap<String, ciborium::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{decode, DecodeOptions};
+    use crate::decode::{DecodeOptions, decode};
     use crate::types::{ByteOrder, GlobalMetadata};
     use std::collections::BTreeMap;
 
