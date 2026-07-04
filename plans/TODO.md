@@ -232,6 +232,40 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
     - similarly to torch, conveninece methods for tensogram as/from mlx frame, to avoid the numpy intermediary
 
 
+## GRIB & NetCDF Round-Trip
+
+Make `tensogram-grib` / `tensogram-netcdf` reversible: import **and** export
+with measured fidelity. Full design in `plans/GRIB_NETCDF_ROUNDTRIP.md`; test
+methodology in `plans/TEST.md` ("Round-trip conversion testing"). Clean-design
+rule: all GRIB / NetCDF code stays in those crates; the core stays
+format-agnostic; export is exposed only through feature-gated `to-grib` /
+`to-netcdf` CLI subcommands. Two parallel workstreams on a shared harness.
+
+- [ ] **shared — round-trip harness**: fidelity report types (max abs / max
+  rel error + metadata diff), `verify_roundtrip`, and the
+  `convert-FORMAT → to-FORMAT → native-tool compare` test scaffold
+  (`grib_compare`, `nccmp`).
+- [ ] **grib — full key capture**: capture the complete reconstruct key-set
+  (stop dropping arrays / `Bytes` / local sections), bitmap/missing values,
+  and packing params; keep the origin codec (`grid_simple`→`simple_packing`,
+  `grid_ccsds`→`szip`, `grid_ieee`→`none`), lossless default + warning else.
+- [ ] **grib — `to-grib` export**: reconstruct messages from captured keys via
+  an ecCodes sample clone + `write_key_unchecked` + values; new feature-gated
+  `tensogram to-grib` subcommand mirroring `convert-grib`.
+- [ ] **grib — spike/hardening**: `packingType`-set onto a sample (esp.
+  `grid_ccsds`), product-template / local-section / bitmap key ordering,
+  end-to-end with injected values (residual risks #1–2 in the design doc).
+- [ ] **netcdf — full structural capture**: dims + coordinate variables +
+  groups + exact attribute types + per-var storage (endianness, chunking,
+  compression state); native dtype preserved, CF scale/offset unpacked to f64.
+- [ ] **netcdf — `to-netcdf` export**: reconstruct via the **safe** `netcdf`
+  crate (no `netcdf-sys` FFI); classic targets byte-identical, nc4 best-effort;
+  new feature-gated `tensogram to-netcdf` subcommand mirroring `convert-netcdf`.
+- [ ] **fixtures**: source GRIB `grid_simple` / `grid_ieee` / bitmap (+ jpeg /
+  complex if available) and a compressed NetCDF-4 (deflate + shuffle + chunk)
+  fixture — the shipped set under-covers the encoding matrix.
+
+
 ## Documentation
 
 - [ ] interactive-docs:
