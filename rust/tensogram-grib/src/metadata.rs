@@ -68,8 +68,19 @@ fn read_namespace_keys(
     Ok(keys)
 }
 
+/// Upper bound on array length kept in metadata. Small *definition* arrays
+/// (`pl` for reduced grids, `pv` for hybrid levels, `scaledValues`) are needed
+/// to reconstruct a message and must be preserved; the huge *data* arrays
+/// (`values`/`codedValues`, ~10^6 elements) are the payload and are read
+/// separately — never through this path — but the guard keeps the CBOR bounded
+/// against any pathological namespace key.
+const MAX_ARRAY_LEN: usize = 8192;
+
 /// Convert an ecCodes `DynamicKeyType` to a CBOR value, filtering out
-/// missing/sentinel/array values.  Returns `None` for values to skip.
+/// missing/sentinel values and oversized arrays. Returns `None` to skip.
+///
+/// Small arrays and byte strings (local-section blobs) ARE kept — they are
+/// required for lossless round-trip reconstruction (`plans/GRIB_NETCDF_ROUNDTRIP.md`).
 fn dynamic_to_cbor(val: DynamicKeyType) -> Option<CborValue> {
     match val {
         DynamicKeyType::Str(s) if s != "MISSING" && s != "not_found" => Some(CborValue::Text(s)),
@@ -77,7 +88,16 @@ fn dynamic_to_cbor(val: DynamicKeyType) -> Option<CborValue> {
             Some(CborValue::Integer(i.into()))
         }
         DynamicKeyType::Float(f) if f.is_finite() => Some(CborValue::Float(f)),
-        _ => None, // missing, sentinel, array, or other
+        DynamicKeyType::IntArray(a) if a.len() <= MAX_ARRAY_LEN => Some(CborValue::Array(
+            a.into_iter().map(|i| CborValue::Integer(i.into())).collect(),
+        )),
+        DynamicKeyType::FloatArray(a)
+            if a.len() <= MAX_ARRAY_LEN && a.iter().all(|f| f.is_finite()) =>
+        {
+            Some(CborValue::Array(a.into_iter().map(CborValue::Float).collect()))
+        }
+        DynamicKeyType::Bytes(b) => Some(CborValue::Bytes(b)),
+        _ => None, // missing, sentinel, or oversized/non-finite array
     }
 }
 
@@ -201,30 +221,55 @@ mod tests {
     }
 
     #[test]
-    fn float_array_returns_none() {
-        // Array variants are not carried through into the metadata map —
-        // they would blow up the CBOR size.  The current policy is to skip.
+    fn small_float_array_is_kept() {
+        // Small definition arrays (e.g. `pv`, `scaledValues`) are needed for
+        // lossless round-trip reconstruction, so they are preserved.
         assert_eq!(
             dynamic_to_cbor(DynamicKeyType::FloatArray(vec![1.0, 2.0, 3.0])),
-            None,
+            Some(CborValue::Array(vec![
+                CborValue::Float(1.0),
+                CborValue::Float(2.0),
+                CborValue::Float(3.0),
+            ])),
         );
     }
 
     #[test]
-    fn int_array_returns_none() {
+    fn small_int_array_is_kept() {
+        // Small definition arrays (e.g. `pl` for reduced grids) are preserved.
         assert_eq!(
             dynamic_to_cbor(DynamicKeyType::IntArray(vec![1, 2, 3])),
+            Some(CborValue::Array(vec![
+                CborValue::Integer(1_i64.into()),
+                CborValue::Integer(2_i64.into()),
+                CborValue::Integer(3_i64.into()),
+            ])),
+        );
+    }
+
+    #[test]
+    fn oversized_array_returns_none() {
+        // The data payload never routes through here, but a pathological
+        // oversized namespace key is dropped to keep the CBOR bounded.
+        let big = vec![0_i64; MAX_ARRAY_LEN + 1];
+        assert_eq!(dynamic_to_cbor(DynamicKeyType::IntArray(big)), None);
+    }
+
+    #[test]
+    fn non_finite_float_array_returns_none() {
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::FloatArray(vec![1.0, f64::NAN])),
             None,
         );
     }
 
     #[test]
-    fn bytes_returns_none() {
-        // Bytes is the "binary section" variant — not representable as a
-        // scalar metadata value, skipped by design.
+    fn bytes_are_kept() {
+        // Bytes is the "binary section" variant (local-section blobs) — kept
+        // verbatim as a CBOR byte string for reconstruction.
         assert_eq!(
             dynamic_to_cbor(DynamicKeyType::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
-            None,
+            Some(CborValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
         );
     }
 }
