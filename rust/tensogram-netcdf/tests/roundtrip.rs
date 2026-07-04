@@ -177,6 +177,12 @@ fn roundtrip_nc3_classic() {
     roundtrip("nc3_classic.nc");
 }
 
-// TODO(milestone follow-up): `multi_dtype.nc` exercises i8..f64 native dtypes
-// but contains a NaN, which the default encoder rejects (`allow_nan`). Enable a
-// NaN-aware round-trip (tensogram NaN masks) then restore this case.
+/// `multi_dtype.nc` exercises every native dtype (i8..u64, f32, f64), a scalar
+/// (`pi`), and a `f64_with_nan` variable holding a genuine NaN.  The converter
+/// enables `allow_nan`, so the NaN is masked on encode and restored on decode;
+/// the round-trip must preserve the canonical NaN bit pattern (byte-equal
+/// payload) rather than reject or corrupt it.
+#[test]
+fn roundtrip_multi_dtype() {
+    roundtrip("multi_dtype.nc");
+}

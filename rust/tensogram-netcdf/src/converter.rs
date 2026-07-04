@@ -159,15 +159,28 @@ pub fn convert_netcdf_file(
         return Err(NetcdfError::NoVariables);
     }
 
+    let encode_options = effective_encode_options(&options.encode_options);
     match options.split_by {
-        SplitBy::File => {
-            encode_as_one_message(&extracted, &options.encode_options, &options.pipeline)
-        }
+        SplitBy::File => encode_as_one_message(&extracted, &encode_options, &options.pipeline),
         SplitBy::Variable => {
-            encode_one_per_variable(&extracted, &options.encode_options, &options.pipeline)
+            encode_one_per_variable(&extracted, &encode_options, &options.pipeline)
         }
         SplitBy::Record => encode_by_record(path, options, &file_path_str),
     }
+}
+
+/// The encode options actually used for NetCDF data.
+///
+/// NetCDF's data model maps fill / missing values — and any genuinely stored
+/// NaNs — to `f64::NAN` (see [`read_and_unpack`]).  The Tensogram encoder
+/// rejects non-finite values unless `allow_nan` is set, so force it on: NaNs are
+/// substituted with `0.0` and their positions recorded in a companion mask,
+/// which `decode` restores on the way back out.  Finite data is unaffected (no
+/// mask is emitted), so byte-for-byte output is unchanged when no NaN is present.
+fn effective_encode_options(base: &tensogram::EncodeOptions) -> tensogram::EncodeOptions {
+    let mut o = base.clone();
+    o.allow_nan = true;
+    o
 }
 
 fn extract_variable(
@@ -597,8 +610,8 @@ fn encode_by_record(
         }
 
         if !extracted.is_empty() {
-            let msgs =
-                encode_as_one_message(&extracted, &options.encode_options, &options.pipeline)?;
+            let encode_options = effective_encode_options(&options.encode_options);
+            let msgs = encode_as_one_message(&extracted, &encode_options, &options.pipeline)?;
             results.extend(msgs);
         }
     }

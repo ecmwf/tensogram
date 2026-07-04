@@ -292,8 +292,10 @@ Next (needs a design call — see below):
   `forecast` with its own `n`) is a behaviour change — recursive extraction,
   per-group dim scoping, group-path capture (`_group`), and `add_group` on
   export — that updates those tests and the "root-only" doc contract.
-- [ ] **netcdf NaN masks**: `multi_dtype.nc` / `attr_type_variants.nc` unpack to
-  f64 with NaN, which the default encoder rejects; wire tensogram NaN masks.
+- [x] **netcdf NaN masks**: the converter now encodes with `allow_nan` so NaNs
+  (genuine stored NaNs and fill/missing → NaN from unpacking) are recorded in a
+  companion mask and restored by `decode`; `multi_dtype.nc` round-trips
+  `ncdump`-identical (all dtypes + scalar + NaN).  Finite data is unaffected.
 
 
 ## Documentation

@@ -175,4 +175,12 @@ mod netcdf {
     fn cli_netcdf_roundtrip_nc3_classic() {
         roundtrip("nc3_classic.nc");
     }
+
+    /// Every native dtype + a scalar + a NaN-bearing variable: `ncdump` output
+    /// (structure, data, and the `NaN` element) must be identical after the
+    /// round-trip, exercising the `allow_nan` mask path end-to-end.
+    #[test]
+    fn cli_netcdf_roundtrip_multi_dtype() {
+        roundtrip("multi_dtype.nc");
+    }
 }
