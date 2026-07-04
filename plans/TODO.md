@@ -265,6 +265,36 @@ format-agnostic; export is exposed only through feature-gated `to-grib` /
   complex if available) and a compressed NetCDF-4 (deflate + shuffle + chunk)
   fixture — the shipped set under-covers the encoding matrix.
 
+### Progress (branch `feat/grib-netcdf-roundtrip`, PR #147)
+
+Landed and green (full suite + clippy + fmt on each crate):
+
+- [x] **grib import/export + CLI**: keep arrays / local-section Bytes; capture
+  reconstruct key-set into `base[i].grib_repro`; `to_grib` clones an ecCodes
+  sample, sets keys + values, re-emits.  `to-grib` CLI subcommand + e2e.
+- [x] **grib round-trip lossless**: `grid_simple` / `grid_ieee` / `grid_ccsds`
+  value round-trip `max_abs=0` (real ECMWF CCSDS field carries losslessly).
+- [x] **grib full `grib_compare`**: identification + ECMWF local section
+  (`setLocalDefinition` trigger → section 2, `grib2LocalSectionNumber`,
+  `marsClass/marsType/marsStream/experimentVersionNumber`) reconstructed; all
+  keys clean on `2t.grib2` (test skips when `grib_compare` absent).
+- [x] **netcdf import/export + CLI**: dim registry `_file` + per-var `_dims`;
+  `to_netcdf` rebuilds via the safe crate; classic round-trip byte-equal;
+  `to-netcdf` CLI subcommand + ncdump e2e.
+- [x] **netcdf exact attribute types**: `_attr_types` / `_global_types` sidecar
+  restores float-vs-double, short/int/byte-vs-int64, etc. exactly.
+
+Next (needs a design call — see below):
+
+- [ ] **netcdf groups**: importer is intentionally root-only today and there
+  are tests asserting that contract (`n_warns_and_converts_root_only`, CLI
+  `convert_n_root_only`).  Supporting groups (`nc4_groups.nc`: root `n` + group
+  `forecast` with its own `n`) is a behaviour change — recursive extraction,
+  per-group dim scoping, group-path capture (`_group`), and `add_group` on
+  export — that updates those tests and the "root-only" doc contract.
+- [ ] **netcdf NaN masks**: `multi_dtype.nc` / `attr_type_variants.nc` unpack to
+  f64 with NaN, which the default encoder rejects; wire tensogram NaN masks.
+
 
 ## Documentation
 
