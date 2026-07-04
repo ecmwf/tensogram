@@ -130,6 +130,7 @@ pub fn convert_netcdf_file(
     }
 
     let global_attrs = extract_global_attrs(&file);
+    let file_meta = build_file_meta(&file);
 
     let mut extracted: Vec<ExtractedVar> = Vec::new();
 
@@ -137,7 +138,7 @@ pub fn convert_netcdf_file(
         let var_name = var.name();
         let vartype = var.vartype();
         push_extracted_or_warn(
-            extract_variable(&var, &var_name, &vartype, options, &global_attrs),
+            extract_variable(&var, &var_name, &vartype, options, &global_attrs, &file_meta),
             &mut extracted,
         )?;
     }
@@ -163,11 +164,13 @@ fn extract_variable(
     vartype: &NcVariableType,
     options: &ConvertOptions,
     global_attrs: &BTreeMap<String, CborValue>,
+    file_meta: &CborValue,
 ) -> Result<ExtractedVar, NetcdfError> {
     reject_unsupported_vartype(var_name, vartype)?;
 
     let dims = var.dimensions();
     let shape: Vec<u64> = dims.iter().map(|d| d.len() as u64).collect();
+    let dim_names: Vec<CborValue> = dims.iter().map(|d| CborValue::Text(d.name())).collect();
 
     let has_scale = var.attribute("scale_factor").is_some();
     let has_offset = var.attribute("add_offset").is_some();
@@ -183,6 +186,8 @@ fn extract_variable(
     };
 
     let mut netcdf_meta = extract_var_attrs(var);
+    netcdf_meta.insert("_dims".to_string(), CborValue::Array(dim_names));
+    netcdf_meta.insert("_file".to_string(), file_meta.clone());
 
     if !global_attrs.is_empty() {
         netcdf_meta.insert("_global".to_string(), cbor_map_from(global_attrs));
@@ -309,6 +314,36 @@ fn get_f64_attr(var: &netcdf::Variable<'_>, name: &str) -> Option<f64> {
         AttributeValue::Longlong(v) => Some(v as f64),
         _ => None,
     }
+}
+
+/// Build the file-level structure map (`{ dims: [{name,len,unlimited}] }`)
+/// stored under `base[i]["netcdf"]["_file"]`. Consumed by the `to-netcdf`
+/// exporter to recreate the dimension registry. See
+/// `plans/GRIB_NETCDF_ROUNDTRIP.md`.
+fn build_file_meta(file: &netcdf::File) -> CborValue {
+    let dims: Vec<CborValue> = file
+        .dimensions()
+        .map(|d| {
+            CborValue::Map(vec![
+                (
+                    CborValue::Text("name".to_string()),
+                    CborValue::Text(d.name()),
+                ),
+                (
+                    CborValue::Text("len".to_string()),
+                    CborValue::Integer((d.len() as i64).into()),
+                ),
+                (
+                    CborValue::Text("unlimited".to_string()),
+                    CborValue::Bool(d.is_unlimited()),
+                ),
+            ])
+        })
+        .collect();
+    CborValue::Map(vec![(
+        CborValue::Text("dims".to_string()),
+        CborValue::Array(dims),
+    )])
 }
 
 /// Extract every file-level (global) attribute as a CBOR map.
@@ -471,6 +506,12 @@ fn encode_by_record(
     }
 
     let global_attrs = extract_global_attrs(&file);
+    let file_meta = build_file_meta(&file);
+    let ctx = VarCtx {
+        options,
+        global_attrs: &global_attrs,
+        file_meta: &file_meta,
+    };
 
     let mut results = Vec::with_capacity(record_count);
 
@@ -486,7 +527,14 @@ fn encode_by_record(
 
             if !has_unlimited {
                 push_extracted_or_warn(
-                    extract_variable(&var, &var_name, &vartype, options, &global_attrs),
+                    extract_variable(
+                        &var,
+                        &var_name,
+                        &vartype,
+                        options,
+                        &global_attrs,
+                        &file_meta,
+                    ),
                     &mut extracted,
                 )?;
                 continue;
@@ -497,8 +545,7 @@ fn encode_by_record(
                     &var,
                     &var_name,
                     &vartype,
-                    options,
-                    &global_attrs,
+                    &ctx,
                     record_idx,
                     &unlimited_name,
                 ),
@@ -516,12 +563,19 @@ fn encode_by_record(
     Ok(results)
 }
 
+/// Shared per-file context threaded into the record extractor, keeping its
+/// argument list small.
+struct VarCtx<'a> {
+    options: &'a ConvertOptions,
+    global_attrs: &'a BTreeMap<String, CborValue>,
+    file_meta: &'a CborValue,
+}
+
 fn extract_variable_record(
     var: &netcdf::Variable<'_>,
     var_name: &str,
     vartype: &NcVariableType,
-    options: &ConvertOptions,
-    global_attrs: &BTreeMap<String, CborValue>,
+    ctx: &VarCtx<'_>,
     record_idx: usize,
     unlimited_name: &str,
 ) -> Result<ExtractedVar, NetcdfError> {
@@ -532,6 +586,12 @@ fn extract_variable_record(
         .iter()
         .filter(|d| d.name() != unlimited_name)
         .map(|d| d.len() as u64)
+        .collect();
+    // Per-record objects drop the unlimited dimension from their shape.
+    let dim_names: Vec<CborValue> = dims
+        .iter()
+        .filter(|d| d.name() != unlimited_name)
+        .map(|d| CborValue::Text(d.name()))
         .collect();
 
     // Invariant: encode_by_record only calls us with variables that
@@ -553,16 +613,18 @@ fn extract_variable_record(
     let (dtype, data_bytes) = read_native_extents(var, var_name, vartype, &extents)?;
 
     let mut netcdf_meta = extract_var_attrs(var);
+    netcdf_meta.insert("_dims".to_string(), CborValue::Array(dim_names));
+    netcdf_meta.insert("_file".to_string(), ctx.file_meta.clone());
     netcdf_meta.insert(
         "record_index".to_string(),
         CborValue::Integer((record_idx as i64).into()),
     );
 
-    if !global_attrs.is_empty() {
-        netcdf_meta.insert("_global".to_string(), cbor_map_from(global_attrs));
+    if !ctx.global_attrs.is_empty() {
+        netcdf_meta.insert("_global".to_string(), cbor_map_from(ctx.global_attrs));
     }
 
-    let cf_meta = options.cf.then(|| extract_cf_attrs(var));
+    let cf_meta = ctx.options.cf.then(|| extract_cf_attrs(var));
     let base_entry = build_base_entry(var_name, &netcdf_meta, cf_meta.as_ref());
 
     Ok(ExtractedVar {
