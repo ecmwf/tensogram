@@ -24,13 +24,20 @@ use ciborium::Value as CborValue;
 use netcdf::AttributeValue;
 
 use tensogram::types::{ByteOrder, GlobalMetadata};
-use tensogram::{decode, DecodeOptions, Dtype};
+use tensogram::{DecodeOptions, Dtype, decode};
 
 use crate::error::NetcdfError;
 
 /// Attribute keys used internally by the importer to carry structure, not real
 /// NetCDF attributes — they must not be written back as attributes.
-const INTERNAL_KEYS: &[&str] = &["_dims", "_file", "_global", "record_index"];
+const INTERNAL_KEYS: &[&str] = &[
+    "_dims",
+    "_file",
+    "_global",
+    "_attr_types",
+    "_global_types",
+    "record_index",
+];
 
 /// Reconstruct a NetCDF file at `out_path` from a Tensogram message produced by
 /// [`crate::convert_netcdf_file`].
@@ -55,11 +62,9 @@ pub fn to_netcdf(message: &[u8], out_path: &Path) -> Result<(), NetcdfError> {
         }
     }
 
-    // Global attributes (best-effort scalar/array types in milestone 1).
-    for (name, value) in global_attrs(&meta) {
-        if let Some(av) = cbor_to_attr(&value) {
-            file.add_attribute(&name, av)?;
-        }
+    // Global attributes (exact types via the `_global_types` sidecar).
+    for (name, av) in global_attrs(&meta) {
+        file.add_attribute(&name, av)?;
     }
 
     for (i, (desc, payload)) in objects.iter().enumerate() {
@@ -208,31 +213,58 @@ fn var_dim_names(meta: &GlobalMetadata, i: usize) -> Result<Vec<String>, NetcdfE
         .collect())
 }
 
-/// Real variable attributes for object `i` (excludes internal `_*` keys).
+/// The `name → type-tag` map stored under `key` (`_attr_types` / `_global_types`)
+/// in a `netcdf`-style CBOR map, if present.
+fn type_tags<'a>(
+    map: &'a [(CborValue, CborValue)],
+    key: &str,
+) -> Option<&'a Vec<(CborValue, CborValue)>> {
+    match map_get(map, key) {
+        Some(CborValue::Map(m)) => Some(m),
+        _ => None,
+    }
+}
+
+/// The exact-type tag recorded for attribute `name`, if any.
+fn tag_for<'a>(tags: Option<&'a Vec<(CborValue, CborValue)>>, name: &str) -> Option<&'a str> {
+    let tags = tags?;
+    match map_get(tags, name) {
+        Some(CborValue::Text(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// Real variable attributes for object `i` (excludes internal `_*` keys),
+/// reconstructed with their exact on-disk types via the `_attr_types` sidecar.
 fn var_attrs(meta: &GlobalMetadata, i: usize) -> Vec<(String, AttributeValue)> {
     let Some(nc) = netcdf_map(meta, i) else {
         return Vec::new();
     };
+    let tags = type_tags(nc, "_attr_types");
     nc.iter()
         .filter_map(|(k, v)| match k {
             CborValue::Text(name) if !INTERNAL_KEYS.contains(&name.as_str()) => {
-                cbor_to_attr(v).map(|av| (name.clone(), av))
+                cbor_to_attr_typed(v, tag_for(tags, name)).map(|av| (name.clone(), av))
             }
             _ => None,
         })
         .collect()
 }
 
-/// Global attributes, read from `base[0].netcdf._global`.
-fn global_attrs(meta: &GlobalMetadata) -> Vec<(String, CborValue)> {
+/// Global attributes, read from `base[0].netcdf._global`, reconstructed with
+/// their exact types via the `_global_types` sidecar.
+fn global_attrs(meta: &GlobalMetadata) -> Vec<(String, AttributeValue)> {
     let Some(nc) = netcdf_map(meta, 0) else {
         return Vec::new();
     };
+    let tags = type_tags(nc, "_global_types");
     match map_get(nc, "_global") {
         Some(CborValue::Map(g)) => g
             .iter()
             .filter_map(|(k, v)| match k {
-                CborValue::Text(name) => Some((name.clone(), v.clone())),
+                CborValue::Text(name) => {
+                    cbor_to_attr_typed(v, tag_for(tags, name)).map(|av| (name.clone(), av))
+                }
                 _ => None,
             })
             .collect(),
@@ -240,43 +272,138 @@ fn global_attrs(meta: &GlobalMetadata) -> Vec<(String, CborValue)> {
     }
 }
 
-/// Best-effort CBOR → NetCDF attribute value.  Milestone 1 widens integers to
-/// `i64` and floats to `f64`; exact attribute-type preservation is a follow-up.
-fn cbor_to_attr(v: &CborValue) -> Option<AttributeValue> {
+/// Coerce a CBOR scalar to `f64` (accepts float or integer).
+fn as_f64(v: &CborValue) -> Option<f64> {
     match v {
-        CborValue::Text(s) => Some(AttributeValue::Str(s.clone())),
-        CborValue::Integer(i) => i64::try_from(*i).ok().map(AttributeValue::Longlong),
-        CborValue::Float(f) => Some(AttributeValue::Double(*f)),
-        CborValue::Array(a) if a.iter().all(|x| matches!(x, CborValue::Text(_))) => {
-            Some(AttributeValue::Strs(
-                a.iter()
-                    .filter_map(|x| match x {
-                        CborValue::Text(s) => Some(s.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-            ))
-        }
-        CborValue::Array(a) if a.iter().all(|x| matches!(x, CborValue::Integer(_))) => {
-            let v: Option<Vec<i64>> = a
-                .iter()
-                .map(|x| match x {
-                    CborValue::Integer(i) => i64::try_from(*i).ok(),
+        CborValue::Float(f) => Some(*f),
+        CborValue::Integer(i) => Some(i128::from(*i) as f64),
+        _ => None,
+    }
+}
+
+/// Coerce a CBOR scalar to `i64`.
+fn as_i64(v: &CborValue) -> Option<i64> {
+    match v {
+        CborValue::Integer(i) => i64::try_from(*i).ok(),
+        CborValue::Float(f) => Some(*f as i64),
+        _ => None,
+    }
+}
+
+/// Coerce a CBOR scalar to `u64` (preserves the full unsigned range).
+fn as_u64(v: &CborValue) -> Option<u64> {
+    match v {
+        CborValue::Integer(i) => u64::try_from(i128::from(*i)).ok(),
+        CborValue::Float(f) => Some(*f as u64),
+        _ => None,
+    }
+}
+
+/// CBOR → NetCDF attribute value, restoring the *exact* on-disk type from the
+/// `_attr_types` / `_global_types` sidecar tag (see
+/// [`crate::metadata::attr_value_type_tag`]).  Scalars and arrays share a tag;
+/// array-ness is recovered from the CBOR value shape.  When no tag is present
+/// (e.g. metadata predating type capture, or a CF-lifted attribute), falls back
+/// to widening — integers to `int64`, floats to `double`.
+fn cbor_to_attr_typed(v: &CborValue, tag: Option<&str>) -> Option<AttributeValue> {
+    if let CborValue::Array(a) = v {
+        return cbor_array_to_attr(a, tag);
+    }
+    match tag {
+        Some("string") => match v {
+            CborValue::Text(s) => Some(AttributeValue::Str(s.clone())),
+            _ => None,
+        },
+        Some("double") => as_f64(v).map(AttributeValue::Double),
+        Some("float") => as_f64(v).map(|f| AttributeValue::Float(f as f32)),
+        Some("int") => as_i64(v).map(|i| AttributeValue::Int(i as i32)),
+        Some("uint") => as_i64(v).map(|i| AttributeValue::Uint(i as u32)),
+        Some("short") => as_i64(v).map(|i| AttributeValue::Short(i as i16)),
+        Some("ushort") => as_i64(v).map(|i| AttributeValue::Ushort(i as u16)),
+        Some("int64") => as_i64(v).map(AttributeValue::Longlong),
+        Some("uint64") => as_u64(v).map(AttributeValue::Ulonglong),
+        Some("byte") => as_i64(v).map(|i| AttributeValue::Schar(i as i8)),
+        Some("ubyte") => as_i64(v).map(|i| AttributeValue::Uchar(i as u8)),
+        // Unknown / missing tag: widen.
+        _ => match v {
+            CborValue::Text(s) => Some(AttributeValue::Str(s.clone())),
+            CborValue::Integer(_) => as_i64(v).map(AttributeValue::Longlong),
+            CborValue::Float(f) => Some(AttributeValue::Double(*f)),
+            _ => None,
+        },
+    }
+}
+
+/// Array form of [`cbor_to_attr_typed`]: dispatch to the plural `AttributeValue`
+/// variant named by `tag`, or widen when the tag is unknown/absent.
+fn cbor_array_to_attr(a: &[CborValue], tag: Option<&str>) -> Option<AttributeValue> {
+    match tag {
+        Some("string") => Some(AttributeValue::Strs(
+            a.iter()
+                .filter_map(|x| match x {
+                    CborValue::Text(s) => Some(s.clone()),
                     _ => None,
                 })
-                .collect();
-            v.map(AttributeValue::Longlongs)
-        }
-        CborValue::Array(a) if a.iter().all(|x| matches!(x, CborValue::Float(_))) => {
-            Some(AttributeValue::Doubles(
-                a.iter()
-                    .filter_map(|x| match x {
-                        CborValue::Float(f) => Some(*f),
-                        _ => None,
-                    })
-                    .collect(),
-            ))
-        }
+                .collect(),
+        )),
+        Some("double") => Some(AttributeValue::Doubles(
+            a.iter().filter_map(as_f64).collect(),
+        )),
+        Some("float") => Some(AttributeValue::Floats(
+            a.iter()
+                .filter_map(|x| as_f64(x).map(|f| f as f32))
+                .collect(),
+        )),
+        Some("int") => Some(AttributeValue::Ints(
+            a.iter()
+                .filter_map(|x| as_i64(x).map(|i| i as i32))
+                .collect(),
+        )),
+        Some("uint") => Some(AttributeValue::Uints(
+            a.iter()
+                .filter_map(|x| as_i64(x).map(|i| i as u32))
+                .collect(),
+        )),
+        Some("short") => Some(AttributeValue::Shorts(
+            a.iter()
+                .filter_map(|x| as_i64(x).map(|i| i as i16))
+                .collect(),
+        )),
+        Some("ushort") => Some(AttributeValue::Ushorts(
+            a.iter()
+                .filter_map(|x| as_i64(x).map(|i| i as u16))
+                .collect(),
+        )),
+        Some("int64") => Some(AttributeValue::Longlongs(
+            a.iter().filter_map(as_i64).collect(),
+        )),
+        Some("uint64") => Some(AttributeValue::Ulonglongs(
+            a.iter().filter_map(as_u64).collect(),
+        )),
+        Some("byte") => Some(AttributeValue::Schars(
+            a.iter()
+                .filter_map(|x| as_i64(x).map(|i| i as i8))
+                .collect(),
+        )),
+        Some("ubyte") => Some(AttributeValue::Uchars(
+            a.iter()
+                .filter_map(|x| as_i64(x).map(|i| i as u8))
+                .collect(),
+        )),
+        _ if a.iter().all(|x| matches!(x, CborValue::Text(_))) => Some(AttributeValue::Strs(
+            a.iter()
+                .filter_map(|x| match x {
+                    CborValue::Text(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect(),
+        )),
+        _ if a.iter().all(|x| matches!(x, CborValue::Integer(_))) => Some(
+            AttributeValue::Longlongs(a.iter().filter_map(as_i64).collect()),
+        ),
+        _ if a.iter().all(|x| matches!(x, CborValue::Float(_))) => Some(AttributeValue::Doubles(
+            a.iter().filter_map(as_f64).collect(),
+        )),
         _ => None,
     }
 }

@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use ciborium::Value as CborValue;
-use tensogram_netcdf::{convert_netcdf_file, to_netcdf, ConvertOptions};
+use tensogram_netcdf::{ConvertOptions, convert_netcdf_file, to_netcdf};
 
 fn testdata(name: &str) -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -73,6 +73,98 @@ fn roundtrip(name: &str) {
         assert_eq!(pl_a, pl_b, "{name}/{var}: payload bytes");
     }
     eprintln!("{name}: {} variable(s) round-tripped", a.len());
+}
+
+/// Read every attribute of variable `var` as `(name, "{:?}")` pairs, sorted.
+/// The `Debug` string captures both the exact `AttributeValue` *type* and the
+/// value, so comparing two files' outputs proves both survived the round-trip.
+fn var_attr_debug(path: &std::path::Path, var: &str) -> Vec<(String, String)> {
+    let f = netcdf::open(path).expect("open");
+    let v = f.variable(var).expect("variable present");
+    let mut out: Vec<(String, String)> = v
+        .attributes()
+        .map(|a| {
+            (
+                a.name().to_string(),
+                format!("{:?}", a.value().expect("attr value")),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Same as [`var_attr_debug`] for file-level (global) attributes.
+fn global_attr_debug(path: &std::path::Path) -> Vec<(String, String)> {
+    let f = netcdf::open(path).expect("open");
+    let mut out: Vec<(String, String)> = f
+        .attributes()
+        .map(|a| {
+            (
+                a.name().to_string(),
+                format!("{:?}", a.value().expect("attr value")),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Exact attribute-*type* round-trip: a variable carrying float / double / int /
+/// short / byte / uint / string / int-array / float-array attributes (plus a
+/// float global attribute) must come back with byte-for-byte identical
+/// `AttributeValue` variants — not widened to `double` / `int64`.
+///
+/// The fixture is built in-process (no `scale_factor` / `_FillValue`, so the
+/// variable keeps its native dtype and no NaN unpacking occurs).
+#[test]
+fn roundtrip_attr_types_exact() {
+    let dir = std::env::temp_dir().join("tensogram_attr_types_exact");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let src = dir.join("src.nc");
+    let out = dir.join("out.nc");
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+
+    {
+        let mut f = netcdf::create(&src).expect("create src");
+        f.add_dimension("n", 3).expect("dim");
+        let mut v = f.add_variable::<i32>("v", &["n"]).expect("var");
+        v.put_attribute("att_float", 1.5_f32).expect("att_float");
+        v.put_attribute("att_double", 2.5_f64).expect("att_double");
+        v.put_attribute("att_int", 7_i32).expect("att_int");
+        v.put_attribute("att_short", 3_i16).expect("att_short");
+        v.put_attribute("att_byte", -5_i8).expect("att_byte");
+        v.put_attribute("att_uint", 9_u32).expect("att_uint");
+        v.put_attribute("att_str", "hello").expect("att_str");
+        v.put_attribute("att_ints", vec![1_i32, 2, 3])
+            .expect("att_ints");
+        v.put_attribute("att_floats", vec![1.0_f32, 2.0])
+            .expect("att_floats");
+        v.put_values(&[1_i32, 2, 3], ..).expect("values");
+        f.add_attribute("g_float", 4.5_f32).expect("g_float");
+    }
+
+    let src_var = var_attr_debug(&src, "v");
+    let src_glob = global_attr_debug(&src);
+
+    let msgs = convert_netcdf_file(&src, &ConvertOptions::default()).expect("convert");
+    to_netcdf(&msgs[0], &out).expect("to_netcdf");
+
+    let out_var = var_attr_debug(&out, "v");
+    let out_glob = global_attr_debug(&out);
+
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+
+    assert_eq!(
+        src_var, out_var,
+        "variable attribute types/values changed across round-trip"
+    );
+    assert_eq!(
+        src_glob, out_glob,
+        "global attribute types/values changed across round-trip"
+    );
 }
 
 #[test]

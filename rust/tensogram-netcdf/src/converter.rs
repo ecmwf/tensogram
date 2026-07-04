@@ -18,7 +18,10 @@ use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 use tensogram::{DataPipeline, Dtype, encode};
 
 use crate::error::NetcdfError;
-use crate::metadata::{attr_value_to_cbor, extract_cf_attrs, extract_var_attrs};
+use crate::metadata::{
+    attr_value_to_cbor, attr_value_type_tag, extract_cf_attrs, extract_var_attr_types,
+    extract_var_attrs,
+};
 
 /// How to group NetCDF variables into Tensogram messages.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -130,6 +133,7 @@ pub fn convert_netcdf_file(
     }
 
     let global_attrs = extract_global_attrs(&file);
+    let global_attr_types = extract_global_attr_types(&file);
     let file_meta = build_file_meta(&file);
 
     let mut extracted: Vec<ExtractedVar> = Vec::new();
@@ -138,7 +142,15 @@ pub fn convert_netcdf_file(
         let var_name = var.name();
         let vartype = var.vartype();
         push_extracted_or_warn(
-            extract_variable(&var, &var_name, &vartype, options, &global_attrs, &file_meta),
+            extract_variable(
+                &var,
+                &var_name,
+                &vartype,
+                options,
+                &global_attrs,
+                &global_attr_types,
+                &file_meta,
+            ),
             &mut extracted,
         )?;
     }
@@ -164,6 +176,7 @@ fn extract_variable(
     vartype: &NcVariableType,
     options: &ConvertOptions,
     global_attrs: &BTreeMap<String, CborValue>,
+    global_attr_types: &BTreeMap<String, CborValue>,
     file_meta: &CborValue,
 ) -> Result<ExtractedVar, NetcdfError> {
     reject_unsupported_vartype(var_name, vartype)?;
@@ -189,8 +202,19 @@ fn extract_variable(
     netcdf_meta.insert("_dims".to_string(), CborValue::Array(dim_names));
     netcdf_meta.insert("_file".to_string(), file_meta.clone());
 
+    let attr_types = extract_var_attr_types(var);
+    if !attr_types.is_empty() {
+        netcdf_meta.insert("_attr_types".to_string(), cbor_map_from(&attr_types));
+    }
+
     if !global_attrs.is_empty() {
         netcdf_meta.insert("_global".to_string(), cbor_map_from(global_attrs));
+        if !global_attr_types.is_empty() {
+            netcdf_meta.insert(
+                "_global_types".to_string(),
+                cbor_map_from(global_attr_types),
+            );
+        }
     }
 
     let cf_meta = options.cf.then(|| extract_cf_attrs(var));
@@ -366,6 +390,22 @@ fn extract_global_attrs(file: &netcdf::File) -> BTreeMap<String, CborValue> {
     map
 }
 
+/// Extract a `name → type-tag` map for the file-level (global) attributes,
+/// mirroring [`metadata::extract_var_attr_types`] for variables.  Stored under
+/// `_global_types` so the exporter can restore exact global-attribute types.
+fn extract_global_attr_types(file: &netcdf::File) -> BTreeMap<String, CborValue> {
+    let mut map = BTreeMap::new();
+    for attr in file.attributes() {
+        if let Ok(val) = attr.value() {
+            map.insert(
+                attr.name().to_string(),
+                CborValue::Text(attr_value_type_tag(&val).to_string()),
+            );
+        }
+    }
+    map
+}
+
 /// Build a `DataObjectDescriptor` from an extracted variable, applying the
 /// requested encoding/filter/compression pipeline.
 ///
@@ -506,10 +546,12 @@ fn encode_by_record(
     }
 
     let global_attrs = extract_global_attrs(&file);
+    let global_attr_types = extract_global_attr_types(&file);
     let file_meta = build_file_meta(&file);
     let ctx = VarCtx {
         options,
         global_attrs: &global_attrs,
+        global_attr_types: &global_attr_types,
         file_meta: &file_meta,
     };
 
@@ -533,6 +575,7 @@ fn encode_by_record(
                         &vartype,
                         options,
                         &global_attrs,
+                        &global_attr_types,
                         &file_meta,
                     ),
                     &mut extracted,
@@ -568,6 +611,7 @@ fn encode_by_record(
 struct VarCtx<'a> {
     options: &'a ConvertOptions,
     global_attrs: &'a BTreeMap<String, CborValue>,
+    global_attr_types: &'a BTreeMap<String, CborValue>,
     file_meta: &'a CborValue,
 }
 
@@ -620,8 +664,19 @@ fn extract_variable_record(
         CborValue::Integer((record_idx as i64).into()),
     );
 
+    let attr_types = extract_var_attr_types(var);
+    if !attr_types.is_empty() {
+        netcdf_meta.insert("_attr_types".to_string(), cbor_map_from(&attr_types));
+    }
+
     if !ctx.global_attrs.is_empty() {
         netcdf_meta.insert("_global".to_string(), cbor_map_from(ctx.global_attrs));
+        if !ctx.global_attr_types.is_empty() {
+            netcdf_meta.insert(
+                "_global_types".to_string(),
+                cbor_map_from(ctx.global_attr_types),
+            );
+        }
     }
 
     let cf_meta = ctx.options.cf.then(|| extract_cf_attrs(var));
