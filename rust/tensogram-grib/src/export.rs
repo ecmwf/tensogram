@@ -33,10 +33,22 @@ use crate::error::GribError;
 /// samples in a follow-up.)
 const SAMPLE_PATH: &str = "/usr/share/eccodes/samples/regular_ll_sfc_grib2.tmpl";
 
-/// Keys set *first* because they select templates / sizing.  ecCodes is
-/// order-sensitive: establishing the grid, packing, and precision before the
-/// remaining keys avoids "decoding invalid" failures.
-const PRIORITY_KEYS: &[&str] = &["edition", "gridType", "packingType", "bitsPerValue"];
+/// Keys set *first*, in this order, because they select templates / sizing /
+/// sections.  ecCodes is order-sensitive: the identification and grid template
+/// must precede the local section, which must precede the mars keys it defines,
+/// and packing/precision must precede the values.  Remaining keys are set after
+/// (tolerant of read-only rejects).
+const PRIORITY_KEYS: &[&str] = &[
+    "edition",
+    "tablesVersion",
+    "centre",
+    "subCentre",
+    "gridType",
+    "setLocalDefinition",
+    "grib2LocalSectionNumber",
+    "packingType",
+    "bitsPerValue",
+];
 
 /// Reconstruct a GRIB file (one message per data object) from a Tensogram
 /// message produced by [`crate::convert_grib_file`] / [`crate::convert_grib_buffer`].
@@ -113,8 +125,21 @@ fn reconstruct_message(
         .ok_or_else(|| GribError::InvalidData(format!("sample {SAMPLE_PATH} has no message")))?;
     let mut msg = sample.try_clone()?;
 
+    // `setLocalDefinition` is a write-only *trigger*: it always reads back `0`,
+    // so the captured value cannot recreate the section.  When the source
+    // carried an ECMWF local section (evidenced by `grib2LocalSectionNumber`),
+    // fire the trigger with a literal `1` to allocate section 2 before the mars
+    // keys that live inside it are set.
+    let has_local_section = repro.contains_key("grib2LocalSectionNumber");
+
     // Priority keys first (order-sensitive template/sizing selectors).
     for &k in PRIORITY_KEYS {
+        if k == "setLocalDefinition" {
+            if has_local_section {
+                let _ = set_key(&mut msg, k, &CborValue::Integer(1.into()));
+            }
+            continue;
+        }
         if let Some(v) = repro.get(k) {
             // Tolerant: a priority key may be read-only in some templates.
             let _ = set_key(&mut msg, k, v);

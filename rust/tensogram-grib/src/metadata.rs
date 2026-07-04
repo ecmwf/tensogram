@@ -136,7 +136,8 @@ pub(crate) fn extract_all_namespace_keys(
 const RECONSTRUCT_NAMESPACES: &[&str] = &["geography", "parameter", "time", "vertical"];
 
 /// Extra scalar keys, outside the namespaces above, needed to select the grid
-/// template, product template, and packing on reconstruction.
+/// template, product template, packing, identification section, and the ECMWF
+/// local-use section on reconstruction.
 const RECONSTRUCT_SCALAR_KEYS: &[&str] = &[
     "edition",
     "discipline",
@@ -144,6 +145,22 @@ const RECONSTRUCT_SCALAR_KEYS: &[&str] = &[
     "packingType",
     "bitsPerValue",
     "decimalScaleFactor",
+    // Identification (section 1) + processing metadata.
+    "tablesVersion",
+    "centre",
+    "subCentre",
+    "productionStatusOfProcessedData",
+    "typeOfProcessedData",
+    "typeOfGeneratingProcess",
+    "generatingProcessIdentifier",
+    // ECMWF local-use section (section 2). `setLocalDefinition` must be set
+    // first on export (see `export::PRIORITY_KEYS`) before these can exist.
+    "setLocalDefinition",
+    "grib2LocalSectionNumber",
+    "marsClass",
+    "marsType",
+    "marsStream",
+    "experimentVersionNumber",
 ];
 
 /// Capture the key-set needed to rebuild this message from an ecCodes sample.

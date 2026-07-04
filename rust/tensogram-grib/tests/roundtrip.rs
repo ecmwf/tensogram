@@ -7,9 +7,10 @@
 // does it submit to any jurisdiction.
 
 //! GRIB round-trip: `convert-grib` → `to-grib` → compare the data in the GRIB
-//! domain.  Milestone 1 asserts the *value* round-trip is tight for the
-//! lossless packings (`grid_simple`, `grid_ieee`); full-metadata (`grib_compare`
-//! on all keys) is a later milestone once local sections are reconstructed.
+//! domain.  Asserts the *value* round-trip is tight for the lossless packings
+//! (`grid_simple`, `grid_ieee`, `grid_ccsds`), and — for the real ECMWF field
+//! `2t.grib2` — that `grib_compare` on *all* keys is clean (the CCSDS packing
+//! and the ECMWF local section / mars keys are reconstructed exactly).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -111,4 +112,40 @@ fn roundtrip_grid_ieee() {
 fn roundtrip_grid_ccsds() {
     // CCSDS/AEC (the real ECMWF packing) — re-pack at the same bits is lossless.
     roundtrip("2t.grib2", 1e-2);
+}
+
+/// Full-metadata round-trip: reconstruct `2t.grib2` and assert `grib_compare`
+/// on **all** keys is clean.  This exercises the CCSDS packing and the ECMWF
+/// local section (`grib2LocalSectionNumber`, `marsClass`/`marsType`/
+/// `marsStream`/`experimentVersionNumber`) being recreated exactly.
+///
+/// Skipped (not failed) when `grib_compare` is not on `PATH`.
+#[test]
+fn roundtrip_grib_compare_all_keys() {
+    if Command::new("grib_compare").arg("-V").output().is_err() {
+        eprintln!("grib_compare not on PATH; skipping full-key compare");
+        return;
+    }
+
+    let src = testdata("2t.grib2");
+    let msgs = convert_grib_file(&src, &ConvertOptions::default()).expect("convert src");
+    let grib = to_grib(&msgs[0]).expect("to_grib");
+    let tmp = std::env::temp_dir().join("tensogram_rt_all_keys_2t.grib2");
+    std::fs::write(&tmp, &grib).expect("write reconstructed grib");
+
+    let out = Command::new("grib_compare")
+        .arg(&src)
+        .arg(&tmp)
+        .output()
+        .expect("run grib_compare");
+    let _ = std::fs::remove_file(&tmp);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "grib_compare reported differences:\nstdout:\n{}\nstderr:\n{}",
+        stdout.trim(),
+        stderr.trim()
+    );
 }
