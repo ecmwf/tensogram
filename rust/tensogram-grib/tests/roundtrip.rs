@@ -106,3 +106,9 @@ fn roundtrip_grid_ieee() {
     // IEEE storage of already-quantized values: lossless.
     roundtrip("2t_ieee.grib2", 1e-2);
 }
+
+#[test]
+fn roundtrip_grid_ccsds() {
+    // CCSDS/AEC (the real ECMWF packing) — re-pack at the same bits is lossless.
+    roundtrip("2t.grib2", 1e-2);
+}
