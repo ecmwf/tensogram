@@ -127,6 +127,48 @@ pub(crate) fn extract_all_namespace_keys(
     Ok(result)
 }
 
+// ── Reconstruct key-set (for lossless round-trip / `to-grib`) ────────────────
+
+/// WMO namespaces whose keys define the message geometry, product, time, and
+/// vertical level and are settable on a cloned ecCodes sample. Together with
+/// the scalar keys below they let `to-grib` rebuild a message from scratch —
+/// ecCodes computes the remaining (read-only/derived) keys.
+const RECONSTRUCT_NAMESPACES: &[&str] = &["geography", "parameter", "time", "vertical"];
+
+/// Extra scalar keys, outside the namespaces above, needed to select the grid
+/// template, product template, and packing on reconstruction.
+const RECONSTRUCT_SCALAR_KEYS: &[&str] = &[
+    "edition",
+    "discipline",
+    "gridType",
+    "packingType",
+    "bitsPerValue",
+    "decimalScaleFactor",
+];
+
+/// Capture the key-set needed to rebuild this message from an ecCodes sample.
+///
+/// Stored flat under `base[i]["grib_repro"]`; consumed by the `to-grib`
+/// exporter. See `plans/GRIB_NETCDF_ROUNDTRIP.md`.
+pub(crate) fn extract_reconstruct_keys(
+    msg: &mut RefMessage,
+) -> Result<BTreeMap<String, CborValue>, eccodes::errors::CodesError> {
+    let mut keys = BTreeMap::new();
+    for &ns in RECONSTRUCT_NAMESPACES {
+        for (k, v) in read_namespace_keys(msg, ns)? {
+            keys.insert(k, v);
+        }
+    }
+    for &k in RECONSTRUCT_SCALAR_KEYS {
+        if let Ok(val) = msg.read_key_dynamic(k)
+            && let Some(cbor) = dynamic_to_cbor(val)
+        {
+            keys.insert(k.to_string(), cbor);
+        }
+    }
+    Ok(keys)
+}
+
 // Note: The old partition_flat_keys / partition_keys / partition_grib_keys
 // functions were removed during the metadata-major-refactor.  The new model
 // stores ALL metadata per object in `base[i]` independently — no
