@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use ciborium::Value as CborValue;
-use tensogram_netcdf::{ConvertOptions, convert_netcdf_file, to_netcdf};
+use tensogram_netcdf::{convert_netcdf_file, to_netcdf, ConvertOptions};
 
 fn testdata(name: &str) -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -185,4 +185,46 @@ fn roundtrip_nc3_classic() {
 #[test]
 fn roundtrip_multi_dtype() {
     roundtrip("multi_dtype.nc");
+}
+
+/// A CF-packed variable (`short` with `scale_factor` / `add_offset`) is unpacked
+/// to physical f64 on import.  The round-trip must be stable: the second
+/// conversion of the reconstructed file (which reads the f64 values natively,
+/// with no packing to redo) yields the identical tensor payload.
+#[test]
+fn roundtrip_cf_packed_unpacks() {
+    roundtrip("cf_temperature_deflate.nc");
+}
+
+/// Locks in the packing-attribute drop: because `temperature` was unpacked to
+/// f64, the reconstructed file must carry no `scale_factor` / `add_offset` /
+/// `_FillValue` (keeping them would double-unpack and mismatch the f64 fill
+/// type), while descriptive attributes like `units` survive.
+#[test]
+fn cf_packed_export_drops_packing_attrs() {
+    let src = testdata("cf_temperature_deflate.nc");
+    let msgs = convert_netcdf_file(&src, &ConvertOptions::default()).expect("convert");
+    let out = std::env::temp_dir().join("tensogram_cf_drop_packing.nc");
+    let _ = std::fs::remove_file(&out);
+    to_netcdf(&msgs[0], &out).expect("to_netcdf must succeed for CF-packed input");
+
+    let f = netcdf::open(&out).expect("open reconstructed");
+    let v = f.variable("temperature").expect("temperature var present");
+    assert!(
+        v.attribute("scale_factor").is_none(),
+        "scale_factor must be dropped from an unpacked variable"
+    );
+    assert!(
+        v.attribute("add_offset").is_none(),
+        "add_offset must be dropped from an unpacked variable"
+    );
+    assert!(
+        v.attribute("_FillValue").is_none(),
+        "packed _FillValue must be dropped from an unpacked variable"
+    );
+    assert!(
+        v.attribute("units").is_some(),
+        "descriptive attributes must survive unpacking"
+    );
+    let _ = std::fs::remove_file(&out);
 }

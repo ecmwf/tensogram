@@ -31,7 +31,13 @@ pub fn run(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> 
     }
 
     let msg = file.read_message(0)?;
-    to_netcdf(&msg, Path::new(output))?;
+    // libnetcdf creates the output file incrementally, so a mid-write failure
+    // would leave a truncated/corrupt `.nc` behind.  Remove it on error so a
+    // downstream reader never picks up a half-written file.
+    if let Err(e) = to_netcdf(&msg, Path::new(output)) {
+        let _ = std::fs::remove_file(output);
+        return Err(e.into());
+    }
     println!("Wrote NetCDF to {output}");
     Ok(())
 }
@@ -73,5 +79,48 @@ mod tests {
     #[test]
     fn to_netcdf_missing_input_errors() {
         assert!(run("/nonexistent.tgm", "/tmp/out.nc").is_err());
+    }
+
+    #[test]
+    fn to_netcdf_failure_removes_partial_output() {
+        use std::collections::BTreeMap;
+        use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+
+        // A valid single-message .tgm whose object carries no NetCDF structural
+        // metadata: `to_netcdf` creates the output file, then fails at the
+        // missing `_file` registry.  The half-written file must be removed so a
+        // reader never sees a truncated `.nc`.
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![1],
+            dtype: tensogram::Dtype::Float64,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            masks: None,
+            params: BTreeMap::new(),
+        };
+        let meta = GlobalMetadata {
+            base: vec![BTreeMap::new()],
+            ..Default::default()
+        };
+        let payload = 0.0_f64.to_le_bytes();
+        let encoded = tensogram::encode(&meta, &[(&desc, &payload)], &Default::default())
+            .expect("encode minimal message");
+
+        let dir = tempfile::tempdir().unwrap();
+        let tgm = dir.path().join("no_netcdf.tgm");
+        std::fs::write(&tgm, &encoded).unwrap();
+        let out = dir.path().join("out.nc");
+
+        let result = run(tgm.to_str().unwrap(), out.to_str().unwrap());
+        assert!(result.is_err(), "to-netcdf must reject a non-NetCDF .tgm");
+        assert!(
+            !out.exists(),
+            "a failed to-netcdf must not leave a partial output file"
+        );
     }
 }

@@ -183,6 +183,12 @@ fn effective_encode_options(base: &tensogram::EncodeOptions) -> tensogram::Encod
     o
 }
 
+/// CF attributes that describe the *packed* on-disk representation.  Once a
+/// variable is unpacked to physical `f64` values by [`read_and_unpack`], these
+/// no longer apply and are dropped from the captured metadata (see
+/// [`extract_variable`]).
+const CF_PACKING_ATTRS: &[&str] = &["scale_factor", "add_offset", "_FillValue", "missing_value"];
+
 fn extract_variable(
     var: &netcdf::Variable<'_>,
     var_name: &str,
@@ -212,10 +218,23 @@ fn extract_variable(
     };
 
     let mut netcdf_meta = extract_var_attrs(var);
+    let mut attr_types = extract_var_attr_types(var);
+
+    // An unpacked variable holds physical f64 values, so the CF packing
+    // attributes that described its packed integer form must not travel with it:
+    // a CF reader would otherwise re-apply the scale to already-unpacked data,
+    // and a packed-type `_FillValue` written onto the f64 variable is a NetCDF
+    // type error.  Missing values survive as NaN in the data itself.
+    if needs_unpack {
+        for key in CF_PACKING_ATTRS {
+            netcdf_meta.remove(*key);
+            attr_types.remove(*key);
+        }
+    }
+
     netcdf_meta.insert("_dims".to_string(), CborValue::Array(dim_names));
     netcdf_meta.insert("_file".to_string(), file_meta.clone());
 
-    let attr_types = extract_var_attr_types(var);
     if !attr_types.is_empty() {
         netcdf_meta.insert("_attr_types".to_string(), cbor_map_from(&attr_types));
     }
