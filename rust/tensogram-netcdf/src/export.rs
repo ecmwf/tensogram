@@ -14,9 +14,11 @@
 //! dtype (from the descriptor), and attributes, and rebuilds the file.
 //! See `plans/GRIB_NETCDF_ROUNDTRIP.md`.
 //!
-//! Milestone 1 scope: dimensions + variables (native dtype) + data + scalar
-//! attributes, emitted as netCDF-4.  Exact attribute types, classic-format
-//! matching, groups, chunking/compression, and CF re-packing are follow-ups.
+//! Scope: dimensions + variables (native dtype) + data + attributes (scalar and
+//! array, with their exact NetCDF types restored from the `_attr_types` /
+//! `_global_types` sidecar), emitted as netCDF-4.  NaN / missing values ride
+//! back in via `decode`'s non-finite restoration.  Classic-format byte-matching,
+//! groups, chunking/compression, and CF re-packing are follow-ups.
 
 use std::path::Path;
 
@@ -24,12 +26,18 @@ use ciborium::Value as CborValue;
 use netcdf::AttributeValue;
 
 use tensogram::types::{ByteOrder, GlobalMetadata};
-use tensogram::{DecodeOptions, Dtype, decode};
+use tensogram::{decode, DecodeOptions, Dtype};
 
 use crate::error::NetcdfError;
 
 /// Attribute keys used internally by the importer to carry structure, not real
 /// NetCDF attributes — they must not be written back as attributes.
+///
+/// This list must mirror the structural keys inserted by the importer
+/// (`convert::extract_variable` / `extract_variable_record`).  Drift is caught
+/// by the round-trip tests: a leaked internal key surfaces as a bogus attribute
+/// (`roundtrip_attr_types_exact`, the `ncdump` e2e), and a mis-filtered real
+/// attribute goes missing.
 const INTERNAL_KEYS: &[&str] = &[
     "_dims",
     "_file",
@@ -405,5 +413,59 @@ fn cbor_array_to_attr(a: &[CborValue], tag: Option<&str>) -> Option<AttributeVal
             a.iter().filter_map(as_f64).collect(),
         )),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::{attr_value_to_cbor, attr_value_type_tag};
+
+    /// Guard the two halves of the attribute-type vocabulary against drift: the
+    /// tags are *produced* by [`crate::metadata::attr_value_type_tag`] (on
+    /// import) and *consumed* by [`cbor_to_attr_typed`] (on export), in separate
+    /// modules.  For every `AttributeValue` variant, tagging then reconstructing
+    /// through the CBOR value must land on the same NetCDF type — otherwise a
+    /// renamed or unhandled tag would silently widen (e.g. `float` → `double`).
+    #[test]
+    fn every_type_tag_round_trips_through_reconstruction() {
+        use AttributeValue::*;
+        // One scalar and one array sample per numeric/text family — covers all
+        // 22 `AttributeValue` variants the producer can tag.
+        let samples: &[AttributeValue] = &[
+            Str("k".into()),
+            Strs(vec!["a".into(), "b".into()]),
+            Double(2.5),
+            Doubles(vec![1.0, 2.0]),
+            Float(1.5),
+            Floats(vec![1.0, 2.0]),
+            Int(-7),
+            Ints(vec![1, 2]),
+            Uint(9),
+            Uints(vec![1, 2]),
+            Short(3),
+            Shorts(vec![1, 2]),
+            Ushort(4),
+            Ushorts(vec![1, 2]),
+            Longlong(11),
+            Longlongs(vec![1, 2]),
+            Ulonglong(12),
+            Ulonglongs(vec![1, 2]),
+            Schar(-5),
+            Schars(vec![1, 2]),
+            Uchar(255),
+            Uchars(vec![1, 2]),
+        ];
+        for original in samples {
+            let tag = attr_value_type_tag(original);
+            let cbor = attr_value_to_cbor(original);
+            let restored = cbor_to_attr_typed(&cbor, Some(tag))
+                .unwrap_or_else(|| panic!("tag {tag:?} reconstructed to no AttributeValue"));
+            assert_eq!(
+                attr_value_type_tag(&restored),
+                tag,
+                "tag {tag:?} reconstructed to a different NetCDF type: {restored:?}",
+            );
+        }
     }
 }

@@ -36,7 +36,8 @@ pub(crate) const CF_ATTRIBUTES: &[&str] = &[
 /// `netcdf` crate currently exposes, so adding a new variant upstream
 /// will produce a compile error here rather than silently dropping
 /// data. Numeric scalars are widened to `i64` / `f64` to fit CBOR's
-/// integer and float types.
+/// integer and float types; the exact on-disk type is preserved
+/// separately by [`attr_value_type_tag`] and restored on export.
 pub(crate) fn attr_value_to_cbor(val: &AttributeValue) -> CborValue {
     match val {
         AttributeValue::Str(s) => CborValue::Text(s.clone()),

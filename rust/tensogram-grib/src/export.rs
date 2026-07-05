@@ -13,9 +13,11 @@
 //! values, and re-emits GRIB.  This is the reverse of
 //! [`crate::convert_grib_file`].  See `plans/GRIB_NETCDF_ROUNDTRIP.md`.
 //!
-//! Milestone 1 scope: `regular_ll` geometry with `grid_simple` / `grid_ieee`
-//! packing.  The WMO geometry / product / packing / level keys are restored;
-//! ECMWF local sections and exotic templates are follow-ups.
+//! Scope: `regular_ll` geometry with `grid_simple` / `grid_ieee` / `grid_ccsds`
+//! packing.  The WMO geometry / product / packing / level keys, the
+//! identification section, and the ECMWF local-use section (section 2) are
+//! restored — `grib_compare` on all keys is clean for the real ECMWF field
+//! `2t.grib2`.  Other geometries and exotic templates remain follow-ups.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -136,7 +138,7 @@ fn reconstruct_message(
     for &k in PRIORITY_KEYS {
         if k == "setLocalDefinition" {
             if has_local_section {
-                let _ = set_key(&mut msg, k, &CborValue::Integer(1.into()));
+                let _ = set_key(&mut msg, k, &CborValue::Integer(1_i64.into()));
             }
             continue;
         }
@@ -181,7 +183,7 @@ fn set_key(msg: &mut BufMessage, key: &str, value: &CborValue) -> Result<(), Gri
         CborValue::Bytes(b) => {
             msg.write_key_unchecked(key, b.as_slice())?;
         }
-        // Arrays and other shapes are not set in milestone 1.
+        // Array-valued keys (e.g. `pv`, `pl`) are captured but not yet replayed.
         _ => {}
     }
     Ok(())
