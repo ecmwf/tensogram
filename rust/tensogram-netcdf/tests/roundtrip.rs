@@ -167,6 +167,52 @@ fn roundtrip_attr_types_exact() {
     );
 }
 
+/// Packed variables carry `valid_range` in the *packed* data type (per CF); once
+/// unpacked to f64 it is stale, so it must be dropped like the other packing
+/// attributes.  Built in-process: a `short` variable with `scale_factor` and a
+/// `short` `valid_range`, plus a descriptive `units` that must survive.
+#[test]
+fn unpack_drops_valid_range() {
+    let dir = std::env::temp_dir().join("tensogram_valid_range_drop");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let src = dir.join("src.nc");
+    let out = dir.join("out.nc");
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+
+    {
+        let mut f = netcdf::create(&src).expect("create src");
+        f.add_dimension("n", 3).expect("dim");
+        let mut v = f.add_variable::<i16>("packed", &["n"]).expect("var");
+        v.put_attribute("scale_factor", 0.5_f64).expect("scale");
+        v.put_attribute("valid_range", vec![0_i16, 100])
+            .expect("valid_range");
+        v.put_attribute("units", "m").expect("units");
+        v.put_values(&[2_i16, 4, 6], ..).expect("values");
+    }
+
+    let msgs = convert_netcdf_file(&src, &ConvertOptions::default()).expect("convert");
+    to_netcdf(&msgs[0], &out).expect("to_netcdf");
+
+    let f = netcdf::open(&out).expect("open reconstructed");
+    let v = f.variable("packed").expect("packed var present");
+    assert!(
+        v.attribute("scale_factor").is_none(),
+        "scale_factor must be dropped on unpack"
+    );
+    assert!(
+        v.attribute("valid_range").is_none(),
+        "packed-typed valid_range must be dropped on unpack"
+    );
+    assert!(
+        v.attribute("units").is_some(),
+        "descriptive units must survive"
+    );
+
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+}
+
 #[test]
 fn roundtrip_simple_2d() {
     roundtrip("simple_2d.nc");

@@ -420,6 +420,53 @@ fn cbor_array_to_attr(a: &[CborValue], tag: Option<&str>) -> Option<AttributeVal
 mod tests {
     use super::*;
     use crate::metadata::{attr_value_to_cbor, attr_value_type_tag};
+    use std::collections::BTreeMap;
+
+    /// One `base` entry carrying the given `netcdf` sub-map, for exercising the
+    /// structural-metadata accessors in isolation.
+    fn meta_with_netcdf(netcdf: Vec<(CborValue, CborValue)>) -> GlobalMetadata {
+        let mut entry = BTreeMap::new();
+        entry.insert("netcdf".to_string(), CborValue::Map(netcdf));
+        GlobalMetadata {
+            base: vec![entry],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn file_dims_errors_without_registry() {
+        // No `netcdf` sub-map at all → the `_file` registry is missing.
+        let err = file_dims(&GlobalMetadata::default()).unwrap_err();
+        assert!(matches!(err, NetcdfError::InvalidData(_)));
+    }
+
+    #[test]
+    fn var_name_errors_without_name() {
+        let err = var_name(&meta_with_netcdf(vec![]), 0).unwrap_err();
+        assert!(
+            matches!(err, NetcdfError::InvalidData(m) if m.contains("name")),
+            "a nameless object must report the missing 'name'"
+        );
+    }
+
+    #[test]
+    fn var_dim_names_errors_without_dims() {
+        // Has `netcdf` metadata but no `_dims` list.
+        let err = var_dim_names(&meta_with_netcdf(vec![]), 0).unwrap_err();
+        assert!(
+            matches!(err, NetcdfError::InvalidData(m) if m.contains("_dims")),
+            "a variable without _dims must report it"
+        );
+    }
+
+    #[test]
+    fn to_netcdf_rejects_undecodable_message() {
+        let out = std::env::temp_dir().join("tensogram_to_netcdf_undecodable.nc");
+        let _ = std::fs::remove_file(&out);
+        // decode fails before any file is created, so nothing is written.
+        assert!(to_netcdf(b"not a tensogram message", &out).is_err());
+        assert!(!out.exists(), "a rejected message must not create output");
+    }
 
     /// Guard the two halves of the attribute-type vocabulary against drift: the
     /// tags are *produced* by [`crate::metadata::attr_value_type_tag`] (on

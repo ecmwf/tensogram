@@ -296,6 +296,15 @@ Next (needs a design call — see below):
   (genuine stored NaNs and fill/missing → NaN from unpacking) are recorded in a
   companion mask and restored by `decode`; `multi_dtype.nc` round-trips
   `ncdump`-identical (all dtypes + scalar + NaN).  Finite data is unaffected.
+- [ ] **python/C parity for `to-grib` / `to-netcdf`**: the *import* side is
+  bound in Python (`tensogram.convert_grib` / `convert_grib_buffer` /
+  `convert_netcdf`, with `__has_grib__` / `__has_netcdf__` flags) but the
+  *export* side (`to_grib` / `to_netcdf`) is CLI/Rust-only — an asymmetry.
+  Adding PyO3 wrappers needs an API-shape decision (`to_netcdf` writes one file
+  from a single-message `.tgm`; `convert_*` returns `list[bytes]`, so define
+  single-vs-multi-message handling), feature-gated stubs, error→exception
+  mapping, and a Python test mirror.  (C FFI / C++ expose neither side, so they
+  stay consistent.)
 
 
 ## Documentation

@@ -33,6 +33,12 @@ pub enum SplitBy {
     Variable,
     /// Split along the unlimited (record) dimension — one message per record.
     /// Errors if the file has no unlimited dimension.
+    ///
+    /// Unlike `File` / `Variable`, this preserves each variable's *native*
+    /// on-disk dtype and attributes: CF `scale_factor` / `add_offset` unpacking
+    /// is not applied per record, so a packed variable stays packed (short/int)
+    /// with its packing attributes intact — the record slices remain compact and
+    /// self-describing rather than widening to `f64`.
     Record,
 }
 
@@ -187,7 +193,21 @@ fn effective_encode_options(base: &tensogram::EncodeOptions) -> tensogram::Encod
 /// variable is unpacked to physical `f64` values by [`read_and_unpack`], these
 /// no longer apply and are dropped from the captured metadata (see
 /// [`extract_variable`]).
-const CF_PACKING_ATTRS: &[&str] = &["scale_factor", "add_offset", "_FillValue", "missing_value"];
+///
+/// Besides `scale_factor` / `add_offset` (which would double-unpack) and
+/// `_FillValue` / `missing_value` (packed-typed, and a packed `_FillValue` on an
+/// f64 variable is a write error), CF specifies that `valid_min` / `valid_max` /
+/// `valid_range` share the *packed* data type — so they are stale in physical
+/// units too and are dropped alongside the rest.
+const CF_PACKING_ATTRS: &[&str] = &[
+    "scale_factor",
+    "add_offset",
+    "_FillValue",
+    "missing_value",
+    "valid_min",
+    "valid_max",
+    "valid_range",
+];
 
 fn extract_variable(
     var: &netcdf::Variable<'_>,

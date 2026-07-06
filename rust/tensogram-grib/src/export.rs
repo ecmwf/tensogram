@@ -201,3 +201,60 @@ fn temp_path() -> PathBuf {
         .unwrap_or(0);
     std::env::temp_dir().join(format!("tensogram_to_grib_{pid}_{nanos}_{n}.grib2"))
 }
+
+#[cfg(test)]
+mod tests {
+    //! Error-path unit tests for the pure (ecCodes-free) helpers.  The happy
+    //! path (sample clone → set keys → encode) is covered end-to-end against
+    //! real fixtures in `tests/roundtrip.rs`; here we pin the `InvalidData`
+    //! contracts that a caller relies on when a message is not `to-grib` shaped.
+
+    use super::*;
+
+    #[test]
+    fn payload_to_f64_rejects_non_float64() {
+        let err = payload_to_f64(Dtype::Int32, ByteOrder::Little, &[0u8; 4]).unwrap_err();
+        assert!(
+            matches!(err, GribError::InvalidData(m) if m.contains("float64")),
+            "non-float64 payload must be a float64 InvalidData error"
+        );
+    }
+
+    #[test]
+    fn payload_to_f64_reads_both_endiannesses() {
+        let le = payload_to_f64(Dtype::Float64, ByteOrder::Little, &1.5_f64.to_le_bytes()).unwrap();
+        let be = payload_to_f64(Dtype::Float64, ByteOrder::Big, &1.5_f64.to_be_bytes()).unwrap();
+        assert_eq!(le, vec![1.5]);
+        assert_eq!(be, vec![1.5]);
+    }
+
+    #[test]
+    fn repro_keys_errors_when_object_absent() {
+        let meta = GlobalMetadata::default();
+        assert!(
+            repro_keys(&meta, 0).is_err(),
+            "no base entry for object 0 must error"
+        );
+    }
+
+    #[test]
+    fn repro_keys_errors_without_grib_repro() {
+        let meta = GlobalMetadata {
+            base: vec![BTreeMap::new()],
+            ..Default::default()
+        };
+        let err = repro_keys(&meta, 0).unwrap_err();
+        assert!(
+            matches!(err, GribError::InvalidData(m) if m.contains("grib_repro")),
+            "an object without grib_repro must name the missing key-set"
+        );
+    }
+
+    #[test]
+    fn to_grib_rejects_undecodable_message() {
+        assert!(
+            to_grib(b"not a tensogram message").is_err(),
+            "garbage input must not be decoded as a message"
+        );
+    }
+}
