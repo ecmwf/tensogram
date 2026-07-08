@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use ciborium::Value as CborValue;
-use tensogram_netcdf::{convert_netcdf_file, to_netcdf, ConvertOptions};
+use tensogram_netcdf::{
+    convert_netcdf_file, to_netcdf, to_netcdf_messages, ConvertOptions, SplitBy,
+};
 
 fn testdata(name: &str) -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -211,6 +213,99 @@ fn unpack_drops_valid_range() {
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&out);
+}
+
+/// A `--split-by variable` conversion yields one message per variable; the
+/// multi-message exporter must reassemble them into a single file containing
+/// every variable, sharing the one dimension registry.
+#[test]
+fn to_netcdf_messages_reassembles_variable_split() {
+    let src = testdata("multi_var.nc");
+    let opts = ConvertOptions {
+        split_by: SplitBy::Variable,
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&src, &opts).expect("convert");
+    assert!(
+        msgs.len() >= 3,
+        "variable split of multi_var.nc should produce ≥3 messages, got {}",
+        msgs.len()
+    );
+
+    let refs: Vec<&[u8]> = msgs.iter().map(Vec::as_slice).collect();
+    let out = std::env::temp_dir().join("tensogram_multimsg_reassemble.nc");
+    let _ = std::fs::remove_file(&out);
+    to_netcdf_messages(&refs, &out).expect("multi-message to_netcdf");
+
+    let f = netcdf::open(&out).expect("open reassembled");
+    for name in ["temperature", "humidity", "pressure"] {
+        assert!(
+            f.variable(name).is_some(),
+            "reassembled file must contain '{name}'"
+        );
+    }
+    // The shared dims are written exactly once (union, not duplicated).
+    assert!(f.dimension("y").is_some() && f.dimension("x").is_some());
+    let _ = std::fs::remove_file(&out);
+}
+
+/// A minimal, decodable `.tgm` whose single object carries no NetCDF structural
+/// metadata — `to_netcdf` accepts it far enough to create its temp file, then
+/// fails at the missing `_file` registry.  Used to exercise the atomic-write
+/// failure path.
+fn minimal_non_netcdf_message() -> Vec<u8> {
+    use std::collections::BTreeMap;
+    use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![1],
+        dtype: tensogram::Dtype::Float64,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        masks: None,
+        params: BTreeMap::new(),
+    };
+    let meta = GlobalMetadata {
+        base: vec![BTreeMap::new()],
+        ..Default::default()
+    };
+    let payload = 0.0_f64.to_le_bytes();
+    tensogram::encode(&meta, &[(&desc, &payload)], &Default::default()).expect("encode")
+}
+
+/// Atomic write: a failure after the target already exists must leave the
+/// pre-existing file untouched (the write goes to a temp sibling that is removed
+/// on error, never clobbering `out_path`).
+#[test]
+fn to_netcdf_failure_preserves_existing_file() {
+    let out = std::env::temp_dir().join("tensogram_atomic_preserve.nc");
+    std::fs::write(&out, b"SENTINEL").expect("seed sentinel");
+
+    let bad = minimal_non_netcdf_message();
+    assert!(
+        to_netcdf(&bad, &out).is_err(),
+        "a non-NetCDF message must fail"
+    );
+
+    assert_eq!(
+        std::fs::read(&out).expect("sentinel still present"),
+        b"SENTINEL",
+        "a failed atomic write must not clobber the existing file"
+    );
+    let _ = std::fs::remove_file(&out);
+}
+
+/// Empty message list is a clear error, not a silent empty file.
+#[test]
+fn to_netcdf_messages_rejects_empty() {
+    let out = std::env::temp_dir().join("tensogram_empty_msgs.nc");
+    let _ = std::fs::remove_file(&out);
+    assert!(to_netcdf_messages(&[], &out).is_err());
+    assert!(!out.exists(), "no output for an empty message list");
 }
 
 #[test]

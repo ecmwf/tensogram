@@ -296,15 +296,22 @@ Next (needs a design call — see below):
   (genuine stored NaNs and fill/missing → NaN from unpacking) are recorded in a
   companion mask and restored by `decode`; `multi_dtype.nc` round-trips
   `ncdump`-identical (all dtypes + scalar + NaN).  Finite data is unaffected.
-- [ ] **python/C parity for `to-grib` / `to-netcdf`**: the *import* side is
-  bound in Python (`tensogram.convert_grib` / `convert_grib_buffer` /
-  `convert_netcdf`, with `__has_grib__` / `__has_netcdf__` flags) but the
-  *export* side (`to_grib` / `to_netcdf`) is CLI/Rust-only — an asymmetry.
-  Adding PyO3 wrappers needs an API-shape decision (`to_netcdf` writes one file
-  from a single-message `.tgm`; `convert_*` returns `list[bytes]`, so define
-  single-vs-multi-message handling), feature-gated stubs, error→exception
-  mapping, and a Python test mirror.  (C FFI / C++ expose neither side, so they
-  stay consistent.)
+- [x] **python parity for `to-grib` / `to-netcdf`**: PyO3 wrappers added —
+  `tensogram.to_grib(messages: list[bytes]) -> bytes` (concatenates the
+  reconstructed GRIB) and `tensogram.to_netcdf(messages: list[bytes], path)`
+  (reassembles every message into one file), both feature-gated with the same
+  stub/error-mapping convention as `convert_*`.  Multi-message by design.
+  Validated by `python/tests/test_reconstruct.py` (round-trip via tensogram's
+  own converters, no `netCDF4` dependency).  (C FFI / C++ expose neither the
+  import nor the export side, so they remain consistent.)
+- [x] **`to_netcdf` library-level atomicity**: `to_netcdf` /
+  `to_netcdf_messages` write to a sibling temp file and `rename` into place on
+  success, so a failure never leaves a partial `.nc` and never clobbers an
+  existing target.  The CLI no longer needs manual cleanup.
+- [ ] **repo-wide rustfmt skew**: diagnosed in `plans/RUSTFMT_SKEW.md`
+  (edition-2024 crates + floating stable rustfmt → mixed 2021/2024 formatting).
+  Recommended fix (Proposal C: pin toolchain + one-time `cargo fmt --all`) must
+  land as its own PR on `main`, not on a feature branch.
 
 
 ## Documentation

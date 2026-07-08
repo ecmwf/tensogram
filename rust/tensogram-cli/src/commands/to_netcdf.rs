@@ -8,36 +8,30 @@
 
 //! `tensogram to-netcdf` — reconstruct a NetCDF file from a Tensogram file
 //! (reverse of `convert-netcdf`). libnetcdf writes to a path, so `--output`
-//! is required. A single-message `.tgm` (the `convert-netcdf` file-split
-//! default) maps to one NetCDF file. See `plans/GRIB_NETCDF_ROUNDTRIP.md`.
+//! is required. Every message in the `.tgm` is reassembled into the one output
+//! file: a file-split `.tgm` (the default) is a single message, and a
+//! variable-split `.tgm` contributes one variable per message. The write is
+//! atomic (temp + rename). See `plans/GRIB_NETCDF_ROUNDTRIP.md`.
 
 use std::path::Path;
 
-use tensogram_netcdf::to_netcdf;
+use tensogram_netcdf::to_netcdf_messages;
 
 pub fn run(input: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let file = tensogram::TensogramFile::open(input)?;
     let count = file.message_count()?;
-    match count {
-        0 => return Err(format!("{input}: no Tensogram messages").into()),
-        1 => {}
-        n => {
-            return Err(format!(
-                "to-netcdf expects a single-message .tgm (convert-netcdf file-split); \
-                 got {n} messages. Multi-file output is a follow-up."
-            )
-            .into());
-        }
+    if count == 0 {
+        return Err(format!("{input}: no Tensogram messages").into());
     }
 
-    let msg = file.read_message(0)?;
-    // libnetcdf creates the output file incrementally, so a mid-write failure
-    // would leave a truncated/corrupt `.nc` behind.  Remove it on error so a
-    // downstream reader never picks up a half-written file.
-    if let Err(e) = to_netcdf(&msg, Path::new(output)) {
-        let _ = std::fs::remove_file(output);
-        return Err(e.into());
-    }
+    let messages: Vec<Vec<u8>> = (0..count)
+        .map(|i| file.read_message(i))
+        .collect::<Result<_, _>>()?;
+    let refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
+
+    // `to_netcdf_messages` writes atomically (temp file + rename), so a failure
+    // never leaves a partial `.nc` and never clobbers a pre-existing `output`.
+    to_netcdf_messages(&refs, Path::new(output))?;
     println!("Wrote NetCDF to {output}");
     Ok(())
 }
@@ -82,14 +76,14 @@ mod tests {
     }
 
     #[test]
-    fn to_netcdf_failure_removes_partial_output() {
+    fn to_netcdf_failure_leaves_no_output() {
         use std::collections::BTreeMap;
         use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 
         // A valid single-message .tgm whose object carries no NetCDF structural
-        // metadata: `to_netcdf` creates the output file, then fails at the
-        // missing `_file` registry.  The half-written file must be removed so a
-        // reader never sees a truncated `.nc`.
+        // metadata: the exporter decodes it, then fails at the missing `_file`
+        // registry.  Because the write is atomic (temp + rename), no output file
+        // is ever produced at `out`.
         let desc = DataObjectDescriptor {
             obj_type: "ntensor".to_string(),
             ndim: 1,

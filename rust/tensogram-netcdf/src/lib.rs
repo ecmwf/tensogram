@@ -37,7 +37,7 @@ pub mod metadata;
 
 pub use converter::{ConvertOptions, SplitBy, convert_netcdf_file};
 pub use error::NetcdfError;
-pub use export::to_netcdf;
+pub use export::{to_netcdf, to_netcdf_messages};
 // `DataPipeline` lives in `tensogram::pipeline` — both GRIB and
 // NetCDF importers share the same type so they cannot drift. Re-export
 // it here so existing `use tensogram_netcdf::DataPipeline` callers keep

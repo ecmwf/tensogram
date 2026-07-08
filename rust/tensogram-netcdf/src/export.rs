@@ -20,12 +20,12 @@
 //! back in via `decode`'s non-finite restoration.  Classic-format byte-matching,
 //! groups, chunking/compression, and CF re-packing are follow-ups.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ciborium::Value as CborValue;
 use netcdf::AttributeValue;
 
-use tensogram::types::{ByteOrder, GlobalMetadata};
+use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 use tensogram::{decode, DecodeOptions, Dtype};
 
 use crate::error::NetcdfError;
@@ -47,22 +47,86 @@ const INTERNAL_KEYS: &[&str] = &[
     "record_index",
 ];
 
-/// Reconstruct a NetCDF file at `out_path` from a Tensogram message produced by
-/// [`crate::convert_netcdf_file`].
+/// A decoded Tensogram message: its global metadata paired with its decoded
+/// `(descriptor, payload)` objects.
+type DecodedMessage = (GlobalMetadata, Vec<(DataObjectDescriptor, Vec<u8>)>);
+
+/// Reconstruct a NetCDF file at `out_path` from a single Tensogram message
+/// produced by [`crate::convert_netcdf_file`].
+///
+/// Convenience wrapper over [`to_netcdf_messages`] for the common file-split
+/// case (one message = one file).  See that function for the multi-message /
+/// atomicity semantics.
 ///
 /// # Errors
 ///
-/// - [`NetcdfError::InvalidData`] — the message is not decodable, or lacks the
+/// See [`to_netcdf_messages`].
+pub fn to_netcdf(message: &[u8], out_path: &Path) -> Result<(), NetcdfError> {
+    to_netcdf_messages(std::slice::from_ref(&message), out_path)
+}
+
+/// Reconstruct a single NetCDF file at `out_path` from one *or more* Tensogram
+/// messages produced by [`crate::convert_netcdf_file`].
+///
+/// Every variable from every message is written into the one output file.  This
+/// is the reverse of a `--split-by variable` conversion (N single-variable
+/// messages → one file); a `--split-by file` conversion is the single-message
+/// case.  All messages must agree on the shared dimension registry (they do when
+/// they come from the same source file).
+///
+/// The write is **atomic**: data is written to a temporary file in the target
+/// directory and `rename`d into place only on full success, so a reader never
+/// observes a half-written file and a pre-existing `out_path` is left intact on
+/// failure.
+///
+/// # Errors
+///
+/// - [`NetcdfError::InvalidData`] — `messages` is empty, a message is not
+///   decodable, dimensions conflict across messages, or a message lacks the
 ///   structural metadata (`name` / `_dims` / `_file`) written by `convert-netcdf`.
 /// - [`NetcdfError::Netcdf`] — libnetcdf rejected a definition or write.
-pub fn to_netcdf(message: &[u8], out_path: &Path) -> Result<(), NetcdfError> {
-    let (meta, objects) = decode(message, &DecodeOptions::default())
-        .map_err(|e| NetcdfError::InvalidData(format!("decode tensogram message: {e}")))?;
+/// - [`NetcdfError::Io`] — the temporary file could not be renamed into place.
+pub fn to_netcdf_messages(messages: &[&[u8]], out_path: &Path) -> Result<(), NetcdfError> {
+    if messages.is_empty() {
+        return Err(NetcdfError::InvalidData(
+            "to-netcdf: no messages to write".into(),
+        ));
+    }
 
-    let mut file = netcdf::create(out_path)?;
+    let decoded: Vec<DecodedMessage> = messages
+        .iter()
+        .map(|m| {
+            decode(m, &DecodeOptions::default())
+                .map_err(|e| NetcdfError::InvalidData(format!("decode tensogram message: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
 
-    // Dimensions from the file registry (identical across every object).
-    for (name, len, unlimited) in file_dims(&meta)? {
+    // Write to a sibling temp file, then rename into place only on success, so
+    // failures never leave a partial `out_path` (and never clobber an existing
+    // one).  Any error removes the temp file first.
+    let tmp = temp_output_path(out_path);
+    match write_messages(&decoded, &tmp) {
+        Ok(()) => std::fs::rename(&tmp, out_path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            NetcdfError::Io(e)
+        }),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Create the NetCDF file at `path`, write the union of all messages'
+/// dimensions plus their global attributes and variables, then close it so the
+/// caller can rename it.  Kept separate from [`to_netcdf_messages`] so the
+/// `netcdf::File` is dropped (and flushed to disk) before the rename.
+fn write_messages(decoded: &[DecodedMessage], path: &Path) -> Result<(), NetcdfError> {
+    let mut file = netcdf::create(path)?;
+
+    // Dimensions: the union across messages (a variable-split carries the whole
+    // registry in each message, so this dedups them).
+    for (name, len, unlimited) in collect_dims(decoded)? {
         if unlimited {
             file.add_unlimited_dimension(&name)?;
         } else {
@@ -70,28 +134,71 @@ pub fn to_netcdf(message: &[u8], out_path: &Path) -> Result<(), NetcdfError> {
         }
     }
 
-    // Global attributes (exact types via the `_global_types` sidecar).
-    for (name, av) in global_attrs(&meta) {
-        file.add_attribute(&name, av)?;
+    // Global attributes are identical across a split — take them from the first
+    // message (exact types via the `_global_types` sidecar).
+    if let Some((meta0, _)) = decoded.first() {
+        for (name, av) in global_attrs(meta0) {
+            file.add_attribute(&name, av)?;
+        }
     }
 
-    for (i, (desc, payload)) in objects.iter().enumerate() {
-        let name = var_name(&meta, i)?;
-        let dim_names = var_dim_names(&meta, i)?;
-        let dim_refs: Vec<&str> = dim_names.iter().map(String::as_str).collect();
-        let attrs = var_attrs(&meta, i);
-        add_variable(
-            &mut file,
-            &name,
-            &dim_refs,
-            desc.dtype,
-            desc.byte_order,
-            payload,
-            &attrs,
-        )?;
+    for (meta, objects) in decoded {
+        for (i, (desc, payload)) in objects.iter().enumerate() {
+            let name = var_name(meta, i)?;
+            let dim_names = var_dim_names(meta, i)?;
+            let dim_refs: Vec<&str> = dim_names.iter().map(String::as_str).collect();
+            let attrs = var_attrs(meta, i);
+            add_variable(
+                &mut file,
+                &name,
+                &dim_refs,
+                desc.dtype,
+                desc.byte_order,
+                payload,
+                &attrs,
+            )?;
+        }
     }
 
     Ok(())
+}
+
+/// The union of every message's dimension registry, erroring if two messages
+/// disagree on a dimension's length or unlimited-ness.
+fn collect_dims(decoded: &[DecodedMessage]) -> Result<Vec<(String, usize, bool)>, NetcdfError> {
+    let mut out: Vec<(String, usize, bool)> = Vec::new();
+    for (meta, _) in decoded {
+        for (name, len, unlimited) in file_dims(meta)? {
+            if let Some((_, elen, eunlim)) = out.iter().find(|(n, _, _)| *n == name) {
+                if *elen != len || *eunlim != unlimited {
+                    return Err(NetcdfError::InvalidData(format!(
+                        "dimension '{name}' has conflicting definitions across messages"
+                    )));
+                }
+            } else {
+                out.push((name, len, unlimited));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A unique sibling path of `out_path` for the atomic-write temp file, so the
+/// final `rename` stays on the same filesystem.
+fn temp_output_path(out_path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let n = CTR.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let stem = out_path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "out.nc".to_string());
+    let tmp_name = format!(".{stem}.tmp.{pid}.{n}");
+    match out_path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join(tmp_name),
+        _ => PathBuf::from(tmp_name),
+    }
 }
 
 /// Add one variable (dtype-dispatched), write its data, and set its attributes.

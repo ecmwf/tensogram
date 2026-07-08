@@ -885,7 +885,7 @@ impl PyTensogramFile {
 
         if let Ok(slice) = key.cast::<pyo3::types::PySlice>() {
             let indices = slice.indices(count as isize)?;
-            let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength as usize);
+            let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength);
             let mut i = indices.start;
             while (indices.step > 0 && i < indices.stop) || (indices.step < 0 && i > indices.stop) {
                 items.push(self.decode_message(py, i as usize, true, 0, true, false)?);
@@ -2947,6 +2947,92 @@ fn py_convert_netcdf(
     )
 }
 
+/// Reconstruct GRIB bytes from Tensogram messages (reverse of [`convert_grib`]).
+///
+/// `messages` is a list of `bytes`, one Tensogram message each — typically the
+/// value returned by [`convert_grib`].  Each message is reconstructed and the
+/// resulting GRIB messages are concatenated into a single `bytes` object, i.e. a
+/// complete (possibly multi-message) GRIB file ready to write to disk.
+///
+/// # Python exceptions raised
+/// - [`ValueError`] — a message is not a decodable Tensogram message, an object
+///   is not `float64`, or it lacks the `grib_repro` key-set (i.e. was not
+///   produced by [`convert_grib`]).
+/// - [`RuntimeError`] — the `grib` Cargo feature is disabled, or ecCodes failed
+///   to encode.
+///
+/// # Arguments
+/// - `messages`: list of Tensogram wire-format messages (`list[bytes]`).
+#[pyfunction]
+#[pyo3(name = "to_grib", signature = (messages))]
+fn py_to_grib(py: Python<'_>, messages: Vec<Vec<u8>>) -> PyResult<PyObject> {
+    #[cfg(feature = "grib")]
+    {
+        let grib = py
+            .detach(|| -> Result<Vec<u8>, tensogram_grib::GribError> {
+                let mut out = Vec::new();
+                for msg in &messages {
+                    out.extend_from_slice(&tensogram_grib::to_grib(msg)?);
+                }
+                Ok(out)
+            })
+            .map_err(grib_error_to_pyerr)?;
+        Ok(PyBytes::new(py, &grib).into_any().unbind())
+    }
+    #[cfg(not(feature = "grib"))]
+    feature_disabled_stub!(
+        "tensogram was built without GRIB support. Install libeccodes \
+         (`brew install eccodes` or `apt install libeccodes-dev`) and \
+         rebuild the Python bindings with `maturin develop --features grib`.",
+        py,
+        messages,
+    )
+}
+
+/// Reconstruct a NetCDF file from Tensogram messages (reverse of
+/// [`convert_netcdf`]).
+///
+/// Every message in `messages` is reassembled into the single file at `path`: a
+/// file-split conversion is one message, and a variable-split conversion is one
+/// message per variable.  The write is **atomic** (a temporary file is renamed
+/// into place only on full success), so a failure never leaves a partial file
+/// and never clobbers an existing `path`.
+///
+/// # Python exceptions raised
+/// - [`ValueError`] — `messages` is empty, a message is not decodable,
+///   dimensions conflict across messages, or a message lacks the structural
+///   metadata written by [`convert_netcdf`].
+/// - [`OSError`] — the output could not be renamed into place.
+/// - [`RuntimeError`] — the `netcdf` Cargo feature is disabled, or a libnetcdf
+///   internal error bubbled up.
+///
+/// # Arguments
+/// - `messages`: list of Tensogram wire-format messages (`list[bytes]`).
+/// - `path`: destination NetCDF file path.
+#[pyfunction]
+#[pyo3(name = "to_netcdf", signature = (messages, path))]
+fn py_to_netcdf(py: Python<'_>, messages: Vec<Vec<u8>>, path: &str) -> PyResult<()> {
+    #[cfg(feature = "netcdf")]
+    {
+        let out_path = std::path::PathBuf::from(path);
+        py.detach(|| {
+            let refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
+            tensogram_netcdf::to_netcdf_messages(&refs, &out_path)
+        })
+        .map_err(netcdf_error_to_pyerr)?;
+        Ok(())
+    }
+    #[cfg(not(feature = "netcdf"))]
+    feature_disabled_stub!(
+        "tensogram was built without NetCDF support. Install libnetcdf \
+         (`brew install netcdf` or `apt install libnetcdf-dev`) and \
+         rebuild the Python bindings with `maturin develop --features netcdf`.",
+        py,
+        messages,
+        path,
+    )
+}
+
 #[pymodule(gil_used = false)]
 fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_is_remote_url, m)?)?;
@@ -2967,6 +3053,8 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_convert_grib, m)?)?;
     m.add_function(wrap_pyfunction!(py_convert_grib_buffer, m)?)?;
     m.add_function(wrap_pyfunction!(py_convert_netcdf, m)?)?;
+    m.add_function(wrap_pyfunction!(py_to_grib, m)?)?;
+    m.add_function(wrap_pyfunction!(py_to_netcdf, m)?)?;
     m.add_function(wrap_pyfunction!(py_doctor, m)?)?;
     m.add_class::<PyMetadata>()?;
     m.add_class::<PyDataObjectDescriptor>()?;
