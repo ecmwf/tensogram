@@ -95,7 +95,7 @@ def test_to_netcdf_reassembles_variable_split(tmp_path: Path) -> None:
 
 @requires_netcdf
 def test_to_netcdf_empty_list_raises(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no messages"):
         tensogram.to_netcdf([], str(tmp_path / "out.nc"))
 
 
@@ -131,7 +131,7 @@ def test_to_grib_roundtrip() -> None:
 @requires_grib
 def test_to_grib_rejects_non_grib_message() -> None:
     """A message without the grib_repro key-set is a ValueError."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="decode"):
         tensogram.to_grib([b"not a tensogram message"])
 
 
