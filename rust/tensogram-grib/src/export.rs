@@ -31,9 +31,52 @@ use tensogram::{DecodeOptions, Dtype, decode};
 use crate::error::GribError;
 
 /// ecCodes sample used as the reconstruction template for `regular_ll` surface
-/// fields.  (Milestone 1: `regular_ll` only; other geometries select other
-/// samples in a follow-up.)
-const SAMPLE_PATH: &str = "/usr/share/eccodes/samples/regular_ll_sfc_grib2.tmpl";
+/// fields.  (Only `regular_ll` for now; other geometries select other samples
+/// in a follow-up.)
+const SAMPLE_NAME: &str = "regular_ll_sfc_grib2.tmpl";
+
+/// Locate the ecCodes samples directory portably.
+///
+/// The eccodes crate can only open a sample by *path*, and that path is
+/// install-specific (`/usr/share/eccodes/samples` on Debian, but
+/// `$(brew --prefix eccodes)/share/eccodes/samples` on macOS, etc.).  Resolve it
+/// the way ecCodes itself does — honouring `ECCODES_SAMPLES_PATH` and
+/// `ECCODES_DIR` — then fall back to the well-known install locations, returning
+/// the first that actually contains [`SAMPLE_NAME`].
+fn sample_path() -> Result<PathBuf, GribError> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // ecCodes' own override (may be colon-separated, like a search path).
+    if let Ok(paths) = std::env::var("ECCODES_SAMPLES_PATH") {
+        candidates.extend(paths.split(':').map(PathBuf::from));
+    }
+    // An eccodes install prefix (set by e.g. the Homebrew CI).
+    if let Ok(dir) = std::env::var("ECCODES_DIR") {
+        let base = PathBuf::from(dir);
+        candidates.push(base.join("share/eccodes/samples"));
+        candidates.push(base.join("samples"));
+    }
+    // Well-known system locations.
+    for dir in [
+        "/usr/share/eccodes/samples",
+        "/usr/local/share/eccodes/samples",
+        "/opt/homebrew/share/eccodes/samples",
+        "/opt/homebrew/opt/eccodes/share/eccodes/samples",
+    ] {
+        candidates.push(PathBuf::from(dir));
+    }
+
+    candidates
+        .into_iter()
+        .map(|dir| dir.join(SAMPLE_NAME))
+        .find(|p| p.exists())
+        .ok_or_else(|| {
+            GribError::InvalidData(format!(
+                "could not locate ecCodes sample '{SAMPLE_NAME}'; \
+                 set ECCODES_SAMPLES_PATH or ECCODES_DIR"
+            ))
+        })
+}
 
 /// Keys set *first*, in this order, because they select templates / sizing /
 /// sections.  ecCodes is order-sensitive: the identification and grid template
@@ -120,11 +163,11 @@ fn reconstruct_message(
     repro: &BTreeMap<String, CborValue>,
     values: &[f64],
 ) -> Result<Vec<u8>, GribError> {
-    let mut handle = CodesFile::new_from_file(SAMPLE_PATH, ProductKind::GRIB)?;
-    let sample = handle
-        .ref_message_iter()
-        .next()?
-        .ok_or_else(|| GribError::InvalidData(format!("sample {SAMPLE_PATH} has no message")))?;
+    let sample_path = sample_path()?;
+    let mut handle = CodesFile::new_from_file(&sample_path, ProductKind::GRIB)?;
+    let sample = handle.ref_message_iter().next()?.ok_or_else(|| {
+        GribError::InvalidData(format!("sample {} has no message", sample_path.display()))
+    })?;
     let mut msg = sample.try_clone()?;
 
     // `setLocalDefinition` is a write-only *trigger*: it always reads back `0`,
