@@ -360,15 +360,7 @@ jobs:
           echo "ECCODES_DIR=$(brew --prefix eccodes)" >> "$GITHUB_ENV"
 
       - name: Format check
-        run: |
-          # Root workspace plus the crates it excludes (grib/netcdf/wasm/
-          # bindings/fuzz) — otherwise those are never fmt-checked and drift.
-          cargo fmt --check
-          cargo fmt --check --manifest-path rust/tensogram-grib/Cargo.toml
-          cargo fmt --check --manifest-path rust/tensogram-netcdf/Cargo.toml
-          cargo fmt --check --manifest-path rust/tensogram-wasm/Cargo.toml
-          cargo fmt --check --manifest-path python/bindings/Cargo.toml
-          cargo fmt --check --manifest-path fuzz/Cargo.toml
+        run: make rust-fmt
 
       - name: Clippy
         run: |
