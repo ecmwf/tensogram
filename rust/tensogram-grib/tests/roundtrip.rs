@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use tensogram_grib::{convert_grib_file, to_grib, ConvertOptions};
+use tensogram_grib::{ConvertOptions, convert_grib_file, to_grib};
 
 fn testdata(name: &str) -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

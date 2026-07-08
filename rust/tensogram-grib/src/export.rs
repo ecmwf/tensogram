@@ -26,7 +26,7 @@ use ciborium::Value as CborValue;
 use eccodes::{BufMessage, CodesFile, FallibleIterator, KeyWrite, ProductKind};
 
 use tensogram::types::{ByteOrder, GlobalMetadata};
-use tensogram::{decode, DecodeOptions, Dtype};
+use tensogram::{DecodeOptions, Dtype, decode};
 
 use crate::error::GribError;
 

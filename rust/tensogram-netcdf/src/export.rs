@@ -26,7 +26,7 @@ use ciborium::Value as CborValue;
 use netcdf::AttributeValue;
 
 use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram::{decode, DecodeOptions, Dtype};
+use tensogram::{DecodeOptions, Dtype, decode};
 
 use crate::error::NetcdfError;
 

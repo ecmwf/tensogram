@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use ciborium::Value as CborValue;
 use tensogram_netcdf::{
-    convert_netcdf_file, to_netcdf, to_netcdf_messages, ConvertOptions, SplitBy,
+    ConvertOptions, SplitBy, convert_netcdf_file, to_netcdf, to_netcdf_messages,
 };
 
 fn testdata(name: &str) -> PathBuf {

@@ -396,9 +396,7 @@ fn main() {
             &mask_cli,
         ),
         #[cfg(feature = "grib")]
-        Commands::ToGrib { input, output } => {
-            commands::to_grib::run(&input, output.as_deref())
-        }
+        Commands::ToGrib { input, output } => commands::to_grib::run(&input, output.as_deref()),
         #[cfg(feature = "netcdf")]
         Commands::ToNetcdf { input, output } => commands::to_netcdf::run(&input, &output),
         Commands::Doctor { json } => commands::doctor::run(json),

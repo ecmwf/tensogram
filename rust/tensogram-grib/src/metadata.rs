@@ -89,12 +89,16 @@ fn dynamic_to_cbor(val: DynamicKeyType) -> Option<CborValue> {
         }
         DynamicKeyType::Float(f) if f.is_finite() => Some(CborValue::Float(f)),
         DynamicKeyType::IntArray(a) if a.len() <= MAX_ARRAY_LEN => Some(CborValue::Array(
-            a.into_iter().map(|i| CborValue::Integer(i.into())).collect(),
+            a.into_iter()
+                .map(|i| CborValue::Integer(i.into()))
+                .collect(),
         )),
         DynamicKeyType::FloatArray(a)
             if a.len() <= MAX_ARRAY_LEN && a.iter().all(|f| f.is_finite()) =>
         {
-            Some(CborValue::Array(a.into_iter().map(CborValue::Float).collect()))
+            Some(CborValue::Array(
+                a.into_iter().map(CborValue::Float).collect(),
+            ))
         }
         DynamicKeyType::Bytes(b) => Some(CborValue::Bytes(b)),
         _ => None, // missing, sentinel, or oversized/non-finite array
