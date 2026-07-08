@@ -172,14 +172,21 @@ pub(crate) fn extract_descriptor_data_pairs(
     let mut data_vec = Vec::with_capacity(len as usize);
     for i in 0..len {
         let entry = objects_js.get(i);
-        let desc_val = js_sys::Reflect::get(&entry, &"descriptor".into())
-            .map_err(|_| JsValue::from(js_sys::Error::new("each object must have a 'descriptor' field")))?;
-        let data_val = js_sys::Reflect::get(&entry, &"data".into())
-            .map_err(|_| JsValue::from(js_sys::Error::new("each object must have a 'data' field")))?;
+        let desc_val = js_sys::Reflect::get(&entry, &"descriptor".into()).map_err(|_| {
+            JsValue::from(js_sys::Error::new(
+                "each object must have a 'descriptor' field",
+            ))
+        })?;
+        let data_val = js_sys::Reflect::get(&entry, &"data".into()).map_err(|_| {
+            JsValue::from(js_sys::Error::new("each object must have a 'data' field"))
+        })?;
         let desc: core::DataObjectDescriptor =
             serde_wasm_bindgen::from_value(desc_val).map_err(js_err_display)?;
-        let data_bytes = typed_array_or_u8_to_bytes(&data_val)
-            .ok_or_else(|| JsValue::from(js_sys::Error::new("data must be a TypedArray, DataView, or Uint8Array")))?;
+        let data_bytes = typed_array_or_u8_to_bytes(&data_val).ok_or_else(|| {
+            JsValue::from(js_sys::Error::new(
+                "data must be a TypedArray, DataView, or Uint8Array",
+            ))
+        })?;
         descriptors.push(desc);
         data_vec.push(data_bytes);
     }
@@ -233,9 +240,11 @@ pub(crate) fn metadata_from_js(
     let obj: &js_sys::Object = metadata_js.unchecked_ref();
 
     // Reject `_reserved_` at the top level — library-managed namespace.
-    if js_sys::Reflect::has(obj, &JsValue::from_str(RESERVED_KEY))
-        .map_err(|_| JsValue::from(js_sys::Error::new("internal: Reflect.has failed on metadata object")))?
-    {
+    if js_sys::Reflect::has(obj, &JsValue::from_str(RESERVED_KEY)).map_err(|_| {
+        JsValue::from(js_sys::Error::new(
+            "internal: Reflect.has failed on metadata object",
+        ))
+    })? {
         return Err(JsValue::from(js_sys::Error::new(&format!(
             "'{RESERVED_KEY}' must not be set by client code — the encoder populates it"
         ))));
@@ -244,9 +253,9 @@ pub(crate) fn metadata_from_js(
     // Pull `base` explicitly so serde-wasm-bindgen handles the nested
     // CBOR conversion (lists of dicts → Vec<BTreeMap>).  Absent ≡ empty.
     let base: Vec<BTreeMap<String, ciborium::Value>> =
-        match js_sys::Reflect::get(obj, &JsValue::from_str("base"))
-            .map_err(|_| JsValue::from(js_sys::Error::new("internal: Reflect.get('base') failed")))?
-        {
+        match js_sys::Reflect::get(obj, &JsValue::from_str("base")).map_err(|_| {
+            JsValue::from(js_sys::Error::new("internal: Reflect.get('base') failed"))
+        })? {
             v if v.is_undefined() => Vec::new(),
             v => serde_wasm_bindgen::from_value(v).map_err(js_err_display)?,
         };
@@ -263,9 +272,11 @@ pub(crate) fn metadata_from_js(
 
     // Pull `_extra_` explicitly (authoritative — wins collisions).
     let mut extra: BTreeMap<String, ciborium::Value> =
-        match js_sys::Reflect::get(obj, &JsValue::from_str("_extra_"))
-            .map_err(|_| JsValue::from(js_sys::Error::new("internal: Reflect.get('_extra_') failed")))?
-        {
+        match js_sys::Reflect::get(obj, &JsValue::from_str("_extra_")).map_err(|_| {
+            JsValue::from(js_sys::Error::new(
+                "internal: Reflect.get('_extra_') failed",
+            ))
+        })? {
             v if v.is_undefined() => BTreeMap::new(),
             v => serde_wasm_bindgen::from_value(v).map_err(js_err_display)?,
         };
@@ -286,9 +297,13 @@ pub(crate) fn metadata_from_js(
         if extra.contains_key(&key) {
             continue; // explicit _extra_ already claimed this slot
         }
-        let value = js_sys::Reflect::get(obj, &key_val)
-            .map_err(|_| JsValue::from(js_sys::Error::new("internal: Reflect.get for free-form key failed")))?;
-        let cbor: ciborium::Value = serde_wasm_bindgen::from_value(value).map_err(js_err_display)?;
+        let value = js_sys::Reflect::get(obj, &key_val).map_err(|_| {
+            JsValue::from(js_sys::Error::new(
+                "internal: Reflect.get for free-form key failed",
+            ))
+        })?;
+        let cbor: ciborium::Value =
+            serde_wasm_bindgen::from_value(value).map_err(js_err_display)?;
         extra.insert(key, cbor);
     }
 

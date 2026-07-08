@@ -5,7 +5,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tensogram::{validate_buffer, ValidateOptions, ValidationLevel};
+use tensogram::{ValidateOptions, ValidationLevel, validate_buffer};
 
 fuzz_target!(|data: &[u8]| {
     // Full fidelity validation walks every level, including the

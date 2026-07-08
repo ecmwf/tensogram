@@ -1080,7 +1080,6 @@ fn py_encode_pre_encoded<'py>(
     name = "decode",
     signature = (
         buf,
-        
         native_byte_order=true,
         threads=0,
         restore_non_finite=true,
@@ -1129,7 +1128,6 @@ fn py_decode(
     name = "decode_with_masks",
     signature = (
         buf,
-        
         native_byte_order=true,
         threads=0,
     )
@@ -1149,9 +1147,8 @@ fn py_decode_with_masks(
         restore_non_finite: false,
         ..Default::default()
     };
-    let (global_meta, objects) = py.detach(|| {
-        tensogram_lib::decode_with_masks(&buf, &options).map_err(to_py_err)
-    })?;
+    let (global_meta, objects) =
+        py.detach(|| tensogram_lib::decode_with_masks(&buf, &options).map_err(to_py_err))?;
     let result_list = objects_with_masks_to_python(py, &objects)?;
     pack_message(py, PyMetadata { inner: global_meta }, result_list)
 }
@@ -1197,7 +1194,6 @@ fn py_decode_descriptors(py: Python<'_>, buf: &[u8]) -> PyResult<(PyMetadata, Py
     signature = (
         buf,
         index,
-        
         native_byte_order=true,
         threads=0,
         restore_non_finite=true,
@@ -1252,7 +1248,6 @@ fn py_decode_object(
         object_index,
         ranges,
         join=false,
-        
         native_byte_order=true,
         threads=0,
         restore_non_finite=true,
@@ -1460,11 +1455,12 @@ fn py_doctor(py: Python<'_>) -> PyResult<PyObject> {
     // shape we promise across all language bindings, and Python's
     // built-in `json.loads` returns the matching native types
     // (`dict`/`list`/`str`/`int`) without pulling in pythonize.
-    let json = serde_json::to_string(&report).map_err(|e| {
-        PyValueError::new_err(format!("failed to serialise doctor report: {e}"))
-    })?;
+    let json = serde_json::to_string(&report)
+        .map_err(|e| PyValueError::new_err(format!("failed to serialise doctor report: {e}")))?;
     let json_module = py.import("json")?;
-    json_module.call_method1("loads", (json,)).map(|v| v.unbind())
+    json_module
+        .call_method1("loads", (json,))
+        .map(|v| v.unbind())
 }
 
 /// Compute simple-packing parameters for a float64 array.
@@ -1747,7 +1743,10 @@ impl PyStreamingEncoder {
     ///
     /// Raises ``RuntimeError`` if the encoder has already been exhausted
     /// by :meth:`finish` or :meth:`finish_backfilled`.
-    fn finish_and_reset_backfilled<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+    fn finish_and_reset_backfilled<'py>(
+        &mut self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
         let inner = self
             .inner
             .as_mut()
@@ -1978,10 +1977,9 @@ impl PyAsyncTensogramFile {
         let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let file =
-                TensogramFile::open_remote_async(&source, &opts, scan_opts)
-                    .await
-                    .map_err(to_py_err)?;
+            let file = TensogramFile::open_remote_async(&source, &opts, scan_opts)
+                .await
+                .map_err(to_py_err)?;
             let is_remote = file.is_remote();
             let source_str = file.source();
             let wrapped = PyAsyncTensogramFile {
@@ -3019,9 +3017,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // ---------------------------------------------------------------------------
 
 fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptions> {
-    make_encode_options_full(
-        hash, threads, false, false, None, None, None, None, None,
-    )
+    make_encode_options_full(hash, threads, false, false, None, None, None, None, None)
 }
 
 /// Build an [`EncodeOptions`] from the full kwargs set exposed by the
@@ -3072,8 +3068,9 @@ fn make_encode_options_full(
     // same NULL → off rule as Python.
     let hashing = match hash {
         None => false,
-        Some(name) => parse_hash_name(Some(name))
-            .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        Some(name) => {
+            parse_hash_name(Some(name)).map_err(|e| PyValueError::new_err(e.to_string()))?
+        }
     };
     let parse_method = |s: Option<&str>, default: MaskMethod| -> PyResult<MaskMethod> {
         let Some(name) = s else {
@@ -3279,12 +3276,10 @@ fn objects_with_masks_to_python(
             add_kind("nan", &obj.masks.nan)?;
             add_kind("inf+", &obj.masks.pos_inf)?;
             add_kind("inf-", &obj.masks.neg_inf)?;
-            let triple = pyo3::types::PyTuple::new(
-                py,
-                [py_desc, arr, masks_dict.into_any().unbind()],
-            )?
-            .into_any()
-            .unbind();
+            let triple =
+                pyo3::types::PyTuple::new(py, [py_desc, arr, masks_dict.into_any().unbind()])?
+                    .into_any()
+                    .unbind();
             Ok(triple)
         })
         .collect();

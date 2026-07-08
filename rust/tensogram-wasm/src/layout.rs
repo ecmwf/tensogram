@@ -176,7 +176,9 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsValue> {
         ))));
     }
     if &chunk[..MAGIC.len()] != MAGIC {
-        return Err(JsValue::from(js_sys::Error::new("header chunk does not start with TENSOGRM")));
+        return Err(JsValue::from(js_sys::Error::new(
+            "header chunk does not start with TENSOGRM",
+        )));
     }
 
     let mut metadata: Option<core::GlobalMetadata> = None;
@@ -192,10 +194,16 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsValue> {
         let fh = FrameHeader::read_from(&chunk[pos..]).map_err(js_err)?;
         let total = match usize::try_from(fh.total_length) {
             Ok(t) => t,
-            Err(_) => return Err(JsValue::from(js_sys::Error::new("frame total_length exceeds usize"))),
+            Err(_) => {
+                return Err(JsValue::from(js_sys::Error::new(
+                    "frame total_length exceeds usize",
+                )));
+            }
         };
         if total < FRAME_HEADER_SIZE + FRAME_END.len() {
-            return Err(JsValue::from(js_sys::Error::new("frame total_length below minimum")));
+            return Err(JsValue::from(js_sys::Error::new(
+                "frame total_length below minimum",
+            )));
         }
         let frame_end = match pos.checked_add(total) {
             Some(e) => e,
@@ -214,7 +222,9 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsValue> {
         }
 
         if &chunk[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
-            return Err(JsValue::from(js_sys::Error::new("header frame missing ENDF trailer")));
+            return Err(JsValue::from(js_sys::Error::new(
+                "header frame missing ENDF trailer",
+            )));
         }
 
         let payload = &chunk[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
@@ -242,8 +252,13 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsValue> {
         Some(b) => JsValue::from(b),
         None => JsValue::NULL,
     };
-    js_sys::Reflect::set(&out, &JsValue::from_str("body_start"), &body_start_val)
-        .map_err(|_| JsValue::from(js_sys::Error::new("internal: failed to set header_chunk.body_start")))?;
+    js_sys::Reflect::set(&out, &JsValue::from_str("body_start"), &body_start_val).map_err(
+        |_| {
+            JsValue::from(js_sys::Error::new(
+                "internal: failed to set header_chunk.body_start",
+            ))
+        },
+    )?;
     Ok(out.into())
 }
 
@@ -263,10 +278,16 @@ pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsValue> {
         let fh = FrameHeader::read_from(&chunk[pos..]).map_err(js_err)?;
         let total = match usize::try_from(fh.total_length) {
             Ok(t) => t,
-            Err(_) => return Err(JsValue::from(js_sys::Error::new("footer frame total_length exceeds usize"))),
+            Err(_) => {
+                return Err(JsValue::from(js_sys::Error::new(
+                    "footer frame total_length exceeds usize",
+                )));
+            }
         };
         if total < FRAME_HEADER_SIZE + FRAME_END.len() {
-            return Err(JsValue::from(js_sys::Error::new("footer frame total_length below minimum")));
+            return Err(JsValue::from(js_sys::Error::new(
+                "footer frame total_length below minimum",
+            )));
         }
         let frame_end = match pos.checked_add(total) {
             Some(e) if e <= chunk.len() => e,
@@ -274,7 +295,9 @@ pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsValue> {
         };
 
         if &chunk[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
-            return Err(JsValue::from(js_sys::Error::new("footer frame missing ENDF trailer")));
+            return Err(JsValue::from(js_sys::Error::new(
+                "footer frame missing ENDF trailer",
+            )));
         }
 
         let payload = &chunk[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];

@@ -349,8 +349,11 @@ impl StreamingEncoder {
         let inner = self.inner.as_mut().ok_or_else(already_finished)?;
         let desc: core::DataObjectDescriptor =
             serde_wasm_bindgen::from_value(descriptor_js).map_err(js_err_display)?;
-        let bytes = typed_array_or_u8_to_bytes(&data)
-            .ok_or_else(|| JsValue::from(js_sys::Error::new("data must be a TypedArray or Uint8Array")))?;
+        let bytes = typed_array_or_u8_to_bytes(&data).ok_or_else(|| {
+            JsValue::from(js_sys::Error::new(
+                "data must be a TypedArray or Uint8Array",
+            ))
+        })?;
         core_fn(inner, &desc, &bytes).map_err(js_err)
     }
 }

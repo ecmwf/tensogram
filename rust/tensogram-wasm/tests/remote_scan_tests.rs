@@ -17,7 +17,9 @@
 //!
 //! Run with: wasm-pack test --node rust/tensogram-wasm
 
-use tensogram::wire::{MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble, WIRE_VERSION};
+use tensogram::wire::{
+    MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble, WIRE_VERSION,
+};
 use tensogram_wasm::{
     parse_backward_postamble_outcome, parse_forward_preamble_outcome, same_message_check,
     validate_backward_preamble_outcome,
@@ -71,7 +73,12 @@ fn u64_field(obj: &js_sys::Object, key: &str) -> u64 {
         return n as u64;
     }
     let bi: js_sys::BigInt = v.dyn_into().expect("expected number or bigint");
-    bi.to_string(10).unwrap().as_string().unwrap().parse().unwrap()
+    bi.to_string(10)
+        .unwrap()
+        .as_string()
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 #[wasm_bindgen_test]

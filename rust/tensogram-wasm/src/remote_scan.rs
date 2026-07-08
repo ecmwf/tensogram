@@ -70,7 +70,11 @@ pub fn validate_backward_preamble_outcome(
     msg_start: u64,
     length: u64,
 ) -> Result<JsValue, JsValue> {
-    to_js(&validate_backward_preamble(preamble_bytes, msg_start, length))
+    to_js(&validate_backward_preamble(
+        preamble_bytes,
+        msg_start,
+        length,
+    ))
 }
 
 /// Parse a forward-preamble fetch and return its outcome.
@@ -92,7 +96,12 @@ pub fn parse_forward_preamble_outcome(
     file_size: u64,
     bound: u64,
 ) -> Result<JsValue, JsValue> {
-    to_js(&parse_forward_preamble(preamble_bytes, pos, file_size, bound))
+    to_js(&parse_forward_preamble(
+        preamble_bytes,
+        pos,
+        file_size,
+        bound,
+    ))
 }
 
 /// `true` iff a forward `Hit` and a backward-validated layout
