@@ -1,0 +1,7 @@
+# Pin the toolchain so `cargo fmt` / `cargo clippy` are deterministic across
+# developer machines and CI (rustup honours this file for every command run in
+# the repo, overriding a floating `stable`, which is what caused formatting to
+# drift between rustfmt versions).
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

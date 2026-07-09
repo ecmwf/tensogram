@@ -1,0 +1,15 @@
+# cargo-audit configuration.
+#
+# Advisories are ignored ONLY when no fix is available in our dependency graph
+# yet.  Each entry documents why and the condition to remove it.
+[advisories]
+ignore = [
+    # quick-xml DoS advisories, reached transitively through `object_store`
+    # (the `remote` feature's object-store XML parsing for S3/GCS/Azure).
+    # Fixed in quick-xml >= 0.41.0, but no released `object_store` depends on
+    # it yet — the latest, 0.14.0, still pins quick-xml ^0.40.1.  Exploitation
+    # requires a malicious object-store server feeding crafted XML.
+    # Remove both once `object_store` ships a release using quick-xml >= 0.41.
+    "RUSTSEC-2026-0194", # quadratic parse time on duplicate attribute names
+    "RUSTSEC-2026-0195", # unbounded namespace-declaration allocation
+]

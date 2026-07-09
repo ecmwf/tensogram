@@ -7,7 +7,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tensogram::{decode_object, DecodeOptions};
+use tensogram::{DecodeOptions, decode_object};
 
 fuzz_target!(|data: &[u8]| {
     // Derive an attacker-controlled object index from the first byte

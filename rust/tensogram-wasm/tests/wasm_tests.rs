@@ -81,7 +81,8 @@ fn make_descriptor_be(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
 }
 
 fn default_metadata() -> GlobalMetadata {
-    GlobalMetadata {        ..Default::default()
+    GlobalMetadata {
+        ..Default::default()
     }
 }
 
@@ -191,7 +192,7 @@ fn golden_mars_metadata_decode() {
         ),
     );
     let meta = GlobalMetadata {
-            base: vec![base_entry],
+        base: vec![base_entry],
         ..Default::default()
     };
     let desc = make_descriptor(vec![2, 3], Dtype::Float64);
@@ -743,7 +744,7 @@ fn decode_metadata_only() {
         ciborium::Value::Text("test".to_string()),
     );
     let meta = GlobalMetadata {
-            extra,
+        extra,
         ..Default::default()
     };
     let desc = make_descriptor(vec![100], Dtype::Float32);
@@ -1194,7 +1195,7 @@ fn streaming_metadata_accessor() {
         ciborium::Value::Text("stream-test".to_string()),
     );
     let meta = GlobalMetadata {
-            extra,
+        extra,
         ..Default::default()
     };
     let desc = make_descriptor(vec![1], Dtype::Uint8);
@@ -1264,7 +1265,8 @@ fn decode_single_element_tensor() {
 
 #[wasm_bindgen_test]
 fn decode_preserves_metadata_version() {
-    let meta = GlobalMetadata {        ..Default::default()
+    let meta = GlobalMetadata {
+        ..Default::default()
     };
     let desc = make_descriptor(vec![1], Dtype::Uint8);
     let msg = encode_native_no_hash(&meta, &[(&desc, &[0u8])]);
@@ -1284,7 +1286,7 @@ fn decode_large_metadata_survives() {
         );
     }
     let meta = GlobalMetadata {
-            extra,
+        extra,
         ..Default::default()
     };
     let desc = make_descriptor(vec![1], Dtype::Uint8);
@@ -1310,7 +1312,7 @@ fn decode_unicode_metadata_keys() {
         ciborium::Value::Text("earth".to_string()),
     );
     let meta = GlobalMetadata {
-            extra,
+        extra,
         ..Default::default()
     };
     let desc = make_descriptor(vec![1], Dtype::Uint8);
@@ -1567,7 +1569,7 @@ fn streaming_frame_base_entry_available() {
         ),
     );
     let meta = GlobalMetadata {
-            base: vec![base_entry],
+        base: vec![base_entry],
         ..Default::default()
     };
     let desc = make_descriptor(vec![1], Dtype::Uint8);
@@ -1597,7 +1599,7 @@ fn streaming_multi_object_base_entries() {
     );
 
     let meta = GlobalMetadata {
-            base: vec![base0, base1],
+        base: vec![base0, base1],
         ..Default::default()
     };
 
@@ -1659,7 +1661,10 @@ fn decode_verify_hash_true_errors_on_unhashed_message() {
     // verify_hash=true on a flag-clear frame must surface a
     // MissingHash error (TS routes this to `MissingHashError`).
     let result = tensogram_wasm::decode(&msg, None, Some(true));
-    assert!(result.is_err(), "expected error on verify_hash=true with unhashed message");
+    assert!(
+        result.is_err(),
+        "expected error on verify_hash=true with unhashed message"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1675,7 +1680,7 @@ fn metadata_extra_survives_round_trip() {
     );
     extra.insert("priority".to_string(), ciborium::Value::Integer(1.into()));
     let meta = GlobalMetadata {
-            extra,
+        extra,
         ..Default::default()
     };
     let desc = make_descriptor(vec![1], Dtype::Uint8);
@@ -1730,7 +1735,7 @@ fn metadata_deep_nested_mars_keys() {
     );
 
     let meta = GlobalMetadata {
-            base: vec![base_entry],
+        base: vec![base_entry],
         ..Default::default()
     };
     let desc = make_descriptor(vec![10], Dtype::Float32);
@@ -1748,7 +1753,7 @@ fn metadata_deep_nested_mars_keys() {
 fn metadata_empty_base_array() {
     // Message with zero base entries but one object
     let meta = GlobalMetadata {
-            base: vec![],
+        base: vec![],
         ..Default::default()
     };
     let desc = make_descriptor(vec![2], Dtype::Float32);

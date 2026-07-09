@@ -8,7 +8,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tensogram::{decode, DecodeOptions};
+use tensogram::{DecodeOptions, decode};
 
 fuzz_target!(|data: &[u8]| {
     // Default options exercise the common path (native byte order,

@@ -49,8 +49,13 @@ rust-clippy: ## Run clippy on Rust workspace
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo clippy -p tensogram --all-targets --features "remote,async" -- -D warnings
 
-rust-fmt: ## Check Rust formatting
+rust-fmt: ## Check Rust formatting (root workspace + the crates it excludes)
 	cargo fmt --check
+	cargo fmt --check --manifest-path rust/tensogram-grib/Cargo.toml
+	cargo fmt --check --manifest-path rust/tensogram-netcdf/Cargo.toml
+	cargo fmt --check --manifest-path rust/tensogram-wasm/Cargo.toml
+	cargo fmt --check --manifest-path python/bindings/Cargo.toml
+	cargo fmt --check --manifest-path fuzz/Cargo.toml
 
 rust-lint: rust-clippy rust-fmt ## Run all Rust lints (clippy + fmt)
 

@@ -791,12 +791,21 @@ fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
     // match would false-positive on dtype substrings like `f64`
     // appearing inside `float64`.
     const KNOWN_VARS: &[&str] = &[
-        "f64_with_nan", "i8", "i16", "i32", "i64",
-        "u8", "u16", "u32", "u64", "f32", "f64",
+        "f64_with_nan",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "f32",
+        "f64",
     ];
-    let names_a_variable = KNOWN_VARS.iter().any(|v| {
-        msg.contains(&format!("for {v},")) || msg.contains(&format!("for {v}:"))
-    });
+    let names_a_variable = KNOWN_VARS
+        .iter()
+        .any(|v| msg.contains(&format!("for {v},")) || msg.contains(&format!("for {v}:")));
     assert!(
         names_a_variable,
         "error must identify which variable triggered the failure \

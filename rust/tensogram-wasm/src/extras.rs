@@ -201,7 +201,8 @@ pub fn validate_buffer(
 ) -> Result<String, JsValue> {
     let options = parse_validate_options(level.as_deref(), check_canonical)?;
     let report = core::validate::validate_message(buf, &options);
-    serde_json::to_string(&report).map_err(|e| JsValue::from(js_sys::Error::new(&format!("encoding error: {e}"))))
+    serde_json::to_string(&report)
+        .map_err(|e| JsValue::from(js_sys::Error::new(&format!("encoding error: {e}"))))
 }
 
 fn parse_validate_options(

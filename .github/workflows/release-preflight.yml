@@ -114,7 +114,7 @@ jobs:
           echo "All versions match $EXPECTED"
 
       - name: cargo fmt
-        run: cargo fmt --check
+        run: make rust-fmt
 
       - name: cargo clippy
         run: |
