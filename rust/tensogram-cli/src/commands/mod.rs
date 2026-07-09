@@ -20,6 +20,10 @@ pub mod merge;
 pub mod reshuffle;
 pub mod set;
 pub mod split;
+#[cfg(feature = "grib")]
+pub mod to_grib;
+#[cfg(feature = "netcdf")]
+pub mod to_netcdf;
 pub mod validate;
 
 /// NaN / Inf mask-companion options collected from the global CLI

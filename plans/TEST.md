@@ -185,6 +185,35 @@ a one-line rationale comment (no mass suppression).
 - `tensogram validate --full` → all four levels pass on canonical
   fixtures; `--checksum` isolates hash-only failures.
 
+## Round-trip conversion testing (GRIB / NetCDF)
+
+GRIB and NetCDF round-trips are validated **in the source format, with that
+format's own tools** — never by comparing tensogram internals. The canonical
+flow (design: `plans/GRIB_NETCDF_ROUNDTRIP.md`):
+
+```
+tensogram convert-FORMAT in.FMT  -o mid.tgm
+tensogram to-FORMAT      mid.tgm -o out.FMT
+# compare in.FMT vs out.FMT with FORMAT-native tools
+```
+
+| Format | Native comparison | Assertion |
+|---|---|---|
+| GRIB | `grib_compare` (key + value compare, tolerance-aware; `-b` allows volatile keys) | keys equal; values within the reported abs/rel tolerance |
+| NetCDF | `nccmp -dmgf` when available, else an `ncdump -s` structural diff + a values compare via the netcdf crate | data + metadata equal; **classic**: MD5-identical as a bonus |
+
+The harness (`verify_roundtrip`) also records per-object **max-abs / max-rel
+error** and a metadata-exact diff; lossless paths must report zero error.
+These tests are gated on the `grib` / `netcdf` cargo features **and** on
+`libeccodes` / `libnetcdf`. GRIB comparison uses `grib_compare` (bundled with
+ecCodes); NetCDF uses `nccmp` when present and falls back to an `ncdump`-based
+comparison otherwise. When a required library is absent the round-trip suite is
+**skipped, not failed**.
+
+Fixtures must span the encoding matrix: GRIB `grid_simple` / `grid_ccsds` /
+`grid_ieee` / bitmap (+ `grid_jpeg` / `grid_complex` where available); NetCDF
+classic + nc4 + groups + coordinate variables + a **compressed** nc4 file.
+
 ## Golden test files
 
 Canonical `.tgm` files in `rust/tensogram/tests/golden/`:

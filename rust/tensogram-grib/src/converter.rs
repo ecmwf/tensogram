@@ -19,7 +19,9 @@ use tensogram::{DataPipeline, Dtype, EncodeOptions, encode};
 
 use crate::area::{RegularLlGeometry, compute_regular_ll_area};
 use crate::error::GribError;
-use crate::metadata::{GribKeySet, extract_all_namespace_keys, extract_mars_keys};
+use crate::metadata::{
+    GribKeySet, extract_all_namespace_keys, extract_mars_keys, extract_reconstruct_keys,
+};
 
 /// Options for GRIB → Tensogram conversion.
 #[derive(Debug, Clone)]
@@ -68,6 +70,9 @@ pub(crate) struct GribExtracted {
     /// Non-mars namespace keys (`{ ns → { key → value } }`).
     /// `None` when `preserve_all_keys` is disabled.
     pub(crate) grib_keys: Option<BTreeMap<String, BTreeMap<String, CborValue>>>,
+    /// Flat key-set needed to rebuild the message on `to-grib` export.
+    /// Always captured (independent of `preserve_all_keys`).
+    pub(crate) reconstruct_keys: BTreeMap<String, CborValue>,
 }
 
 /// Convert all GRIB messages from a file path into Tensogram wire bytes.
@@ -185,6 +190,9 @@ fn extract_messages<D: Debug>(
             None
         };
 
+        // Always capture the key-set needed to rebuild the message on export.
+        let reconstruct_keys = extract_reconstruct_keys(&mut msg)?;
+
         let ni: i64 = msg.read_key("Ni").unwrap_or(0);
         let nj: i64 = msg.read_key("Nj").unwrap_or(0);
         let shape =
@@ -205,6 +213,7 @@ fn extract_messages<D: Debug>(
             values,
             shape,
             grib_keys,
+            reconstruct_keys,
         });
     }
     Ok(grib_messages)
@@ -250,6 +259,12 @@ fn convert_one_to_one(
         {
             entry.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
         }
+        if !msg.reconstruct_keys.is_empty() {
+            entry.insert(
+                "grib_repro".to_string(),
+                btree_to_cbor_map(&msg.reconstruct_keys),
+            );
+        }
 
         let global_meta = GlobalMetadata {
             base: vec![entry],
@@ -287,6 +302,12 @@ fn convert_merge_all(
                 && !grib.is_empty()
             {
                 entry.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
+            }
+            if !msg.reconstruct_keys.is_empty() {
+                entry.insert(
+                    "grib_repro".to_string(),
+                    btree_to_cbor_map(&msg.reconstruct_keys),
+                );
             }
             entry
         })

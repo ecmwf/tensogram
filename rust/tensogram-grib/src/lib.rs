@@ -9,8 +9,8 @@
 //! GRIB to Tensogram format importer.
 //!
 //! Uses ECMWF's ecCodes library (via the `eccodes` Rust crate) to read GRIB
-//! messages and convert them to Tensogram wire format. One-way only
-//! (GRIB → Tensogram).
+//! messages and convert them to Tensogram wire format ([`convert_grib_file`])
+//! and to reconstruct GRIB from a Tensogram message ([`to_grib`]).
 //!
 //! # System requirement
 //!
@@ -23,10 +23,12 @@
 mod area;
 pub mod converter;
 pub mod error;
+pub mod export;
 pub mod metadata;
 
 pub use converter::{ConvertOptions, Grouping, convert_grib_buffer, convert_grib_file};
 pub use error::GribError;
+pub use export::to_grib;
 // `DataPipeline` lives in `tensogram::pipeline` — both GRIB and
 // NetCDF importers share the same type so they cannot drift. Re-export
 // it here so existing `use tensogram_grib::DataPipeline` callers keep

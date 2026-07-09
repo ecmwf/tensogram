@@ -18,7 +18,10 @@ use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 use tensogram::{DataPipeline, Dtype, encode};
 
 use crate::error::NetcdfError;
-use crate::metadata::{attr_value_to_cbor, extract_cf_attrs, extract_var_attrs};
+use crate::metadata::{
+    attr_value_to_cbor, attr_value_type_tag, extract_cf_attrs, extract_var_attr_types,
+    extract_var_attrs,
+};
 
 /// How to group NetCDF variables into Tensogram messages.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -30,6 +33,12 @@ pub enum SplitBy {
     Variable,
     /// Split along the unlimited (record) dimension — one message per record.
     /// Errors if the file has no unlimited dimension.
+    ///
+    /// Unlike `File` / `Variable`, this preserves each variable's *native*
+    /// on-disk dtype and attributes: CF `scale_factor` / `add_offset` unpacking
+    /// is not applied per record, so a packed variable stays packed (short/int)
+    /// with its packing attributes intact — the record slices remain compact and
+    /// self-describing rather than widening to `f64`.
     Record,
 }
 
@@ -130,6 +139,8 @@ pub fn convert_netcdf_file(
     }
 
     let global_attrs = extract_global_attrs(&file);
+    let global_attr_types = extract_global_attr_types(&file);
+    let file_meta = build_file_meta(&file);
 
     let mut extracted: Vec<ExtractedVar> = Vec::new();
 
@@ -137,7 +148,15 @@ pub fn convert_netcdf_file(
         let var_name = var.name();
         let vartype = var.vartype();
         push_extracted_or_warn(
-            extract_variable(&var, &var_name, &vartype, options, &global_attrs),
+            extract_variable(
+                &var,
+                &var_name,
+                &vartype,
+                options,
+                &global_attrs,
+                &global_attr_types,
+                &file_meta,
+            ),
             &mut extracted,
         )?;
     }
@@ -146,16 +165,49 @@ pub fn convert_netcdf_file(
         return Err(NetcdfError::NoVariables);
     }
 
+    let encode_options = effective_encode_options(&options.encode_options);
     match options.split_by {
-        SplitBy::File => {
-            encode_as_one_message(&extracted, &options.encode_options, &options.pipeline)
-        }
+        SplitBy::File => encode_as_one_message(&extracted, &encode_options, &options.pipeline),
         SplitBy::Variable => {
-            encode_one_per_variable(&extracted, &options.encode_options, &options.pipeline)
+            encode_one_per_variable(&extracted, &encode_options, &options.pipeline)
         }
         SplitBy::Record => encode_by_record(path, options, &file_path_str),
     }
 }
+
+/// The encode options actually used for NetCDF data.
+///
+/// NetCDF's data model maps fill / missing values — and any genuinely stored
+/// NaNs — to `f64::NAN` (see [`read_and_unpack`]).  The Tensogram encoder
+/// rejects non-finite values unless `allow_nan` is set, so force it on: NaNs are
+/// substituted with `0.0` and their positions recorded in a companion mask,
+/// which `decode` restores on the way back out.  Finite data is unaffected (no
+/// mask is emitted), so byte-for-byte output is unchanged when no NaN is present.
+fn effective_encode_options(base: &tensogram::EncodeOptions) -> tensogram::EncodeOptions {
+    let mut o = base.clone();
+    o.allow_nan = true;
+    o
+}
+
+/// CF attributes that describe the *packed* on-disk representation.  Once a
+/// variable is unpacked to physical `f64` values by [`read_and_unpack`], these
+/// no longer apply and are dropped from the captured metadata (see
+/// [`extract_variable`]).
+///
+/// Besides `scale_factor` / `add_offset` (which would double-unpack) and
+/// `_FillValue` / `missing_value` (packed-typed, and a packed `_FillValue` on an
+/// f64 variable is a write error), CF specifies that `valid_min` / `valid_max` /
+/// `valid_range` share the *packed* data type — so they are stale in physical
+/// units too and are dropped alongside the rest.
+const CF_PACKING_ATTRS: &[&str] = &[
+    "scale_factor",
+    "add_offset",
+    "_FillValue",
+    "missing_value",
+    "valid_min",
+    "valid_max",
+    "valid_range",
+];
 
 fn extract_variable(
     var: &netcdf::Variable<'_>,
@@ -163,11 +215,14 @@ fn extract_variable(
     vartype: &NcVariableType,
     options: &ConvertOptions,
     global_attrs: &BTreeMap<String, CborValue>,
+    global_attr_types: &BTreeMap<String, CborValue>,
+    file_meta: &CborValue,
 ) -> Result<ExtractedVar, NetcdfError> {
     reject_unsupported_vartype(var_name, vartype)?;
 
     let dims = var.dimensions();
     let shape: Vec<u64> = dims.iter().map(|d| d.len() as u64).collect();
+    let dim_names: Vec<CborValue> = dims.iter().map(|d| CborValue::Text(d.name())).collect();
 
     let has_scale = var.attribute("scale_factor").is_some();
     let has_offset = var.attribute("add_offset").is_some();
@@ -183,9 +238,35 @@ fn extract_variable(
     };
 
     let mut netcdf_meta = extract_var_attrs(var);
+    let mut attr_types = extract_var_attr_types(var);
+
+    // An unpacked variable holds physical f64 values, so the CF packing
+    // attributes that described its packed integer form must not travel with it:
+    // a CF reader would otherwise re-apply the scale to already-unpacked data,
+    // and a packed-type `_FillValue` written onto the f64 variable is a NetCDF
+    // type error.  Missing values survive as NaN in the data itself.
+    if needs_unpack {
+        for key in CF_PACKING_ATTRS {
+            netcdf_meta.remove(*key);
+            attr_types.remove(*key);
+        }
+    }
+
+    netcdf_meta.insert("_dims".to_string(), CborValue::Array(dim_names));
+    netcdf_meta.insert("_file".to_string(), file_meta.clone());
+
+    if !attr_types.is_empty() {
+        netcdf_meta.insert("_attr_types".to_string(), cbor_map_from(&attr_types));
+    }
 
     if !global_attrs.is_empty() {
         netcdf_meta.insert("_global".to_string(), cbor_map_from(global_attrs));
+        if !global_attr_types.is_empty() {
+            netcdf_meta.insert(
+                "_global_types".to_string(),
+                cbor_map_from(global_attr_types),
+            );
+        }
     }
 
     let cf_meta = options.cf.then(|| extract_cf_attrs(var));
@@ -311,6 +392,36 @@ fn get_f64_attr(var: &netcdf::Variable<'_>, name: &str) -> Option<f64> {
     }
 }
 
+/// Build the file-level structure map (`{ dims: [{name,len,unlimited}] }`)
+/// stored under `base[i]["netcdf"]["_file"]`. Consumed by the `to-netcdf`
+/// exporter to recreate the dimension registry. See
+/// `plans/GRIB_NETCDF_ROUNDTRIP.md`.
+fn build_file_meta(file: &netcdf::File) -> CborValue {
+    let dims: Vec<CborValue> = file
+        .dimensions()
+        .map(|d| {
+            CborValue::Map(vec![
+                (
+                    CborValue::Text("name".to_string()),
+                    CborValue::Text(d.name()),
+                ),
+                (
+                    CborValue::Text("len".to_string()),
+                    CborValue::Integer((d.len() as i64).into()),
+                ),
+                (
+                    CborValue::Text("unlimited".to_string()),
+                    CborValue::Bool(d.is_unlimited()),
+                ),
+            ])
+        })
+        .collect();
+    CborValue::Map(vec![(
+        CborValue::Text("dims".to_string()),
+        CborValue::Array(dims),
+    )])
+}
+
 /// Extract every file-level (global) attribute as a CBOR map.
 ///
 /// Mirrors [`metadata::extract_var_attrs`]: unreadable attributes
@@ -326,6 +437,22 @@ fn extract_global_attrs(file: &netcdf::File) -> BTreeMap<String, CborValue> {
             Err(e) => {
                 eprintln!("warning: failed to read global attribute '{name}': {e}");
             }
+        }
+    }
+    map
+}
+
+/// Extract a `name → type-tag` map for the file-level (global) attributes,
+/// mirroring [`metadata::extract_var_attr_types`] for variables.  Stored under
+/// `_global_types` so the exporter can restore exact global-attribute types.
+fn extract_global_attr_types(file: &netcdf::File) -> BTreeMap<String, CborValue> {
+    let mut map = BTreeMap::new();
+    for attr in file.attributes() {
+        if let Ok(val) = attr.value() {
+            map.insert(
+                attr.name().to_string(),
+                CborValue::Text(attr_value_type_tag(&val).to_string()),
+            );
         }
     }
     map
@@ -471,6 +598,14 @@ fn encode_by_record(
     }
 
     let global_attrs = extract_global_attrs(&file);
+    let global_attr_types = extract_global_attr_types(&file);
+    let file_meta = build_file_meta(&file);
+    let ctx = VarCtx {
+        options,
+        global_attrs: &global_attrs,
+        global_attr_types: &global_attr_types,
+        file_meta: &file_meta,
+    };
 
     let mut results = Vec::with_capacity(record_count);
 
@@ -486,7 +621,15 @@ fn encode_by_record(
 
             if !has_unlimited {
                 push_extracted_or_warn(
-                    extract_variable(&var, &var_name, &vartype, options, &global_attrs),
+                    extract_variable(
+                        &var,
+                        &var_name,
+                        &vartype,
+                        options,
+                        &global_attrs,
+                        &global_attr_types,
+                        &file_meta,
+                    ),
                     &mut extracted,
                 )?;
                 continue;
@@ -497,8 +640,7 @@ fn encode_by_record(
                     &var,
                     &var_name,
                     &vartype,
-                    options,
-                    &global_attrs,
+                    &ctx,
                     record_idx,
                     &unlimited_name,
                 ),
@@ -507,8 +649,8 @@ fn encode_by_record(
         }
 
         if !extracted.is_empty() {
-            let msgs =
-                encode_as_one_message(&extracted, &options.encode_options, &options.pipeline)?;
+            let encode_options = effective_encode_options(&options.encode_options);
+            let msgs = encode_as_one_message(&extracted, &encode_options, &options.pipeline)?;
             results.extend(msgs);
         }
     }
@@ -516,12 +658,20 @@ fn encode_by_record(
     Ok(results)
 }
 
+/// Shared per-file context threaded into the record extractor, keeping its
+/// argument list small.
+struct VarCtx<'a> {
+    options: &'a ConvertOptions,
+    global_attrs: &'a BTreeMap<String, CborValue>,
+    global_attr_types: &'a BTreeMap<String, CborValue>,
+    file_meta: &'a CborValue,
+}
+
 fn extract_variable_record(
     var: &netcdf::Variable<'_>,
     var_name: &str,
     vartype: &NcVariableType,
-    options: &ConvertOptions,
-    global_attrs: &BTreeMap<String, CborValue>,
+    ctx: &VarCtx<'_>,
     record_idx: usize,
     unlimited_name: &str,
 ) -> Result<ExtractedVar, NetcdfError> {
@@ -532,6 +682,12 @@ fn extract_variable_record(
         .iter()
         .filter(|d| d.name() != unlimited_name)
         .map(|d| d.len() as u64)
+        .collect();
+    // Per-record objects drop the unlimited dimension from their shape.
+    let dim_names: Vec<CborValue> = dims
+        .iter()
+        .filter(|d| d.name() != unlimited_name)
+        .map(|d| CborValue::Text(d.name()))
         .collect();
 
     // Invariant: encode_by_record only calls us with variables that
@@ -553,16 +709,29 @@ fn extract_variable_record(
     let (dtype, data_bytes) = read_native_extents(var, var_name, vartype, &extents)?;
 
     let mut netcdf_meta = extract_var_attrs(var);
+    netcdf_meta.insert("_dims".to_string(), CborValue::Array(dim_names));
+    netcdf_meta.insert("_file".to_string(), ctx.file_meta.clone());
     netcdf_meta.insert(
         "record_index".to_string(),
         CborValue::Integer((record_idx as i64).into()),
     );
 
-    if !global_attrs.is_empty() {
-        netcdf_meta.insert("_global".to_string(), cbor_map_from(global_attrs));
+    let attr_types = extract_var_attr_types(var);
+    if !attr_types.is_empty() {
+        netcdf_meta.insert("_attr_types".to_string(), cbor_map_from(&attr_types));
     }
 
-    let cf_meta = options.cf.then(|| extract_cf_attrs(var));
+    if !ctx.global_attrs.is_empty() {
+        netcdf_meta.insert("_global".to_string(), cbor_map_from(ctx.global_attrs));
+        if !ctx.global_attr_types.is_empty() {
+            netcdf_meta.insert(
+                "_global_types".to_string(),
+                cbor_map_from(ctx.global_attr_types),
+            );
+        }
+    }
+
+    let cf_meta = ctx.options.cf.then(|| extract_cf_attrs(var));
     let base_entry = build_base_entry(var_name, &netcdf_meta, cf_meta.as_ref());
 
     Ok(ExtractedVar {

@@ -232,6 +232,88 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
     - similarly to torch, conveninece methods for tensogram as/from mlx frame, to avoid the numpy intermediary
 
 
+## GRIB & NetCDF Round-Trip
+
+Make `tensogram-grib` / `tensogram-netcdf` reversible: import **and** export
+with measured fidelity. Full design in `plans/GRIB_NETCDF_ROUNDTRIP.md`; test
+methodology in `plans/TEST.md` ("Round-trip conversion testing"). Clean-design
+rule: all GRIB / NetCDF code stays in those crates; the core stays
+format-agnostic; export is exposed only through feature-gated `to-grib` /
+`to-netcdf` CLI subcommands. Two parallel workstreams on a shared harness.
+
+- [ ] **shared — round-trip harness**: fidelity report types (max abs / max
+  rel error + metadata diff), `verify_roundtrip`, and the
+  `convert-FORMAT → to-FORMAT → native-tool compare` test scaffold
+  (`grib_compare`, `nccmp`).
+- [ ] **grib — full key capture**: capture the complete reconstruct key-set
+  (stop dropping arrays / `Bytes` / local sections), bitmap/missing values,
+  and packing params; keep the origin codec (`grid_simple`→`simple_packing`,
+  `grid_ccsds`→`szip`, `grid_ieee`→`none`), lossless default + warning else.
+- [ ] **grib — `to-grib` export**: reconstruct messages from captured keys via
+  an ecCodes sample clone + `write_key_unchecked` + values; new feature-gated
+  `tensogram to-grib` subcommand mirroring `convert-grib`.
+- [ ] **grib — spike/hardening**: `packingType`-set onto a sample (esp.
+  `grid_ccsds`), product-template / local-section / bitmap key ordering,
+  end-to-end with injected values (residual risks #1–2 in the design doc).
+- [ ] **netcdf — full structural capture**: dims + coordinate variables +
+  groups + exact attribute types + per-var storage (endianness, chunking,
+  compression state); native dtype preserved, CF scale/offset unpacked to f64.
+- [ ] **netcdf — `to-netcdf` export**: reconstruct via the **safe** `netcdf`
+  crate (no `netcdf-sys` FFI); classic targets byte-identical, nc4 best-effort;
+  new feature-gated `tensogram to-netcdf` subcommand mirroring `convert-netcdf`.
+- [ ] **fixtures**: source GRIB `grid_simple` / `grid_ieee` / bitmap (+ jpeg /
+  complex if available) and a compressed NetCDF-4 (deflate + shuffle + chunk)
+  fixture — the shipped set under-covers the encoding matrix.
+
+### Progress (branch `feat/grib-netcdf-roundtrip`, PR #147)
+
+Landed and green (full suite + clippy + fmt on each crate):
+
+- [x] **grib import/export + CLI**: keep arrays / local-section Bytes; capture
+  reconstruct key-set into `base[i].grib_repro`; `to_grib` clones an ecCodes
+  sample, sets keys + values, re-emits.  `to-grib` CLI subcommand + e2e.
+- [x] **grib round-trip lossless**: `grid_simple` / `grid_ieee` / `grid_ccsds`
+  value round-trip `max_abs=0` (real ECMWF CCSDS field carries losslessly).
+- [x] **grib full `grib_compare`**: identification + ECMWF local section
+  (`setLocalDefinition` trigger → section 2, `grib2LocalSectionNumber`,
+  `marsClass/marsType/marsStream/experimentVersionNumber`) reconstructed; all
+  keys clean on `2t.grib2` (test skips when `grib_compare` absent).
+- [x] **netcdf import/export + CLI**: dim registry `_file` + per-var `_dims`;
+  `to_netcdf` rebuilds via the safe crate; classic round-trip byte-equal;
+  `to-netcdf` CLI subcommand + ncdump e2e.
+- [x] **netcdf exact attribute types**: `_attr_types` / `_global_types` sidecar
+  restores float-vs-double, short/int/byte-vs-int64, etc. exactly.
+
+Next (needs a design call — see below):
+
+- [ ] **netcdf groups**: importer is intentionally root-only today and there
+  are tests asserting that contract (`n_warns_and_converts_root_only`, CLI
+  `convert_n_root_only`).  Supporting groups (`nc4_groups.nc`: root `n` + group
+  `forecast` with its own `n`) is a behaviour change — recursive extraction,
+  per-group dim scoping, group-path capture (`_group`), and `add_group` on
+  export — that updates those tests and the "root-only" doc contract.
+- [x] **netcdf NaN masks**: the converter now encodes with `allow_nan` so NaNs
+  (genuine stored NaNs and fill/missing → NaN from unpacking) are recorded in a
+  companion mask and restored by `decode`; `multi_dtype.nc` round-trips
+  `ncdump`-identical (all dtypes + scalar + NaN).  Finite data is unaffected.
+- [x] **python parity for `to-grib` / `to-netcdf`**: PyO3 wrappers added —
+  `tensogram.to_grib(messages: list[bytes]) -> bytes` (concatenates the
+  reconstructed GRIB) and `tensogram.to_netcdf(messages: list[bytes], path)`
+  (reassembles every message into one file), both feature-gated with the same
+  stub/error-mapping convention as `convert_*`.  Multi-message by design.
+  Validated by `python/tests/test_reconstruct.py` (round-trip via tensogram's
+  own converters, no `netCDF4` dependency).  (C FFI / C++ expose neither the
+  import nor the export side, so they remain consistent.)
+- [x] **`to_netcdf` library-level atomicity**: `to_netcdf` /
+  `to_netcdf_messages` write to a sibling temp file and `rename` into place on
+  success, so a failure never leaves a partial `.nc` and never clobbers an
+  existing target.  The CLI no longer needs manual cleanup.
+- [ ] **repo-wide rustfmt skew**: diagnosed in `plans/RUSTFMT_SKEW.md`
+  (edition-2024 crates + floating stable rustfmt → mixed 2021/2024 formatting).
+  Recommended fix (Proposal C: pin toolchain + one-time `cargo fmt --all`) must
+  land as its own PR on `main`, not on a feature branch.
+
+
 ## Documentation
 
 - [ ] interactive-docs:

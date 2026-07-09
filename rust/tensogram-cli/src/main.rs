@@ -252,6 +252,26 @@ enum Commands {
         #[command(flatten)]
         pipeline: PipelineArgs,
     },
+    /// Reconstruct GRIB from a Tensogram file (reverse of convert-grib; requires ecCodes)
+    #[cfg(feature = "grib")]
+    ToGrib {
+        /// Input .tgm file (produced by convert-grib)
+        #[arg(required = true)]
+        input: String,
+        /// Output GRIB file (omit for stdout)
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+    },
+    /// Reconstruct NetCDF from a Tensogram file (reverse of convert-netcdf; requires libnetcdf)
+    #[cfg(feature = "netcdf")]
+    ToNetcdf {
+        /// Input .tgm file (produced by convert-netcdf)
+        #[arg(required = true)]
+        input: String,
+        /// Output NetCDF file
+        #[arg(short = 'o', long, required = true)]
+        output: String,
+    },
 }
 
 fn main() {
@@ -375,6 +395,10 @@ fn main() {
             threads,
             &mask_cli,
         ),
+        #[cfg(feature = "grib")]
+        Commands::ToGrib { input, output } => commands::to_grib::run(&input, output.as_deref()),
+        #[cfg(feature = "netcdf")]
+        Commands::ToNetcdf { input, output } => commands::to_netcdf::run(&input, &output),
         Commands::Doctor { json } => commands::doctor::run(json),
     };
 

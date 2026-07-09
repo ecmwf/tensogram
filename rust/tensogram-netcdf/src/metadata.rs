@@ -36,7 +36,8 @@ pub(crate) const CF_ATTRIBUTES: &[&str] = &[
 /// `netcdf` crate currently exposes, so adding a new variant upstream
 /// will produce a compile error here rather than silently dropping
 /// data. Numeric scalars are widened to `i64` / `f64` to fit CBOR's
-/// integer and float types.
+/// integer and float types; the exact on-disk type is preserved
+/// separately by [`attr_value_type_tag`] and restored on export.
 pub(crate) fn attr_value_to_cbor(val: &AttributeValue) -> CborValue {
     match val {
         AttributeValue::Str(s) => CborValue::Text(s.clone()),
@@ -96,6 +97,47 @@ pub(crate) fn attr_value_to_cbor(val: &AttributeValue) -> CborValue {
                 .collect(),
         ),
     }
+}
+
+/// The NetCDF type tag for an attribute value, e.g. `"float"`, `"int"`,
+/// `"short"`.  Stored alongside the (widened) CBOR value so the exporter can
+/// reconstruct the *exact* on-disk attribute type instead of the widened
+/// `double` / `int64` that [`attr_value_to_cbor`] produces.  Scalars and their
+/// array counterparts share a tag — the array-ness is recovered from the CBOR
+/// value shape.
+///
+/// Exhaustive over `AttributeValue` for the same forward-compat reason as
+/// [`attr_value_to_cbor`].
+pub(crate) fn attr_value_type_tag(val: &AttributeValue) -> &'static str {
+    match val {
+        AttributeValue::Str(_) | AttributeValue::Strs(_) => "string",
+        AttributeValue::Double(_) | AttributeValue::Doubles(_) => "double",
+        AttributeValue::Float(_) | AttributeValue::Floats(_) => "float",
+        AttributeValue::Int(_) | AttributeValue::Ints(_) => "int",
+        AttributeValue::Uint(_) | AttributeValue::Uints(_) => "uint",
+        AttributeValue::Short(_) | AttributeValue::Shorts(_) => "short",
+        AttributeValue::Ushort(_) | AttributeValue::Ushorts(_) => "ushort",
+        AttributeValue::Longlong(_) | AttributeValue::Longlongs(_) => "int64",
+        AttributeValue::Ulonglong(_) | AttributeValue::Ulonglongs(_) => "uint64",
+        AttributeValue::Schar(_) | AttributeValue::Schars(_) => "byte",
+        AttributeValue::Uchar(_) | AttributeValue::Uchars(_) => "ubyte",
+    }
+}
+
+/// Extract a `name → type-tag` map for every attribute of `var` (see
+/// [`attr_value_type_tag`]).  Stored under the internal `_attr_types` key so
+/// [`crate::to_netcdf`] can restore exact attribute types.
+pub(crate) fn extract_var_attr_types(var: &netcdf::Variable<'_>) -> BTreeMap<String, CborValue> {
+    let mut map = BTreeMap::new();
+    for attr in var.attributes() {
+        if let Ok(val) = attr.value() {
+            map.insert(
+                attr.name().to_string(),
+                CborValue::Text(attr_value_type_tag(&val).to_string()),
+            );
+        }
+    }
+    map
 }
 
 /// Extract every variable attribute as a CBOR map.
@@ -404,6 +446,39 @@ mod tests {
         expect_int(&arr[0], 0);
         expect_int(&arr[1], 128);
         expect_int(&arr[2], 255);
+    }
+
+    // ── Type tags (exhaustive, forward-compat guard) ───────────────────
+    #[test]
+    fn attr_value_type_tags_cover_every_variant() {
+        use AttributeValue::*;
+        let cases: &[(AttributeValue, &str)] = &[
+            (Str("x".into()), "string"),
+            (Strs(vec!["a".into()]), "string"),
+            (Double(1.0), "double"),
+            (Doubles(vec![1.0]), "double"),
+            (Float(1.0), "float"),
+            (Floats(vec![1.0]), "float"),
+            (Int(1), "int"),
+            (Ints(vec![1]), "int"),
+            (Uint(1), "uint"),
+            (Uints(vec![1]), "uint"),
+            (Short(1), "short"),
+            (Shorts(vec![1]), "short"),
+            (Ushort(1), "ushort"),
+            (Ushorts(vec![1]), "ushort"),
+            (Longlong(1), "int64"),
+            (Longlongs(vec![1]), "int64"),
+            (Ulonglong(1), "uint64"),
+            (Ulonglongs(vec![1]), "uint64"),
+            (Schar(1), "byte"),
+            (Schars(vec![1]), "byte"),
+            (Uchar(1), "ubyte"),
+            (Uchars(vec![1]), "ubyte"),
+        ];
+        for (val, want) in cases {
+            assert_eq!(attr_value_type_tag(val), *want, "tag for {val:?}");
+        }
     }
 
     // ── CF allow-list membership ───────────────────────────────────────
