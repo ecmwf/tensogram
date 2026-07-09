@@ -60,7 +60,7 @@ class TestBytesInput:
         data = ekd.from_source("tensogram", mars_tensogram_bytes)
         fl = data.to_fieldlist()
         assert len(fl) == 2
-        params = sorted(f.metadata("param") for f in fl)
+        params = sorted(f.get("labels.mars")["param"] for f in fl)
         assert params == ["2t", "tp"]
 
     def test_bytes_nonmars_to_fieldlist_raises(self, nonmars_tensogram_bytes) -> None:
@@ -87,5 +87,5 @@ class TestBytesMatchesFileParity:
         bytes_fl = ekd.from_source("tensogram", mars_tensogram_bytes).to_fieldlist()
         assert len(file_fl) == len(bytes_fl)
         for ff, bf in zip(file_fl, bytes_fl, strict=True):
-            assert ff.metadata("param") == bf.metadata("param")
+            assert ff.get("labels.mars")["param"] == bf.get("labels.mars")["param"]
             np.testing.assert_array_equal(ff.to_numpy(), bf.to_numpy())

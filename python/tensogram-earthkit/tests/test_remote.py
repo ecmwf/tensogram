@@ -153,7 +153,7 @@ class TestRemoteMars:
         data = ekd.from_source("tensogram", http_server_mars)
         fl = data.to_fieldlist()
         assert len(fl) == 2
-        params = sorted(f.metadata("param") for f in fl)
+        params = sorted(f.get("labels.mars")["param"] for f in fl)
         assert params == ["2t", "tp"]
 
     def test_remote_mars_matches_local(self, http_server_mars, mars_tensogram_file) -> None:
@@ -161,7 +161,7 @@ class TestRemoteMars:
         fl_local = ekd.from_source("tensogram", str(mars_tensogram_file)).to_fieldlist()
         assert len(fl_remote) == len(fl_local)
         for remote, local in zip(fl_remote, fl_local, strict=True):
-            assert remote.metadata("param") == local.metadata("param")
+            assert remote.get("labels.mars")["param"] == local.get("labels.mars")["param"]
             np.testing.assert_array_equal(remote.to_numpy(), local.to_numpy())
 
 

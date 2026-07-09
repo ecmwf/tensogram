@@ -43,38 +43,99 @@ def _write_synthetic_mars_tgm(path: Path) -> None:
     field_tp = np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(4, 6)
 
     descriptors = [
-        {"type": "ntensor", "dtype": "float32", "ndim": 1, "shape": [4],
-         "strides": [1], "encoding": "none", "filter": "none", "compression": "none"},
-        {"type": "ntensor", "dtype": "float32", "ndim": 1, "shape": [6],
-         "strides": [1], "encoding": "none", "filter": "none", "compression": "none"},
-        {"type": "ntensor", "dtype": "float32", "ndim": 2, "shape": [4, 6],
-         "strides": [6, 1], "encoding": "none", "filter": "none", "compression": "none"},
-        {"type": "ntensor", "dtype": "float32", "ndim": 2, "shape": [4, 6],
-         "strides": [6, 1], "encoding": "none", "filter": "none", "compression": "none"},
+        {
+            "type": "ntensor",
+            "dtype": "float32",
+            "ndim": 1,
+            "shape": [4],
+            "strides": [1],
+            "encoding": "none",
+            "filter": "none",
+            "compression": "none",
+        },
+        {
+            "type": "ntensor",
+            "dtype": "float32",
+            "ndim": 1,
+            "shape": [6],
+            "strides": [1],
+            "encoding": "none",
+            "filter": "none",
+            "compression": "none",
+        },
+        {
+            "type": "ntensor",
+            "dtype": "float32",
+            "ndim": 2,
+            "shape": [4, 6],
+            "strides": [6, 1],
+            "encoding": "none",
+            "filter": "none",
+            "compression": "none",
+        },
+        {
+            "type": "ntensor",
+            "dtype": "float32",
+            "ndim": 2,
+            "shape": [4, 6],
+            "strides": [6, 1],
+            "encoding": "none",
+            "filter": "none",
+            "compression": "none",
+        },
     ]
     base = [
         {"name": "latitude"},
         {"name": "longitude"},
-        {"mars": {"class": "od", "type": "fc", "param": "2t",
-                  "date": "2025-01-01", "time": "0000", "step": 0, "levtype": "sfc"}},
-        {"mars": {"class": "od", "type": "fc", "param": "tp",
-                  "date": "2025-01-01", "time": "0000", "step": 6, "levtype": "sfc"}},
+        {
+            "mars": {
+                "class": "od",
+                "type": "fc",
+                "param": "2t",
+                "date": "2025-01-01",
+                "time": "0000",
+                "step": 0,
+                "levtype": "sfc",
+            }
+        },
+        {
+            "mars": {
+                "class": "od",
+                "type": "fc",
+                "param": "tp",
+                "date": "2025-01-01",
+                "time": "0000",
+                "step": 6,
+                "levtype": "sfc",
+            }
+        },
     ]
     meta = {"base": base, "_extra_": {"title": "demo MARS tensogram"}}
     objects = [
-        (descriptors[0], lat), (descriptors[1], lon),
-        (descriptors[2], field_2t), (descriptors[3], field_tp),
+        (descriptors[0], lat),
+        (descriptors[1], lon),
+        (descriptors[2], field_2t),
+        (descriptors[3], field_tp),
     ]
     path.write_bytes(tensogram.encode(meta, objects))
 
 
 def _write_synthetic_nonmars_tgm(path: Path) -> None:
     arr = np.arange(24, dtype=np.float64).reshape(2, 3, 4)
-    desc = {"type": "ntensor", "dtype": "float64", "ndim": 3,
-            "shape": [2, 3, 4], "strides": [12, 4, 1],
-            "encoding": "none", "filter": "none", "compression": "none"}
-    meta = {"base": [{"name": "generic_cube"}],
-            "_extra_": {"title": "demo non-MARS tensogram"}}
+    desc = {
+        "type": "ntensor",
+        "dtype": "float64",
+        "ndim": 3,
+        "shape": [2, 3, 4],
+        "strides": [12, 4, 1],
+        "encoding": "none",
+        "filter": "none",
+        "compression": "none",
+    }
+    meta = {
+        "base": [{"name": "generic_cube"}],
+        "_extra_": {"title": "demo non-MARS tensogram"},
+    }
     path.write_bytes(tensogram.encode(meta, [(desc, arr)]))
 
 
@@ -96,11 +157,11 @@ def main() -> None:
         fl = data.to_fieldlist()
         print(f"fields: {len(fl)}")
         for f in fl:
-            print(f"  param={f.metadata('param')!r} "
-                  f"step={f.metadata('step')!r} shape={f.shape}")
+            mars = f.get("labels.mars")
+            print(f"  param={mars['param']!r} step={mars['step']!r} shape={f.shape}")
 
         print("\n--- 3. Select by MARS param ---")
-        subset = fl.sel(param="2t")
+        subset = fl.sel(**{"parameter.variable": "2t"})
         print(f"2t fields: {len(subset)}")
 
         # 4. Delegate to_xarray to tensogram-xarray

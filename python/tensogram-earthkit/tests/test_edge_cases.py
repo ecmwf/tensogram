@@ -92,22 +92,23 @@ class TestEncodedData:
         ed.to_file(buf)
         assert buf.getvalue() == b"bytes"
 
-    def test_metadata_no_key_returns_copy(self) -> None:
+    def test_get_no_key_returns_copy(self) -> None:
         ed = TensogramEncodedData(b"x", metadata={"a": 1, "b": 2})
-        meta = ed.metadata()
+        meta = ed.get()
         assert meta == {"a": 1, "b": 2}
         # Returned dict is a copy, not the internal one.
         meta["a"] = 999
-        assert ed.metadata() == {"a": 1, "b": 2}
+        assert ed.get() == {"a": 1, "b": 2}
 
-    def test_metadata_with_key(self) -> None:
+    def test_get_with_key(self) -> None:
         ed = TensogramEncodedData(b"x", metadata={"a": 1, "b": 2})
-        assert ed.metadata("a") == 1
-        assert ed.metadata("missing") is None
+        assert ed.get("a") == 1
+        assert ed.get("missing") is None
+        assert ed.get("missing", "dflt") == "dflt"
 
     def test_metadata_none_by_default(self) -> None:
         ed = TensogramEncodedData(b"x")
-        assert ed.metadata() == {}
+        assert ed.get() == {}
 
 
 class TestEncoderDispatch:
@@ -332,42 +333,39 @@ class TestHasMarsNamespace:
 
 
 class TestFieldToBaseEntry:
-    def test_field_with_items_method(self) -> None:
-        class FakeMeta:
-            def items(self):
-                return [("param", "2t"), ("units", "K")]
+    def test_field_with_mars_labels(self) -> None:
+        """Fields carrying labels.mars (ours, gribjump's) round-trip it."""
 
         class FakeField:
-            def metadata(self, key=None, **_):
-                return FakeMeta()
+            def get(self, key, default=None, **_):
+                if key == "labels.mars":
+                    return {"param": "2t", "units": "K"}
+                return default
 
         entry = mars.field_to_base_entry(FakeField())
         assert entry["mars"] == {"param": "2t"}
         assert entry["_extra_"] == {"units": "K"}
 
-    def test_field_fallback_to_per_key_lookup(self) -> None:
-        """When metadata() returns a non-iterable object, per-key fallback kicks in."""
+    def test_field_fallback_to_raw_metadata_keys(self) -> None:
+        """Without labels.mars, canonical keys are read from metadata.<key>."""
 
-        class MinimalField:
+        class RawMetadataField:
             def __init__(self, values):
                 self._values = values
 
-            def metadata(self, key=None, **_):
-                if key is None:
-                    # A metadata object that doesn't expose items().
-                    return object()
-                if key in self._values:
-                    return self._values[key]
-                raise KeyError(key)
+            def get(self, key, default=None, **_):
+                if key.startswith("metadata."):
+                    return self._values.get(key.removeprefix("metadata."), default)
+                return default
 
-        f = MinimalField({"param": "tp", "step": 6})
+        f = RawMetadataField({"param": "tp", "step": 6})
         entry = mars.field_to_base_entry(f)
         assert entry["mars"]["param"] == "tp"
         assert entry["mars"]["step"] == 6
 
     def test_field_with_no_metadata_yields_empty_entry(self) -> None:
         class NoMetaField:
-            def metadata(self, *_args, **_kwargs):
+            def get(self, *_args, **_kwargs):
                 raise AttributeError("no metadata")
 
         assert mars.field_to_base_entry(NoMetaField()) == {}
@@ -435,13 +433,13 @@ class TestReaderFieldListOnNonMars:
 class TestReaderMarsHelpers:
     def test_order_by_delegates(self, mars_tensogram_file) -> None:
         r = _reader(mars_tensogram_file)
-        ordered = r.order_by("param")
-        params = [f.metadata("param") for f in ordered]
+        ordered = r.order_by("parameter.variable")
+        params = [f.get("parameter.variable") for f in ordered]
         assert params == sorted(params)
 
-    def test_metadata_delegates(self, mars_tensogram_file) -> None:
+    def test_get_delegates(self, mars_tensogram_file) -> None:
         r = _reader(mars_tensogram_file)
-        params = r.metadata("param")
+        params = r.get("parameter.variable")
         assert sorted(params) == ["2t", "tp"]
 
     def test_mutate_source_returns_none(self, mars_tensogram_file) -> None:
