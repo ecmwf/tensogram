@@ -1882,16 +1882,8 @@ pub extern "C" fn tgm_metadata_get_string(
     };
 
     let m = unsafe { &(*meta) };
-    let value = lookup_string_key(&m.global_metadata, key_str);
-
-    match value {
-        Some(s) => {
-            let mut cache = m.cache.borrow_mut();
-            let entry = cache
-                .entry(key_str.to_string())
-                .or_insert_with(|| CString::new(s.clone()).unwrap_or_default());
-            entry.as_ptr()
-        }
+    match lookup_string_key(&m.global_metadata, key_str) {
+        Some(s) => cache_cstr(m, key_str.to_string(), s),
         None => ptr::null(),
     }
 }
@@ -1975,14 +1967,7 @@ pub extern "C" fn tgm_metadata_get_string_at(
         return ptr::null();
     };
     match lookup_cbor_in_object(entry, key_str).and_then(cbor_as_string) {
-        Some(s) => {
-            let mut cache = m.cache.borrow_mut();
-            let cache_key = format!("{obj_index}\0{key_str}");
-            let cached = cache
-                .entry(cache_key)
-                .or_insert_with(|| CString::new(s).unwrap_or_default());
-            cached.as_ptr()
-        }
+        Some(s) => cache_cstr(m, format!("{obj_index}\0{key_str}"), s),
         None => ptr::null(),
     }
 }
@@ -2061,18 +2046,11 @@ pub extern "C" fn tgm_metadata_object_to_json(
     let Some(entry) = m.global_metadata.base.get(obj_index) else {
         return ptr::null();
     };
-    let json = serde_json::Value::Object(
-        entry
-            .iter()
-            .map(|(k, v)| (k.clone(), cbor_to_json(v)))
-            .collect(),
-    );
-    let text = json.to_string();
-    let mut cache = m.cache.borrow_mut();
-    let cached = cache
-        .entry(format!("\0json\0{obj_index}"))
-        .or_insert_with(|| CString::new(text).unwrap_or_default());
-    cached.as_ptr()
+    cache_cstr(
+        m,
+        format!("\0json\0{obj_index}"),
+        cbor_map_to_json(entry).to_string(),
+    )
 }
 
 /// Serialise the whole global metadata to a JSON object string, shaped
@@ -2089,48 +2067,20 @@ pub extern "C" fn tgm_metadata_to_json(meta: *const TgmMetadata) -> *const c_cha
 
     let mut root = serde_json::Map::new();
     if !gm.base.is_empty() {
-        let base: Vec<serde_json::Value> = gm
-            .base
-            .iter()
-            .map(|entry| {
-                serde_json::Value::Object(
-                    entry
-                        .iter()
-                        .map(|(k, v)| (k.clone(), cbor_to_json(v)))
-                        .collect(),
-                )
-            })
-            .collect();
+        let base: Vec<serde_json::Value> = gm.base.iter().map(cbor_map_to_json).collect();
         root.insert("base".to_string(), serde_json::Value::Array(base));
     }
     if !gm.reserved.is_empty() {
-        root.insert(
-            "_reserved_".to_string(),
-            serde_json::Value::Object(
-                gm.reserved
-                    .iter()
-                    .map(|(k, v)| (k.clone(), cbor_to_json(v)))
-                    .collect(),
-            ),
-        );
+        root.insert("_reserved_".to_string(), cbor_map_to_json(&gm.reserved));
     }
     if !gm.extra.is_empty() {
-        root.insert(
-            "_extra_".to_string(),
-            serde_json::Value::Object(
-                gm.extra
-                    .iter()
-                    .map(|(k, v)| (k.clone(), cbor_to_json(v)))
-                    .collect(),
-            ),
-        );
+        root.insert("_extra_".to_string(), cbor_map_to_json(&gm.extra));
     }
-    let text = serde_json::Value::Object(root).to_string();
-    let mut cache = m.cache.borrow_mut();
-    let cached = cache
-        .entry("\0json".to_string())
-        .or_insert_with(|| CString::new(text).unwrap_or_default());
-    cached.as_ptr()
+    cache_cstr(
+        m,
+        "\0json".to_string(),
+        serde_json::Value::Object(root).to_string(),
+    )
 }
 
 /// Free a metadata handle.
@@ -2672,6 +2622,31 @@ fn cbor_to_json(v: &ciborium::Value) -> serde_json::Value {
         // Tag / other exotic kinds are not produced by the metadata encoder.
         _ => J::Null,
     }
+}
+
+/// Convert a metadata sub-map (`base[i]`, `_reserved_`, `_extra_`) to a JSON
+/// object.  Their keys are always text, unlike a nested `ciborium::Value::Map`,
+/// so this is the simple companion to [`cbor_to_json`] used by the exporters.
+fn cbor_map_to_json(map: &BTreeMap<String, ciborium::Value>) -> serde_json::Value {
+    serde_json::Value::Object(
+        map.iter()
+            .map(|(k, v)| (k.clone(), cbor_to_json(v)))
+            .collect(),
+    )
+}
+
+/// Store `value` as a NUL-terminated C string in the handle's cache under `key`
+/// and return a borrowed pointer valid until the handle is freed.
+///
+/// This is how every string-returning metadata accessor hands ownership to C
+/// without a separate free: the `CString` lives in the handle, so the returned
+/// pointer outlives the transient `RefMut`.
+fn cache_cstr(m: &TgmMetadata, key: String, value: String) -> *const c_char {
+    m.cache
+        .borrow_mut()
+        .entry(key)
+        .or_insert_with(|| CString::new(value).unwrap_or_default())
+        .as_ptr()
 }
 
 // ---------------------------------------------------------------------------
