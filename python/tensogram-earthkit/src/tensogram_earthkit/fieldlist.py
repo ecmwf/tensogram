@@ -9,17 +9,21 @@
 """MARS :class:`FieldList` assembly for tensogram files.
 
 :func:`build_fieldlist_from_path` opens a ``.tgm`` file, walks every
-message, and produces one :class:`earthkit.data.ArrayField` per object
-whose ``base[i]`` carries a non-empty ``mars`` sub-map.  Coordinate
-objects (``base[i]`` entries without ``mars``) are skipped — they
-would not have the grid semantics the earthkit :class:`Field` model
-expects, and users who want them should use the xarray path.
+message, and produces one earthkit :class:`Field` per object whose
+``base[i]`` carries a non-empty ``mars`` sub-map (see
+:func:`tensogram_earthkit.mars.base_entry_to_field` for the component
+mapping).  Coordinate objects (``base[i]`` entries without ``mars``) are
+skipped — they would not have the grid semantics the earthkit
+:class:`Field` model expects, and users who want them should use the
+xarray path.
 
 The result is wrapped in a :class:`SimpleFieldList` so the downstream
-:meth:`sel` / :meth:`order_by` / :meth:`get` / :meth:`metadata` APIs
-work out of the box.  :meth:`TensogramSimpleFieldList.to_xarray`
-delegates to the tensogram-xarray backend, preserving the single
-source of truth for coordinate detection and dim-name resolution.
+:meth:`sel` / :meth:`order_by` / :meth:`get` APIs work out of the box
+(keys are namespaced in earthkit-data 1.x, e.g.
+``sel(**{"parameter.variable": "2t"})`` and ``field.get("labels.mars")``).
+:meth:`TensogramSimpleFieldList.to_xarray` delegates to the
+tensogram-xarray backend, preserving the single source of truth for
+coordinate detection and dim-name resolution.
 """
 
 from __future__ import annotations
@@ -28,10 +32,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from earthkit.data.indexing.fieldlist import SimpleFieldList
-from earthkit.data.sources.array_list import ArrayField
+from earthkit.data.indexing.simple import SimpleFieldList
 
-from tensogram_earthkit.mars import base_entry_to_usermetadata, has_mars_namespace
+from tensogram_earthkit.mars import base_entry_to_field, has_mars_namespace
 
 __all__ = ["TensogramSimpleFieldList", "build_fieldlist_from_path"]
 
@@ -108,7 +111,7 @@ def build_fieldlist_from_path(
     """Open ``file_path`` and build a MARS FieldList.
 
     Every tensogram object whose ``base[i]`` entry has a non-empty
-    ``mars`` sub-map becomes one :class:`ArrayField`.  All other
+    ``mars`` sub-map becomes one earthkit :class:`Field`.  All other
     objects are silently skipped.
 
     Remote URLs (``http(s)``, ``s3``, ``gs``, ``az``) are supported —
@@ -134,7 +137,6 @@ def build_fieldlist_from_path(
                 continue
             shape = tuple(desc.shape)
             arr = arr.reshape(shape) if arr.shape != shape else arr
-            metadata = base_entry_to_usermetadata(base[obj_index], shape=shape)
-            fields.append(ArrayField(arr, metadata))
+            fields.append(base_entry_to_field(base[obj_index], arr, shape))
 
     return TensogramSimpleFieldList(fields, file_path=path_str)

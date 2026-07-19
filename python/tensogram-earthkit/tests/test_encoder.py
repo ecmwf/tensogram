@@ -65,9 +65,9 @@ class TestFieldListRoundTrip:
         assert len(restored) == len(original)
 
         # Match by param since field order is implementation-dependent.
-        orig_by_param = {f.metadata("param"): f for f in original}
+        orig_by_param = {f.get("labels.mars")["param"]: f for f in original}
         for new_field in restored:
-            p = new_field.metadata("param")
+            p = new_field.get("labels.mars")["param"]
             assert p in orig_by_param
             np.testing.assert_array_equal(
                 new_field.to_numpy(), orig_by_param[p].to_numpy(), err_msg=p
@@ -80,12 +80,14 @@ class TestFieldListRoundTrip:
 
         restored = ekd.from_source("tensogram", str(out_path)).to_fieldlist()
         expected_keys = ["param", "step", "date", "time", "levtype", "class", "stream", "type"]
-        orig_by_param = {f.metadata("param"): f for f in original}
+        orig_by_param = {f.get("labels.mars")["param"]: f for f in original}
         for new_field in restored:
-            p = new_field.metadata("param")
+            p = new_field.get("labels.mars")["param"]
             orig = orig_by_param[p]
+            new_mars = new_field.get("labels.mars")
+            orig_mars = orig.get("labels.mars")
             for k in expected_keys:
-                assert new_field.metadata(k) == orig.metadata(k), f"{p}.{k}"
+                assert new_mars[k] == orig_mars[k], f"{p}.{k}"
 
 
 class TestEncoderEncodedData:

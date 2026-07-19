@@ -24,6 +24,19 @@ fl = data.to_fieldlist()           # FieldList — only when MARS keys are prese
 `.to_fieldlist()` raises `NotImplementedError` when the tensogram file has no
 `base[i]["mars"]` metadata. Use `.to_xarray()` instead for generic N-D tensors.
 
+Fields follow the earthkit-data 1.x component model — metadata keys are
+namespaced, and the full flat MARS request is preserved under the `labels`
+component:
+
+```python
+field = fl[0]
+field.get("labels.mars")                      # the full MARS dict, as stored
+field.get("parameter.variable")               # "2t"
+field.get("time.step")                        # datetime.timedelta
+fl.sel(**{"parameter.variable": "2t"})        # component-key selection
+fl.order_by("time.step")
+```
+
 ## Write
 
 ```python

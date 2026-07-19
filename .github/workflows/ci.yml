@@ -217,7 +217,7 @@ jobs:
           uv python install 3.12
           uv venv .venv --python 3.12
           . .venv/bin/activate
-          uv pip install maturin pytest numpy ruff "earthkit-data<1.0" earthkit-utils
+          uv pip install maturin pytest numpy ruff "earthkit-data>=1.0.2,<2" earthkit-utils
           cd python/bindings && maturin develop && cd ../..
           uv pip install -e python/tensogram-xarray/
           uv pip install -e "python/tensogram-earthkit/[dev]"
@@ -408,7 +408,7 @@ jobs:
       - name: Test earthkit-data integration (macOS)
         run: |
           . .venv/bin/activate
-          uv pip install "earthkit-data<1.0" earthkit-utils
+          uv pip install "earthkit-data>=1.0.2,<2" earthkit-utils
           uv pip install -e python/tensogram-xarray/
           uv pip install -e "python/tensogram-earthkit/[dev]"
           ruff check python/tensogram-earthkit/

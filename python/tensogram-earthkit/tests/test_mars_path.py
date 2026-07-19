@@ -13,8 +13,9 @@ Contract:
 * ``.to_fieldlist()`` returns an :class:`earthkit.data.FieldList`
   containing one :class:`Field` per MARS data object.  Coordinate
   objects (entries without a ``mars`` sub-map) are skipped.
-* Each field exposes MARS keys via ``.metadata(...)`` and ``.get(...)``.
-* ``.sel(param="2t")`` returns only fields matching that MARS value.
+* Each field exposes its MARS request via ``.get("labels.mars")`` and its
+  typed components via namespaced keys (``parameter.variable`` etc.).
+* ``.sel(**{"parameter.variable": "2t"})`` filters on component keys.
 * ``.to_xarray()`` on the FieldList delegates transparently to
   tensogram-xarray (same Dataset as the non-MARS path).
 """
@@ -54,9 +55,9 @@ class TestFieldListConstruction:
         # Figure out which field is 2t and compare
         found = False
         for field in fl:
-            if field.metadata("param") == "2t":
+            if field.get("labels.mars")["param"] == "2t":
                 arr = field.to_numpy()
-                # ArrayField stores the decoded tensor directly — compare shape first.
+                # The field stores the decoded tensor directly — compare shape first.
                 assert arr.shape == (4, 6) or arr.shape == (24,)
                 # If flattened, reshape before compare.
                 np.testing.assert_allclose(arr.reshape(4, 6), expected)
@@ -68,13 +69,13 @@ class TestFieldListConstruction:
 class TestFieldListMetadata:
     def test_metadata_exposes_mars_keys(self, mars_tensogram_file) -> None:
         fl = ekd.from_source("tensogram", str(mars_tensogram_file)).to_fieldlist()
-        params = [f.metadata("param") for f in fl]
+        params = [f.get("labels.mars")["param"] for f in fl]
         # Fixture has '2t' and 'tp' as MARS params.
         assert set(params) == {"2t", "tp"}
 
     def test_get_method_returns_scalar_per_field(self, mars_tensogram_file) -> None:
         fl = ekd.from_source("tensogram", str(mars_tensogram_file)).to_fieldlist()
-        steps = [f.metadata("step") for f in fl]
+        steps = [f.get("labels.mars")["step"] for f in fl]
         # Fixture: step 0 for 2t, step 6 for tp.
         assert sorted(steps) == [0, 6]
 
@@ -82,13 +83,13 @@ class TestFieldListMetadata:
 class TestFieldListSelection:
     def test_sel_param_filters(self, mars_tensogram_file) -> None:
         fl = ekd.from_source("tensogram", str(mars_tensogram_file)).to_fieldlist()
-        subset = fl.sel(param="2t")
+        subset = fl.sel(**{"parameter.variable": "2t"})
         assert len(subset) == 1
-        assert subset[0].metadata("param") == "2t"
+        assert subset[0].get("labels.mars")["param"] == "2t"
 
     def test_sel_empty_filter_returns_empty(self, mars_tensogram_file) -> None:
         fl = ekd.from_source("tensogram", str(mars_tensogram_file)).to_fieldlist()
-        subset = fl.sel(param="nonexistent")
+        subset = fl.sel(**{"parameter.variable": "nonexistent"})
         assert len(subset) == 0
 
 
@@ -120,7 +121,7 @@ class TestFieldListSourceSurface:
 
     def test_source_level_sel(self, mars_tensogram_file) -> None:
         source = ekd.from_source("tensogram", str(mars_tensogram_file))
-        subset = source.sel(param="2t")
+        subset = source.sel(**{"parameter.variable": "2t"})
         assert len(subset) == 1
 
     def test_source_level_len(self, mars_tensogram_file) -> None:

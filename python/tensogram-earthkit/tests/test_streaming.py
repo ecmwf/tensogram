@@ -102,7 +102,7 @@ class TestStreamReaderParity:
 
         assert len(via_stream) == len(via_file)
         for a, b in zip(via_stream, via_file, strict=True):
-            assert a.metadata("param") == b.metadata("param")
+            assert a.get("labels.mars")["param"] == b.get("labels.mars")["param"]
             np.testing.assert_array_equal(a.to_numpy(), b.to_numpy())
 
 
