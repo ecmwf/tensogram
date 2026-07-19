@@ -3430,6 +3430,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn get_string_at_container_value_is_null() {
+        // The key resolves to a map, not a scalar → NULL (not a stringified map).
+        let h = make_handle(two_object_meta());
+        let k = CString::new("geometry").unwrap();
+        assert!(tgm_metadata_get_string_at(&h as *const TgmMetadata, 1, k.as_ptr()).is_null());
+    }
+
+    #[test]
+    fn get_at_exact_boundary_index() {
+        // obj_index == num_objects (the classic off-by-one) must miss, not panic.
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let k = CString::new("shortName").unwrap();
+        assert!(tgm_metadata_get_string_at(hp, 2, k.as_ptr()).is_null());
+        assert_eq!(tgm_metadata_get_int_at(hp, 2, k.as_ptr(), -1), -1);
+        assert!(tgm_metadata_object_to_json(hp, 2).is_null());
+    }
+
+    #[test]
+    fn json_exporters_null_handle() {
+        let k = CString::new("x").unwrap();
+        assert!(tgm_metadata_object_to_json(ptr::null(), 0).is_null());
+        assert!(tgm_metadata_to_json(ptr::null()).is_null());
+        assert!(tgm_metadata_get_int_at(ptr::null(), 0, k.as_ptr(), 5) == 5);
+        assert!(tgm_metadata_get_float_at(ptr::null(), 0, k.as_ptr(), 1.5) == 1.5);
+    }
+
+    #[test]
+    fn to_json_on_empty_metadata_is_empty_object() {
+        let h = make_handle(make_meta(vec![], BTreeMap::new()));
+        let p = tgm_metadata_to_json(&h as *const TgmMetadata);
+        let text = unsafe { CStr::from_ptr(p) }.to_str().unwrap();
+        assert_eq!(text, "{}");
+    }
+
+    #[test]
+    fn cache_cstr_interior_nul_degrades_to_empty() {
+        // A metadata value containing an interior NUL cannot be a C string;
+        // cache_cstr must degrade to "" rather than panic (C strings can't hold NUL).
+        let h = make_handle(make_meta(vec![], BTreeMap::new()));
+        let p = cache_cstr(&h, "k".to_string(), "a\0b".to_string());
+        assert!(!p.is_null());
+        assert_eq!(unsafe { CStr::from_ptr(p) }.to_bytes(), b"");
+    }
+
     // ── parse_encode_json ──
 
     #[test]
