@@ -22,8 +22,11 @@ dependencies = [
     "tensogram-xarray>=0.22.0,<0.23",
     # This plugin targets the earthkit-data 1.x structured-component Field
     # model (Field.from_components / labels / namespaced keys) — 0.x is not
-    # supported.
-    "earthkit-data>=1.0.2",
+    # supported.  It also binds earthkit-data *internals* (field.mars.*,
+    # field.handler.*, field.component.*), which are not stable across major
+    # versions — the 0.x -> 1.0 break is proof — so cap at <2 until the next
+    # major is validated.
+    "earthkit-data>=1.0.2,<2",
     "earthkit-utils",
     "numpy",
     "xarray>=2022.06",
