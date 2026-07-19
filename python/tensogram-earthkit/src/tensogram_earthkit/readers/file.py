@@ -62,12 +62,32 @@ class TensogramFileReader(Reader):
     needed.
     """
 
+    _format = "tensogram"
     appendable = True
     binary = True
+
+    def __init__(self, source: Any, path: str, **kwargs: Any) -> None:
+        super().__init__(source, path, **kwargs)
+        # earthkit-data 1.x `from_source` returns `to_data_object()` and drops
+        # the source, and the base Reader only holds it via weakref.  For
+        # bytes-backed input the TensogramSource owns the backing temp file
+        # (unlinked by a weakref finaliser), so keep the source alive for as
+        # long as this reader lives.
+        self._owned_source = source
 
     def mutate_source(self) -> Any:
         """Keep the owning source — no multi-file or zip promotion."""
         return None
+
+    def _encode_default(self, encoder: Any, **kwargs: Any) -> Any:
+        """Encode this reader's content via *encoder* (:class:`Encodable` hook).
+
+        MARS files encode as a FieldList; everything else goes through the
+        xarray representation.
+        """
+        if self._is_mars():
+            return encoder._encode_fieldlist(self.to_fieldlist(), **kwargs)
+        return encoder._encode_xarray(self.to_xarray(), **kwargs)
 
     @property
     def _is_remote_path(self) -> bool:
@@ -195,8 +215,8 @@ class TensogramFileReader(Reader):
     def order_by(self, *args: Any, **kwargs: Any) -> Any:
         return self.to_fieldlist().order_by(*args, **kwargs)
 
-    def metadata(self, *args: Any, **kwargs: Any) -> Any:
-        return self.to_fieldlist().metadata(*args, **kwargs)
+    def get(self, *args: Any, **kwargs: Any) -> Any:
+        return self.to_fieldlist().get(*args, **kwargs)
 
     # -- data-object wrapper ----------------------------------------------------
 
@@ -205,6 +225,12 @@ class TensogramFileReader(Reader):
         from tensogram_earthkit.data import TensogramData
 
         return TensogramData(self)
+
+    def close(self) -> None:
+        """Release the owning source's backing temp file (if any)."""
+        close = getattr(self._owned_source, "close", None)
+        if callable(close):
+            close()
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.path})"

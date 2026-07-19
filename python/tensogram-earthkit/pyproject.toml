@@ -20,11 +20,13 @@ classifiers = [
 dependencies = [
     "tensogram>=0.22.0,<0.23",
     "tensogram-xarray>=0.22.0,<0.23",
-    # earthkit-data 1.0 is a breaking API rewrite (Field/FieldList/source/encoder
-    # redesign — e.g. `earthkit.data.indexing.fieldlist.SimpleFieldList` and
-    # `earthkit.data.sources.array_list.ArrayField` were removed). This plugin
-    # targets the 0.x API; bump the ceiling once it is ported to 1.x.
-    "earthkit-data>=0.19,<1.0",
+    # This plugin targets the earthkit-data 1.x structured-component Field
+    # model (Field.from_components / labels / namespaced keys) — 0.x is not
+    # supported.  It also binds earthkit-data *internals* (field.mars.*,
+    # field.handler.*, field.component.*), which are not stable across major
+    # versions — the 0.x -> 1.0 break is proof — so cap at <2 until the next
+    # major is validated.
+    "earthkit-data>=1.0.2,<2",
     "earthkit-utils",
     "numpy",
     "xarray>=2022.06",

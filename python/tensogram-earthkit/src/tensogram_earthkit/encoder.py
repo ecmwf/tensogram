@@ -111,10 +111,11 @@ class TensogramEncodedData(EncodedData):
         # file-like object
         file.write(self._payload)
 
-    def metadata(self, key: Any = None) -> Any:
+    def get(self, key: Any = None, default: Any = None) -> Any:
+        """Return one metadata value (or the whole dict for ``key=None``)."""
         if key is None:
             return dict(self._metadata)
-        return self._metadata.get(key)
+        return self._metadata.get(key, default)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ class TensogramEncodedData(EncodedData):
 class TensogramEncoder(Encoder):
     """Encode earthkit data to a tensogram message."""
 
-    def encode(self, data: Any = None, **kwargs: Any) -> EncodedData:
+    def encode(self, data: Any = None, target: Any = None, **kwargs: Any) -> EncodedData:
         if data is None:
             raise ValueError("tensogram encoder requires a data object to encode")
 
@@ -140,12 +141,14 @@ class TensogramEncoder(Encoder):
         # Double-dispatch through the wrapper machinery the same way
         # NetCDFEncoder does — this lets the encoder accept arbitrary
         # earthkit data types without an explicit dispatch table.
-        from earthkit.data.wrappers import get_wrapper
+        from earthkit.data.data.wrappers import from_object
 
-        data = get_wrapper(data, fieldlist=False)
-        return data._encode(self, **kwargs)
+        data = from_object(data)
+        if hasattr(data, "_encode"):
+            return data._encode(self, target=target, **kwargs)
+        return self._encode(data, target=target, **kwargs)
 
-    def _encode(self, data: Any, **kwargs: Any) -> EncodedData:
+    def _encode(self, data: Any, *, target: Any = None, **kwargs: Any) -> EncodedData:
         """Generic double-dispatch entry point.
 
         earthkit's data wrappers call this when they don't know the
@@ -171,13 +174,29 @@ class TensogramEncoder(Encoder):
             "Dataset / DataArray"
         )
 
-    def _encode_field(self, field: Any, **_kwargs: Any) -> EncodedData:
+    def _encode_field(self, field: Any, *, target: Any = None, **_kwargs: Any) -> EncodedData:
         return self._encode_fieldlist_like([field])
 
-    def _encode_fieldlist(self, fieldlist: Any, **_kwargs: Any) -> EncodedData:
+    def _encode_fieldlist(
+        self, fieldlist: Any, *, target: Any = None, **_kwargs: Any
+    ) -> EncodedData:
         return self._encode_fieldlist_like(list(fieldlist))
 
-    def _encode_xarray(self, data: Any, **_kwargs: Any) -> EncodedData:
+    def _encode_featurelist(
+        self, featurelist: Any, *, target: Any = None, **_kwargs: Any
+    ) -> EncodedData:
+        raise ValueError(
+            "tensogram encoder does not support FeatureList input — "
+            "supported inputs are earthkit FieldList / Field and xarray Dataset / DataArray"
+        )
+
+    def _encode_path(self, path_info: Any, *, target: Any = None, **_kwargs: Any) -> EncodedData:
+        raise ValueError(
+            "tensogram encoder does not support path input — "
+            "supported inputs are earthkit FieldList / Field and xarray Dataset / DataArray"
+        )
+
+    def _encode_xarray(self, data: Any, *, target: Any = None, **_kwargs: Any) -> EncodedData:
         import xarray as xr
 
         if isinstance(data, xr.DataArray):

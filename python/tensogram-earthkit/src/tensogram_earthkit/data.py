@@ -25,7 +25,13 @@ __all__ = ["TensogramData"]
 
 
 class TensogramData:
-    """Thin facade over a :class:`TensogramFileReader`."""
+    """Thin facade over a :class:`TensogramFileReader`.
+
+    In earthkit-data 1.x, ``from_source`` returns this wrapper (via the
+    reader's ``to_data_object``), so it also carries the FieldList-shaped
+    conveniences (``sel`` / ``order_by`` / ``get`` / ``len`` / ``iter``)
+    and the temp-file lifecycle (``close``) that used to live on the source.
+    """
 
     #: Conversions advertised to earthkit-data's API discovery.
     available_types: tuple[str, ...] = ("xarray", "numpy", "fieldlist")
@@ -44,3 +50,39 @@ class TensogramData:
     def to_numpy(self, **kwargs: Any) -> Any:
         """Return the single decoded ndarray for a one-variable message."""
         return self._reader.to_numpy(**kwargs)
+
+    # -- FieldList-shaped conveniences (MARS content only) ----------------------
+
+    def sel(self, *args: Any, **kwargs: Any) -> Any:
+        return self._reader.sel(*args, **kwargs)
+
+    def order_by(self, *args: Any, **kwargs: Any) -> Any:
+        return self._reader.order_by(*args, **kwargs)
+
+    def get(self, *args: Any, **kwargs: Any) -> Any:
+        return self._reader.get(*args, **kwargs)
+
+    def __len__(self) -> int:
+        return len(self._reader)
+
+    def __iter__(self) -> Any:
+        return iter(self._reader)
+
+    # -- lifecycle ----------------------------------------------------------------
+
+    @property
+    def storage_options(self) -> Any:
+        """The remote ``storage_options`` given to the source (``None`` when local)."""
+        return self._reader._storage_options
+
+    @property
+    def _tmp_path(self) -> Any:
+        """The backing temp file for bytes-based input (``None`` otherwise)."""
+        source = getattr(self._reader, "_owned_source", None)
+        return getattr(source, "_tmp_path", None)
+
+    def close(self) -> None:
+        """Release any backing temp file early (safe no-op otherwise)."""
+        close = getattr(self._reader, "close", None)
+        if callable(close):
+            close()
