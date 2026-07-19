@@ -664,6 +664,50 @@ public:
         return tgm_metadata_get_float(handle_.get(), k.c_str(), default_val);
     }
 
+    /// Look up a string value in object @p obj_index by dot-notation key.
+    ///
+    /// Scoped to `base[obj_index]` only (no cross-object first-match), so a
+    /// caller can walk every object of a multi-object message. Dot-paths
+    /// navigate nested maps (e.g. "geometry.gridType"); `_reserved_` is skipped.
+    /// @return The value as a string, or "" if not found / out of range.
+    [[nodiscard]] std::string get_string_at(std::size_t obj_index, std::string_view key) const {
+        const std::string k(key);
+        const char* s = tgm_metadata_get_string_at(handle_.get(), obj_index, k.c_str());
+        return s ? s : "";
+    }
+
+    /// Look up an integer value in object @p obj_index by dot-notation key.
+    /// @return The value, or @p default_val if not found / out of range.
+    [[nodiscard]] std::int64_t get_int_at(std::size_t obj_index, std::string_view key,
+                                          std::int64_t default_val = 0) const {
+        const std::string k(key);
+        return tgm_metadata_get_int_at(handle_.get(), obj_index, k.c_str(), default_val);
+    }
+
+    /// Look up a floating-point value in object @p obj_index by dot-notation key.
+    /// @return The value, or @p default_val if not found / out of range.
+    [[nodiscard]] double get_float_at(std::size_t obj_index, std::string_view key,
+                                      double default_val = 0.0) const {
+        const std::string k(key);
+        return tgm_metadata_get_float_at(handle_.get(), obj_index, k.c_str(), default_val);
+    }
+
+    /// Serialise object @p obj_index's full metadata (`base[obj_index]`) to a
+    /// JSON object string — the enumerate-everything companion to the typed
+    /// getters, for callers that do not know the key set ahead of time.
+    /// @return The JSON text, or "" if @p obj_index is out of range.
+    [[nodiscard]] std::string object_to_json(std::size_t obj_index) const {
+        const char* s = tgm_metadata_object_to_json(handle_.get(), obj_index);
+        return s ? s : "";
+    }
+
+    /// Serialise the whole global metadata to a JSON object string, shaped
+    /// `{ "base": [...], "_reserved_": {...}, "_extra_": {...} }`.
+    [[nodiscard]] std::string to_json() const {
+        const char* s = tgm_metadata_to_json(handle_.get());
+        return s ? s : "";
+    }
+
 private:
     friend metadata tensogram::decode_metadata(const std::uint8_t*, std::size_t);
     friend class message;
