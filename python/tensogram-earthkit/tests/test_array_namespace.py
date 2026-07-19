@@ -9,7 +9,7 @@
 """Array namespace interop for tensogram-backed fields.
 
 Since tensogram fields are array-backed earthkit :class:`Field`s, they
-inherits the full :meth:`Field.to_array` machinery backed by
+inherit the full :meth:`Field.to_array` machinery backed by
 `earthkit-utils`' array namespace abstraction.  This test file pins
 the contract:
 
