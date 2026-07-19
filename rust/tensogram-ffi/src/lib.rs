@@ -1883,7 +1883,7 @@ pub extern "C" fn tgm_metadata_get_string(
 
     let m = unsafe { &(*meta) };
     match lookup_string_key(&m.global_metadata, key_str) {
-        Some(s) => cache_cstr(m, key_str.to_string(), s),
+        Some(s) => cache_cstr(m, key_str.to_string(), || s),
         None => ptr::null(),
     }
 }
@@ -1967,7 +1967,7 @@ pub extern "C" fn tgm_metadata_get_string_at(
         return ptr::null();
     };
     match lookup_cbor_in_object(entry, key_str).and_then(cbor_as_string) {
-        Some(s) => cache_cstr(m, format!("{obj_index}\0{key_str}"), s),
+        Some(s) => cache_cstr(m, format!("{obj_index}\0{key_str}"), || s),
         None => ptr::null(),
     }
 }
@@ -2046,11 +2046,9 @@ pub extern "C" fn tgm_metadata_object_to_json(
     let Some(entry) = m.global_metadata.base.get(obj_index) else {
         return ptr::null();
     };
-    cache_cstr(
-        m,
-        format!("\0json\0{obj_index}"),
-        cbor_map_to_json(entry).to_string(),
-    )
+    cache_cstr(m, format!("\0json\0{obj_index}"), || {
+        cbor_map_to_json(entry).to_string()
+    })
 }
 
 /// Serialise the whole global metadata to a JSON object string, shaped
@@ -2063,24 +2061,21 @@ pub extern "C" fn tgm_metadata_to_json(meta: *const TgmMetadata) -> *const c_cha
         return ptr::null();
     }
     let m = unsafe { &(*meta) };
-    let gm = &m.global_metadata;
-
-    let mut root = serde_json::Map::new();
-    if !gm.base.is_empty() {
-        let base: Vec<serde_json::Value> = gm.base.iter().map(cbor_map_to_json).collect();
-        root.insert("base".to_string(), serde_json::Value::Array(base));
-    }
-    if !gm.reserved.is_empty() {
-        root.insert("_reserved_".to_string(), cbor_map_to_json(&gm.reserved));
-    }
-    if !gm.extra.is_empty() {
-        root.insert("_extra_".to_string(), cbor_map_to_json(&gm.extra));
-    }
-    cache_cstr(
-        m,
-        "\0json".to_string(),
-        serde_json::Value::Object(root).to_string(),
-    )
+    cache_cstr(m, "\0json".to_string(), || {
+        let gm = &m.global_metadata;
+        let mut root = serde_json::Map::new();
+        if !gm.base.is_empty() {
+            let base: Vec<serde_json::Value> = gm.base.iter().map(cbor_map_to_json).collect();
+            root.insert("base".to_string(), serde_json::Value::Array(base));
+        }
+        if !gm.reserved.is_empty() {
+            root.insert("_reserved_".to_string(), cbor_map_to_json(&gm.reserved));
+        }
+        if !gm.extra.is_empty() {
+            root.insert("_extra_".to_string(), cbor_map_to_json(&gm.extra));
+        }
+        serde_json::Value::Object(root).to_string()
+    })
 }
 
 /// Free a metadata handle.
@@ -2635,17 +2630,25 @@ fn cbor_map_to_json(map: &BTreeMap<String, ciborium::Value>) -> serde_json::Valu
     )
 }
 
-/// Store `value` as a NUL-terminated C string in the handle's cache under `key`
-/// and return a borrowed pointer valid until the handle is freed.
+/// Cache the string produced by `build` under `key` and return a borrowed
+/// pointer valid until the handle is freed.
 ///
 /// This is how every string-returning metadata accessor hands ownership to C
 /// without a separate free: the `CString` lives in the handle, so the returned
-/// pointer outlives the transient `RefMut`.
-fn cache_cstr(m: &TgmMetadata, key: String, value: String) -> *const c_char {
+/// pointer outlives the transient `RefMut`.  `build` runs **only on a cache
+/// miss**, so a repeat call (e.g. re-fetching an object's JSON) returns the
+/// cached pointer without re-serialising.
+///
+/// Cache keys are namespaced to avoid collision between the accessors that
+/// share the map: message-level `get_string` uses the raw (NUL-free) C key;
+/// `get_string_at` uses `"{obj_index}\0{key}"`; the JSON exporters use
+/// `"\0json"` / `"\0json\0{obj_index}"` — all disjoint because a C key can
+/// neither contain nor start with a NUL.
+fn cache_cstr(m: &TgmMetadata, key: String, build: impl FnOnce() -> String) -> *const c_char {
     m.cache
         .borrow_mut()
         .entry(key)
-        .or_insert_with(|| CString::new(value).unwrap_or_default())
+        .or_insert_with(|| CString::new(build()).unwrap_or_default())
         .as_ptr()
 }
 
@@ -3471,9 +3474,75 @@ mod tests {
         // A metadata value containing an interior NUL cannot be a C string;
         // cache_cstr must degrade to "" rather than panic (C strings can't hold NUL).
         let h = make_handle(make_meta(vec![], BTreeMap::new()));
-        let p = cache_cstr(&h, "k".to_string(), "a\0b".to_string());
+        let p = cache_cstr(&h, "k".to_string(), || "a\0b".to_string());
         assert!(!p.is_null());
         assert_eq!(unsafe { CStr::from_ptr(p) }.to_bytes(), b"");
+    }
+
+    #[test]
+    fn get_string_at_no_cross_object_bleed() {
+        // Only object 1 carries `geometry`; object 0 must not first-match into it.
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let k = CString::new("geometry.gridType").unwrap();
+        assert!(tgm_metadata_get_string_at(hp, 0, k.as_ptr()).is_null());
+        let s1 = tgm_metadata_get_string_at(hp, 1, k.as_ptr());
+        assert_eq!(
+            unsafe { CStr::from_ptr(s1) }.to_str().unwrap(),
+            "regular_ll"
+        );
+    }
+
+    #[test]
+    fn get_string_at_nul_value_degrades_to_empty() {
+        // A stored value with an interior NUL surfaces as "" end-to-end (not a panic).
+        let mut e = BTreeMap::new();
+        e.insert("weird".into(), ciborium::Value::Text("a\0b".into()));
+        let h = make_handle(make_meta(vec![e], BTreeMap::new()));
+        let k = CString::new("weird").unwrap();
+        let p = tgm_metadata_get_string_at(&h as *const TgmMetadata, 0, k.as_ptr());
+        assert!(!p.is_null());
+        assert_eq!(unsafe { CStr::from_ptr(p) }.to_bytes(), b"");
+    }
+
+    #[test]
+    fn get_float_at_wrong_type_returns_default() {
+        // base[0].shortName is text → the float accessor yields the default.
+        let h = make_handle(two_object_meta());
+        let k = CString::new("shortName").unwrap();
+        assert_eq!(
+            tgm_metadata_get_float_at(&h as *const TgmMetadata, 0, k.as_ptr(), 9.5),
+            9.5
+        );
+    }
+
+    #[test]
+    fn object_to_json_serialises_arrays() {
+        let mut e = BTreeMap::new();
+        e.insert(
+            "pl".into(),
+            ciborium::Value::Array(vec![
+                ciborium::Value::Integer(1.into()),
+                ciborium::Value::Integer(2.into()),
+            ]),
+        );
+        let h = make_handle(make_meta(vec![e], BTreeMap::new()));
+        let p = tgm_metadata_object_to_json(&h as *const TgmMetadata, 0);
+        let text = unsafe { CStr::from_ptr(p) }.to_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["pl"], serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn object_to_json_caches_pointer_across_calls() {
+        // A repeat call returns the same cached CString — proving `build` runs
+        // once (lazily) and is not re-serialised on a hit.
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let p1 = tgm_metadata_object_to_json(hp, 0);
+        let p2 = tgm_metadata_object_to_json(hp, 0);
+        assert!(!p1.is_null());
+        assert_eq!(p1, p2);
     }
 
     // ── parse_encode_json ──
