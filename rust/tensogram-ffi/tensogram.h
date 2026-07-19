@@ -607,6 +607,65 @@ int64_t tgm_metadata_get_int(const tgm_metadata_t *meta, const char *key, int64_
 double tgm_metadata_get_float(const tgm_metadata_t *meta, const char *key, double default_val);
 
 /**
+ * Look up a string value in object `obj_index`'s metadata by dot-notation key
+ * (e.g. `"shortName"`, `"mars.class"`, `"geometry.gridType"`).
+ *
+ * Scoped to `base[obj_index]` only — no cross-object first-match, no `extra`
+ * fallback, and `_reserved_` is skipped at the first level (use the object
+ * accessors for the tensor shape/dtype).  Integer / float / bool leaves are
+ * coerced to their string form.
+ *
+ * Returns NULL if the handle is null, `obj_index` is out of range, the key is
+ * absent, or the value is a container.  The pointer is valid until the
+ * metadata handle is freed.
+ */
+const char *tgm_metadata_get_string_at(const tgm_metadata_t *meta,
+                                       size_t obj_index,
+                                       const char *key);
+
+/**
+ * Look up an integer value in object `obj_index`'s metadata by dot-notation
+ * key.  Returns `default_val` if the handle is null, `obj_index` is out of
+ * range, the key is absent, or the value is not an integer.  See
+ * [`tgm_metadata_get_string_at`] for scoping rules.
+ */
+int64_t tgm_metadata_get_int_at(const tgm_metadata_t *meta,
+                                size_t obj_index,
+                                const char *key,
+                                int64_t default_val);
+
+/**
+ * Look up a float value in object `obj_index`'s metadata by dot-notation key.
+ * Returns `default_val` if the handle is null, `obj_index` is out of range,
+ * the key is absent, or the value is not numeric.  Integer leaves are widened
+ * to `f64`.  See [`tgm_metadata_get_string_at`] for scoping rules.
+ */
+double tgm_metadata_get_float_at(const tgm_metadata_t *meta,
+                                 size_t obj_index,
+                                 const char *key,
+                                 double default_val);
+
+/**
+ * Serialise object `obj_index`'s full metadata (`base[obj_index]`) to a JSON
+ * object string — including any `_reserved_.tensor` descriptor.
+ *
+ * This is the enumerate-everything companion to the typed getters: a caller
+ * that does not know the key set ahead of time (e.g. a metadata viewer) can
+ * display or parse the whole object without walking CBOR itself.  Returns
+ * NULL for a null handle or an out-of-range `obj_index`.  The pointer is valid
+ * until the metadata handle is freed.
+ */
+const char *tgm_metadata_object_to_json(const tgm_metadata_t *meta, size_t obj_index);
+
+/**
+ * Serialise the whole global metadata to a JSON object string, shaped
+ * `{ "base": [...], "_reserved_": {...}, "_extra_": {...} }` (empty sections
+ * omitted).  Returns NULL for a null handle; the pointer is valid until the
+ * metadata handle is freed.
+ */
+const char *tgm_metadata_to_json(const tgm_metadata_t *meta);
+
+/**
  * Free a metadata handle.
  */
 void tgm_metadata_free(tgm_metadata_t *meta);
