@@ -29,7 +29,7 @@ class TensogramData:
 
     In earthkit-data 1.x, ``from_source`` returns this wrapper (via the
     reader's ``to_data_object``), so it also carries the FieldList-shaped
-    conveniences (``sel`` / ``order_by`` / ``metadata`` / ``len`` / ``iter``)
+    conveniences (``sel`` / ``order_by`` / ``get`` / ``len`` / ``iter``)
     and the temp-file lifecycle (``close``) that used to live on the source.
     """
 
