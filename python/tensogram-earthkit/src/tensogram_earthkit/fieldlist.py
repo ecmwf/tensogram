@@ -18,8 +18,8 @@ skipped — they would not have the grid semantics the earthkit
 xarray path.
 
 The result is wrapped in a :class:`SimpleFieldList` so the downstream
-:meth:`sel` / :meth:`order_by` / :meth:`get` / :meth:`metadata` APIs
-work out of the box (keys are namespaced in earthkit-data 1.x, e.g.
+:meth:`sel` / :meth:`order_by` / :meth:`get` APIs work out of the box
+(keys are namespaced in earthkit-data 1.x, e.g.
 ``sel(**{"parameter.variable": "2t"})`` and ``field.get("labels.mars")``).
 :meth:`TensogramSimpleFieldList.to_xarray` delegates to the
 tensogram-xarray backend, preserving the single source of truth for
