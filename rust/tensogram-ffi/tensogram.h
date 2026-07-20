@@ -596,12 +596,20 @@ size_t tgm_metadata_num_objects(const tgm_metadata_t *meta);
  * (map / array), null, or bytes, or the value contains an interior NUL byte
  * (not representable as a C string).
  * The pointer is valid until the metadata handle is freed.
+ *
+ * The pseudo-key `"version"` is special-cased: it returns the wire-format
+ * version from the message preamble (see [`tgm_metadata_version`]), not a
+ * CBOR `version` field.
  */
 const char *tgm_metadata_get_string(const tgm_metadata_t *meta, const char *key);
 
 /**
  * Look up an integer value by dot-notation key.
  * Returns `default_val` if the key is not found or is not an integer.
+ *
+ * The pseudo-key `"version"` is special-cased: it returns the wire-format
+ * version from the message preamble (see [`tgm_metadata_version`]), not a
+ * CBOR `version` field.
  */
 int64_t tgm_metadata_get_int(const tgm_metadata_t *meta, const char *key, int64_t default_val);
 

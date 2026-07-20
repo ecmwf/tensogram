@@ -1871,6 +1871,10 @@ pub extern "C" fn tgm_metadata_num_objects(meta: *const TgmMetadata) -> usize {
 /// (map / array), null, or bytes, or the value contains an interior NUL byte
 /// (not representable as a C string).
 /// The pointer is valid until the metadata handle is freed.
+///
+/// The pseudo-key `"version"` is special-cased: it returns the wire-format
+/// version from the message preamble (see [`tgm_metadata_version`]), not a
+/// CBOR `version` field.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_string(
     meta: *const TgmMetadata,
@@ -1894,6 +1898,10 @@ pub extern "C" fn tgm_metadata_get_string(
 
 /// Look up an integer value by dot-notation key.
 /// Returns `default_val` if the key is not found or is not an integer.
+///
+/// The pseudo-key `"version"` is special-cased: it returns the wire-format
+/// version from the message preamble (see [`tgm_metadata_version`]), not a
+/// CBOR `version` field.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_int(
     meta: *const TgmMetadata,
