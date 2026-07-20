@@ -1865,7 +1865,8 @@ pub extern "C" fn tgm_metadata_num_objects(meta: *const TgmMetadata) -> usize {
 }
 
 /// Look up a string value by dot-notation key (e.g. "mars.class").
-/// Returns NULL if the key is not found or is not a string.
+/// Returns NULL if the key is not found, is not a string, or contains an
+/// interior NUL byte (not representable as a C string).
 /// The pointer is valid until the metadata handle is freed.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_string(
@@ -1947,8 +1948,9 @@ pub extern "C" fn tgm_metadata_get_float(
 /// coerced to their string form.
 ///
 /// Returns NULL if the handle is null, `obj_index` is out of range, the key is
-/// absent, or the value is a container.  The pointer is valid until the
-/// metadata handle is freed.
+/// absent, the value is a container, or the value contains an interior NUL byte
+/// (not representable as a C string).  The pointer is valid until the metadata
+/// handle is freed.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_string_at(
     meta: *const TgmMetadata,
@@ -2631,7 +2633,8 @@ fn cbor_map_to_json(map: &BTreeMap<String, ciborium::Value>) -> serde_json::Valu
 }
 
 /// Cache the string produced by `build` under `key` and return a borrowed
-/// pointer valid until the handle is freed.
+/// pointer valid until the handle is freed, or NULL if the string cannot be a
+/// C string (it contains an interior NUL byte).
 ///
 /// This is how every string-returning metadata accessor hands ownership to C
 /// without a separate free: the `CString` lives in the handle, so the returned
@@ -2639,17 +2642,25 @@ fn cbor_map_to_json(map: &BTreeMap<String, ciborium::Value>) -> serde_json::Valu
 /// miss**, so a repeat call (e.g. re-fetching an object's JSON) returns the
 /// cached pointer without re-serialising.
 ///
+/// A value with an interior NUL is not representable as a C string, so it
+/// yields NULL (the accessors' "no usable value" signal) rather than a
+/// silently-truncated empty string.  (Serialised JSON never hits this: serde
+/// escapes NUL as `\u0000`.)
+///
 /// Cache keys are namespaced to avoid collision between the accessors that
 /// share the map: message-level `get_string` uses the raw (NUL-free) C key;
 /// `get_string_at` uses `"{obj_index}\0{key}"`; the JSON exporters use
 /// `"\0json"` / `"\0json\0{obj_index}"` — all disjoint because a C key can
 /// neither contain nor start with a NUL.
 fn cache_cstr(m: &TgmMetadata, key: String, build: impl FnOnce() -> String) -> *const c_char {
-    m.cache
-        .borrow_mut()
-        .entry(key)
-        .or_insert_with(|| CString::new(build()).unwrap_or_default())
-        .as_ptr()
+    use std::collections::btree_map::Entry;
+    match m.cache.borrow_mut().entry(key) {
+        Entry::Occupied(e) => e.into_mut().as_ptr(),
+        Entry::Vacant(slot) => match CString::new(build()) {
+            Ok(cs) => slot.insert(cs).as_ptr(),
+            Err(_) => ptr::null(),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3470,13 +3481,11 @@ mod tests {
     }
 
     #[test]
-    fn cache_cstr_interior_nul_degrades_to_empty() {
-        // A metadata value containing an interior NUL cannot be a C string;
-        // cache_cstr must degrade to "" rather than panic (C strings can't hold NUL).
+    fn cache_cstr_interior_nul_returns_null() {
+        // A value with an interior NUL is not representable as a C string, so
+        // cache_cstr returns NULL (not a truncated empty string, not a panic).
         let h = make_handle(make_meta(vec![], BTreeMap::new()));
-        let p = cache_cstr(&h, "k".to_string(), || "a\0b".to_string());
-        assert!(!p.is_null());
-        assert_eq!(unsafe { CStr::from_ptr(p) }.to_bytes(), b"");
+        assert!(cache_cstr(&h, "k".to_string(), || "a\0b".to_string()).is_null());
     }
 
     #[test]
@@ -3494,15 +3503,14 @@ mod tests {
     }
 
     #[test]
-    fn get_string_at_nul_value_degrades_to_empty() {
-        // A stored value with an interior NUL surfaces as "" end-to-end (not a panic).
+    fn get_string_at_nul_value_returns_null() {
+        // A stored value with an interior NUL is not representable as a C string,
+        // so it surfaces as NULL end-to-end (not "", not a panic).
         let mut e = BTreeMap::new();
         e.insert("weird".into(), ciborium::Value::Text("a\0b".into()));
         let h = make_handle(make_meta(vec![e], BTreeMap::new()));
         let k = CString::new("weird").unwrap();
-        let p = tgm_metadata_get_string_at(&h as *const TgmMetadata, 0, k.as_ptr());
-        assert!(!p.is_null());
-        assert_eq!(unsafe { CStr::from_ptr(p) }.to_bytes(), b"");
+        assert!(tgm_metadata_get_string_at(&h as *const TgmMetadata, 0, k.as_ptr()).is_null());
     }
 
     #[test]
