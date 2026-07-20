@@ -793,6 +793,16 @@ jobs:
   # Runs on ECMWF self-hosted infrastructure to avoid burning
   # GitHub-Actions minutes on every PR push.  Container matches the
   # rest of the test matrix (libaec, libnetcdf, eccodes etc. pre-built).
+  #
+  # DISABLED by default.  `make mutants-diff` hard-codes
+  # `--features async,remote`, which cargo-mutants applies to whatever
+  # package the diff touches — but only the core `tensogram` crate has a
+  # `remote` feature, so a diff confined to `tensogram-ffi` (whose remote
+  # surface is `async-remote`) fails to build before any mutant is tested.
+  # Re-enable by setting the `RUN_MUTANTS` repository variable to `true`
+  # (Settings → Secrets and variables → Actions → Variables), or by
+  # restoring the `github.event_name == 'pull_request'` guard, once the
+  # feature selection is made per-package.
   mutants-diff:
     name: Mutants (diff)
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
@@ -801,7 +811,7 @@ jobs:
       credentials:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
-    if: github.event_name == 'pull_request'
+    if: ${{ vars.RUN_MUTANTS == 'true' }}
     timeout-minutes: 30
     # Override the workflow-wide TMPDIR (which sits inside the workspace
     # at $GITHUB_WORKSPACE/.tmp) for this job only.  cargo-mutants copies
