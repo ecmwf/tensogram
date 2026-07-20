@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-20
+
+### Added — GRIB & NetCDF semantic round-trip (`to-grib` / `to-netcdf`)
+
+Tensogram can now reconstruct GRIB and NetCDF from a `.tgm` produced by
+`convert-grib` / `convert-netcdf`, closing the loop back to the source
+format. `tensogram_grib::to_grib` clones an ecCodes sample and replays a
+captured reconstruction key-set (`base[i].grib_repro`), including the WMO
+identification section and the ECMWF local-use section (section 2:
+`grib2LocalSectionNumber`, `marsClass`/`marsType`/`marsStream`/
+`experimentVersionNumber`) — `grib_compare` is clean on **all** keys for the
+real ECMWF CCSDS field `2t.grib2`, and `grid_simple` / `grid_ieee` /
+`grid_ccsds` values round-trip losslessly. `tensogram_netcdf::to_netcdf`
+rebuilds via the safe `netcdf` crate, preserving exact attribute types
+(scalar + array, via `_attr_types` / `_global_types` sidecars), masking NaNs
+on encode so NaN-bearing / missing values survive, and writing atomically
+(temp file + rename). New feature-gated CLI subcommands `to-grib` /
+`to-netcdf` (multi-message reassembly), with end-to-end tests that compare in
+the source format using `grib_compare` / `ncdump` (skipped, not failed, when
+the native tools are absent).
+
 ### Added — per-object metadata accessors in the C FFI
 
 The C API previously exposed metadata only through first-match getters
@@ -26,6 +47,60 @@ metadata without knowing the key set (mirrors Python's `meta.base[i]` dict):
 
 The C++ wrapper gains matching `metadata::get_string_at/get_int_at/
 get_float_at/object_to_json/to_json`. Existing functions are unchanged.
+
+### Added — Python `to_grib` / `to_netcdf` bindings
+
+The reverse conversions are now bound in Python, mirroring the `convert_*`
+import side: `tensogram.to_grib(messages) -> bytes` concatenates the
+reconstructed GRIB, and `tensogram.to_netcdf(messages, path)` reassembles
+every message into one file (feature-gated, with the same stub / error-mapping
+convention as `convert_grib` / `convert_netcdf`).
+
+### Changed — `tensogram-earthkit` ported to earthkit-data 1.x
+
+earthkit-data 1.0 replaced the flat dict metadata model (`UserMetadata` +
+`ArrayField`) with a typed field-component model and namespaced keys. The
+plugin is ported to it: MARS metadata maps onto earthkit's own field
+components (parameter / time / vertical / ensemble) with the full request
+preserved under `labels.mars`, the reader/encoder implement the new 1.x
+abstract hooks, and a source-lifetime fix keeps bytes-backed temp files alive.
+The dependency is now `earthkit-data>=1.0.2,<2` (it binds earthkit internals,
+which change across majors).
+
+### Changed — deterministic toolchain + repo-wide rustfmt
+
+Added `rust-toolchain.toml` (pinning the toolchain + `rustfmt`/`clippy`) and
+`rustfmt.toml` (`style_edition = "2024"`) so `cargo fmt` / `clippy` are
+deterministic across dev and CI, and normalised the crates previously excluded
+from the workspace fmt check. `make rust-fmt` is now the single source of the
+fmt check and covers those excluded crates (grib / netcdf / wasm / bindings /
+fuzz), so they can no longer drift.
+
+### Fixed — portability and packaging
+
+- `to-grib` resolved the ecCodes sample path portably (honouring
+  `ECCODES_SAMPLES_PATH` / `ECCODES_DIR`, then well-known locations) so it works
+  on macOS/Homebrew, not just Debian's `/usr/share/eccodes`.
+- macOS PyPI wheels pin `MACOSX_DEPLOYMENT_TARGET=13.0` (canonical spelling),
+  aligning the floor with the ECMWF binary stack.
+- NetCDF unpacking drops the now-stale CF packing attributes
+  (`scale_factor`/`add_offset`/`_FillValue`/`missing_value`/`valid_*`) so an
+  unpacked f64 variable is not double-unpacked and does not hit a `_FillValue`
+  type mismatch on write-back.
+- FFI string getters return NULL (not a truncated empty string) for metadata
+  values not representable as a C string, and document the numeric/bool
+  coercion and the `"version"` pseudo-key.
+- Resolved `cargo audit` advisories (`crossbeam-epoch`, `quinn-proto`) and
+  bumped `esbuild` (dev tooling) for GHSA-g7r4-m6w7-qqqr.
+- `make python-dist` is self-contained (installs `maturin` into the venv).
+
+### Stats
+
+Verified this cycle (skipped-not-failed where native tools/libs are absent):
+Rust FFI 189 + 32 doctests; C++ 186 (ctest); `tensogram-netcdf` 30 + 44 + 10;
+`tensogram-grib` 46 + 20 + 7; `tensogram-earthkit` 140 (against earthkit-data
+1.0.2); plus the Python and workspace suites. The full multi-language matrix
+(grib/netcdf + macOS) runs green in the `release-preflight` CI workflow.
 
 ## [0.22.0] - 2026-06-20
 

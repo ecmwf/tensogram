@@ -18,7 +18,7 @@
 #   export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
 
 cmake_minimum_required(VERSION 3.16)
-project(tensogram_fortran VERSION 0.22.0 LANGUAGES Fortran)
+project(tensogram_fortran VERSION 0.23.0 LANGUAGES Fortran)
 
 option(TENSOGRAM_FORTRAN_EXAMPLES "Build the Fortran examples" ON)
 option(TENSOGRAM_FORTRAN_TESTS    "Build the Fortran tests"    ON)
