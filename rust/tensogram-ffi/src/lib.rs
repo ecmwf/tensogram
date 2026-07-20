@@ -1865,8 +1865,11 @@ pub extern "C" fn tgm_metadata_num_objects(meta: *const TgmMetadata) -> usize {
 }
 
 /// Look up a string value by dot-notation key (e.g. "mars.class").
-/// Returns NULL if the key is not found, is not a string, or contains an
-/// interior NUL byte (not representable as a C string).
+///
+/// Text is returned as-is; integer / float / bool leaves are coerced to their
+/// string form.  Returns NULL if the key is not found, the value is a container
+/// (map / array), null, or bytes, or the value contains an interior NUL byte
+/// (not representable as a C string).
 /// The pointer is valid until the metadata handle is freed.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_string(
@@ -1910,7 +1913,9 @@ pub extern "C" fn tgm_metadata_get_int(
     lookup_int_key(&m.global_metadata, key_str).unwrap_or(default_val)
 }
 
-/// Look up a float value by dot-notation key.
+/// Look up a float value by dot-notation key.  Integer leaves are widened to
+/// `f64`.  Returns `default_val` if the key is not found or the value is not
+/// numeric.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_float(
     meta: *const TgmMetadata,
@@ -1948,9 +1953,9 @@ pub extern "C" fn tgm_metadata_get_float(
 /// coerced to their string form.
 ///
 /// Returns NULL if the handle is null, `obj_index` is out of range, the key is
-/// absent, the value is a container, or the value contains an interior NUL byte
-/// (not representable as a C string).  The pointer is valid until the metadata
-/// handle is freed.
+/// absent, the value is a container (map / array), null, or bytes, or the value
+/// contains an interior NUL byte (not representable as a C string).  The pointer
+/// is valid until the metadata handle is freed.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_string_at(
     meta: *const TgmMetadata,

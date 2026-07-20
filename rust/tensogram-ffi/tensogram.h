@@ -590,8 +590,11 @@ size_t tgm_metadata_num_objects(const tgm_metadata_t *meta);
 
 /**
  * Look up a string value by dot-notation key (e.g. "mars.class").
- * Returns NULL if the key is not found, is not a string, or contains an
- * interior NUL byte (not representable as a C string).
+ *
+ * Text is returned as-is; integer / float / bool leaves are coerced to their
+ * string form.  Returns NULL if the key is not found, the value is a container
+ * (map / array), null, or bytes, or the value contains an interior NUL byte
+ * (not representable as a C string).
  * The pointer is valid until the metadata handle is freed.
  */
 const char *tgm_metadata_get_string(const tgm_metadata_t *meta, const char *key);
@@ -603,7 +606,9 @@ const char *tgm_metadata_get_string(const tgm_metadata_t *meta, const char *key)
 int64_t tgm_metadata_get_int(const tgm_metadata_t *meta, const char *key, int64_t default_val);
 
 /**
- * Look up a float value by dot-notation key.
+ * Look up a float value by dot-notation key.  Integer leaves are widened to
+ * `f64`.  Returns `default_val` if the key is not found or the value is not
+ * numeric.
  */
 double tgm_metadata_get_float(const tgm_metadata_t *meta, const char *key, double default_val);
 
@@ -617,9 +622,9 @@ double tgm_metadata_get_float(const tgm_metadata_t *meta, const char *key, doubl
  * coerced to their string form.
  *
  * Returns NULL if the handle is null, `obj_index` is out of range, the key is
- * absent, the value is a container, or the value contains an interior NUL byte
- * (not representable as a C string).  The pointer is valid until the metadata
- * handle is freed.
+ * absent, the value is a container (map / array), null, or bytes, or the value
+ * contains an interior NUL byte (not representable as a C string).  The pointer
+ * is valid until the metadata handle is freed.
  */
 const char *tgm_metadata_get_string_at(const tgm_metadata_t *meta,
                                        size_t obj_index,
