@@ -668,7 +668,8 @@ public:
     ///
     /// Scoped to `base[obj_index]` only (no cross-object first-match), so a
     /// caller can walk every object of a multi-object message. Dot-paths
-    /// navigate nested maps (e.g. "geometry.gridType"); `_reserved_` is skipped.
+    /// navigate nested maps (e.g. "geometry.gridType"); `_reserved_` is skipped
+    /// at the first path segment (matching the C FFI and Rust docs).
     /// @return The value as a string, or "" if not found / out of range.
     [[nodiscard]] std::string get_string_at(std::size_t obj_index, std::string_view key) const {
         const std::string k(key);
