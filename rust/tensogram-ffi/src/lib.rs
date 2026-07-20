@@ -2607,7 +2607,13 @@ fn cbor_to_json(v: &ciborium::Value) -> serde_json::Value {
         ciborium::Value::Float(f) => serde_json::Number::from_f64(*f).map_or(J::Null, J::Number),
         ciborium::Value::Text(s) => J::String(s.clone()),
         ciborium::Value::Bytes(b) => {
-            J::String(b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+            // Single allocation — `format!` per byte would allocate a String each.
+            use std::fmt::Write as _;
+            let mut hex = String::with_capacity(b.len() * 2);
+            for byte in b {
+                let _ = write!(hex, "{byte:02x}");
+            }
+            J::String(hex)
         }
         ciborium::Value::Array(a) => J::Array(a.iter().map(cbor_to_json).collect()),
         ciborium::Value::Map(m) => {
