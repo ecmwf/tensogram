@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — per-object metadata accessors in the C FFI
+
+The C API previously exposed metadata only through first-match getters
+(`tgm_metadata_get_string/int/float`, which search every `base[i]` and
+return the first hit), so per-object metadata in a multi-object message was
+unreachable — forcing C clients (e.g. the `ushow` viewer) to reimplement CBOR
+parsing to walk the metadata frame. New accessors scope the lookup to a
+single object, the C equivalent of Rust's `meta.base[i].get(key)`:
+
+- `tgm_metadata_get_string_at(meta, obj_index, key)`
+- `tgm_metadata_get_int_at(meta, obj_index, key, default)`
+- `tgm_metadata_get_float_at(meta, obj_index, key, default)`
+
+Plus a JSON export for callers that want to enumerate/display an object's full
+metadata without knowing the key set (mirrors Python's `meta.base[i]` dict):
+
+- `tgm_metadata_object_to_json(meta, obj_index)`
+- `tgm_metadata_to_json(meta)`
+
+The C++ wrapper gains matching `metadata::get_string_at/get_int_at/
+get_float_at/object_to_json/to_json`. Existing functions are unchanged.
+
 ## [0.22.0] - 2026-06-20
 
 ### Fixed — npm package now ships the WASM blob

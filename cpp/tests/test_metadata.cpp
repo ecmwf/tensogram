@@ -209,3 +209,84 @@ TEST(MetadataTest, MultipleMetadataSections) {
     EXPECT_EQ(meta.get_string("product.name"), "temperature");
     EXPECT_EQ(meta.get_string("product.units"), "K");
 }
+
+// ---------------------------------------------------------------------------
+// Per-object metadata (base[i]) — the multi-object walk that previously
+// forced clients to reimplement CBOR parsing.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Encode a 2-object message whose per-object metadata differs, via the
+/// top-level "base" array (base[i] aligns with object i).
+std::vector<std::uint8_t> encode_two_objects_with_base() {
+    const char* desc =
+        R"({"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32",)"
+        R"("byte_order":"little","encoding":"none","filter":"none","compression":"none"})";
+    std::string json =
+        std::string(R"({"descriptors":[)") + desc + "," + desc + "]," +
+        R"("base":[)"
+        R"({"shortName":"2t","level":0,"units":"K"},)"
+        R"({"shortName":"msl","level":500,"scale":0.01,"geometry":{"gridType":"regular_ll"}})"
+        "]}";
+
+    std::vector<float> o0 = {273.15f, 300.0f};
+    std::vector<float> o1 = {1.0f, 2.0f};
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(o0.data()), o0.size() * sizeof(float)},
+        {reinterpret_cast<const std::uint8_t*>(o1.data()), o1.size() * sizeof(float)},
+    };
+    return tensogram::encode(json, objects);
+}
+
+} // anonymous namespace
+
+TEST(MetadataTest, PerObjectStringScopesToIndex) {
+    auto encoded = encode_two_objects_with_base();
+    auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
+    ASSERT_EQ(meta.num_objects(), 2u);
+
+    // The message-level getter first-matches object 0…
+    EXPECT_EQ(meta.get_string("shortName"), "2t");
+    // …the per-object getter reaches each object independently.
+    EXPECT_EQ(meta.get_string_at(0, "shortName"), "2t");
+    EXPECT_EQ(meta.get_string_at(1, "shortName"), "msl");
+}
+
+TEST(MetadataTest, PerObjectIntFloatAndNested) {
+    auto encoded = encode_two_objects_with_base();
+    auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
+
+    EXPECT_EQ(meta.get_int_at(0, "level", -1), 0);
+    EXPECT_EQ(meta.get_int_at(1, "level", -1), 500);
+    EXPECT_DOUBLE_EQ(meta.get_float_at(1, "scale", 0.0), 0.01);
+    EXPECT_EQ(meta.get_string_at(1, "geometry.gridType"), "regular_ll");
+    // object 0 has no geometry / scale → defaults
+    EXPECT_EQ(meta.get_string_at(0, "geometry.gridType"), "");
+    EXPECT_EQ(meta.get_int_at(0, "scale", 7), 7);
+}
+
+TEST(MetadataTest, PerObjectOutOfRange) {
+    auto encoded = encode_two_objects_with_base();
+    auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
+
+    EXPECT_EQ(meta.get_string_at(9, "shortName"), "");
+    EXPECT_EQ(meta.get_int_at(9, "level", 42), 42);
+    EXPECT_EQ(meta.object_to_json(9), "");
+}
+
+TEST(MetadataTest, ObjectToJsonEnumeratesEverything) {
+    auto encoded = encode_two_objects_with_base();
+    auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
+
+    const std::string j1 = meta.object_to_json(1);
+    // Full object dumped as JSON — a viewer can display it without knowing keys.
+    EXPECT_NE(j1.find(R"("shortName":"msl")"), std::string::npos);
+    EXPECT_NE(j1.find(R"("gridType":"regular_ll")"), std::string::npos);
+    // Includes the encoder-populated tensor descriptor.
+    EXPECT_NE(j1.find("_reserved_"), std::string::npos);
+
+    const std::string all = meta.to_json();
+    EXPECT_NE(all.find(R"("base")"), std::string::npos);
+    EXPECT_NE(all.find(R"("shortName":"2t")"), std::string::npos);
+}

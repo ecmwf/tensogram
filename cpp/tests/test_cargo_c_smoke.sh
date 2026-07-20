@@ -35,8 +35,8 @@ set -euo pipefail
 PREFIX="${1:?usage: test_cargo_c_smoke.sh <installed-prefix>}"
 
 if [ ! -d "$PREFIX" ]; then
-    echo "error: $PREFIX is not a directory" >&2
-    exit 1
+	echo "error: $PREFIX is not a directory" >&2
+	exit 1
 fi
 
 # Resolve the repo's VERSION file relative to this script, not the
@@ -47,34 +47,40 @@ fi
 SCRIPT_DIR="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 if [ ! -f "$REPO_ROOT/VERSION" ]; then
-    echo "error: $REPO_ROOT/VERSION not found (resolved from script path)" >&2
-    exit 1
+	echo "error: $REPO_ROOT/VERSION not found (resolved from script path)" >&2
+	exit 1
 fi
 
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 pkg-config --exists tensogram || {
-    echo "error: pkg-config cannot find tensogram (PKG_CONFIG_PATH=$PKG_CONFIG_PATH)" >&2
-    exit 1
+	echo "error: pkg-config cannot find tensogram (PKG_CONFIG_PATH=$PKG_CONFIG_PATH)" >&2
+	exit 1
 }
 
-EXPECTED_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
+EXPECTED_VERSION="$(tr -d '[:space:]' <"$REPO_ROOT/VERSION")"
 ACTUAL_VERSION="$(pkg-config --modversion tensogram)"
 if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
-    echo "error: pkg-config --modversion = $ACTUAL_VERSION, expected $EXPECTED_VERSION" >&2
-    exit 1
+	echo "error: pkg-config --modversion = $ACTUAL_VERSION, expected $EXPECTED_VERSION" >&2
+	exit 1
 fi
 
 CFLAGS_OUT="$(pkg-config --cflags tensogram)"
 case "$CFLAGS_OUT" in
-    *-I*) ;;
-    *) echo "error: pkg-config --cflags missing -I: '$CFLAGS_OUT'" >&2; exit 1 ;;
+*-I*) ;;
+*)
+	echo "error: pkg-config --cflags missing -I: '$CFLAGS_OUT'" >&2
+	exit 1
+	;;
 esac
 
 LIBS_OUT="$(pkg-config --libs tensogram)"
 case "$LIBS_OUT" in
-    *-ltensogram*) ;;
-    *) echo "error: pkg-config --libs missing -ltensogram: '$LIBS_OUT'" >&2; exit 1 ;;
+*-ltensogram*) ;;
+*)
+	echo "error: pkg-config --libs missing -ltensogram: '$LIBS_OUT'" >&2
+	exit 1
+	;;
 esac
 
 # Use an explicit template so this works on every BSD/GNU mktemp the
@@ -84,7 +90,7 @@ esac
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/tensogram-smoke.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
-cat > "$TMP/main.c" <<'EOF'
+cat >"$TMP/main.c" <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -144,7 +150,61 @@ int main(void) {
     tgm_message_free(msg);
     tgm_bytes_free(enc);
 
-    printf("wire_version=%u round_trip=ok\n", (unsigned)TGM_WIRE_VERSION);
+    // -- Part 2: per-object metadata walk over a multi-object message --------
+    // Two objects with distinct base[i] metadata.  A C client used to have to
+    // parse the CBOR metadata frame by hand to reach base[1]; the `*_at`
+    // accessors read each object directly, no CBOR reader required.
+    const char *meta_json2 =
+        "{\"descriptors\":["
+        "{\"type\":\"ntensor\",\"ndim\":1,\"shape\":[2],\"strides\":[4],"
+        "\"dtype\":\"float32\",\"byte_order\":\"little\",\"encoding\":\"none\","
+        "\"filter\":\"none\",\"compression\":\"none\"},"
+        "{\"type\":\"ntensor\",\"ndim\":1,\"shape\":[2],\"strides\":[4],"
+        "\"dtype\":\"float32\",\"byte_order\":\"little\",\"encoding\":\"none\","
+        "\"filter\":\"none\",\"compression\":\"none\"}],"
+        "\"base\":["
+        "{\"shortName\":\"2t\",\"level\":0},"
+        "{\"shortName\":\"msl\",\"level\":500,\"geometry\":{\"gridType\":\"regular_ll\"}}]}";
+
+    float a0[2] = { 1.0f, 2.0f };
+    float a1[2] = { 3.0f, 4.0f };
+    const uint8_t *ptrs2[2] = { (const uint8_t*)a0, (const uint8_t*)a1 };
+    const size_t lens2[2] = { sizeof(a0), sizeof(a1) };
+
+    tgm_bytes_t enc2 = {0};
+    if (tgm_encode(meta_json2, ptrs2, lens2, 2, "xxh3", 0, &enc2) != TGM_ERROR_OK) {
+        fprintf(stderr, "multi-object encode failed: %s\n", err_or(tgm_last_error()));
+        return 1;
+    }
+
+    tgm_metadata_t *meta = NULL;
+    if (tgm_decode_metadata(enc2.data, enc2.len, &meta) != TGM_ERROR_OK || meta == NULL) {
+        fprintf(stderr, "decode_metadata failed: %s\n", err_or(tgm_last_error()));
+        tgm_bytes_free(enc2);
+        return 1;
+    }
+
+    const char *sn0  = tgm_metadata_get_string_at(meta, 0, "shortName");
+    const char *sn1  = tgm_metadata_get_string_at(meta, 1, "shortName");
+    const char *grid = tgm_metadata_get_string_at(meta, 1, "geometry.gridType");
+    const char *j1   = tgm_metadata_object_to_json(meta, 1);
+    int per_object_ok =
+        tgm_metadata_num_objects(meta) == 2 &&
+        sn0 && strcmp(sn0, "2t") == 0 &&
+        sn1 && strcmp(sn1, "msl") == 0 &&
+        tgm_metadata_get_int_at(meta, 1, "level", -1) == 500 &&
+        grid && strcmp(grid, "regular_ll") == 0 &&
+        j1 && strstr(j1, "regular_ll") != NULL;
+
+    tgm_metadata_free(meta);
+    tgm_bytes_free(enc2);
+
+    if (!per_object_ok) {
+        fprintf(stderr, "per-object metadata walk mismatch\n");
+        return 1;
+    }
+
+    printf("wire_version=%u round_trip=ok per_object=ok\n", (unsigned)TGM_WIRE_VERSION);
     return 0;
 }
 EOF
@@ -155,13 +215,13 @@ EOF
 # so each flag is a separate argv entry to `cc`. This is the standard
 # way to pass pkg-config output through bash and survives flags that
 # happen to contain non-IFS characters.
-read -r -a cflags_arr <<< "$CFLAGS_OUT"
-read -r -a libs_arr   <<< "$LIBS_OUT"
+read -r -a cflags_arr <<<"$CFLAGS_OUT"
+read -r -a libs_arr <<<"$LIBS_OUT"
 
 cc "${cflags_arr[@]}" "$TMP/main.c" "${libs_arr[@]}" -o "$TMP/main"
 
 LD_LIBRARY_PATH="$PREFIX/lib:${LD_LIBRARY_PATH:-}" \
-DYLD_LIBRARY_PATH="$PREFIX/lib:${DYLD_LIBRARY_PATH:-}" \
-"$TMP/main" | grep -q "round_trip=ok"
+	DYLD_LIBRARY_PATH="$PREFIX/lib:${DYLD_LIBRARY_PATH:-}" \
+	"$TMP/main" | grep -q "per_object=ok"
 
 echo "cargo-c smoke test OK (prefix=$PREFIX)"

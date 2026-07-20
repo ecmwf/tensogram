@@ -1865,8 +1865,16 @@ pub extern "C" fn tgm_metadata_num_objects(meta: *const TgmMetadata) -> usize {
 }
 
 /// Look up a string value by dot-notation key (e.g. "mars.class").
-/// Returns NULL if the key is not found or is not a string.
+///
+/// Text is returned as-is; integer / float / bool leaves are coerced to their
+/// string form.  Returns NULL if the key is not found, the value is a container
+/// (map / array), null, or bytes, or the value contains an interior NUL byte
+/// (not representable as a C string).
 /// The pointer is valid until the metadata handle is freed.
+///
+/// The pseudo-key `"version"` is special-cased: it returns the wire-format
+/// version from the message preamble (see [`tgm_metadata_version`]), not a
+/// CBOR `version` field.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_string(
     meta: *const TgmMetadata,
@@ -1882,22 +1890,18 @@ pub extern "C" fn tgm_metadata_get_string(
     };
 
     let m = unsafe { &(*meta) };
-    let value = lookup_string_key(&m.global_metadata, key_str);
-
-    match value {
-        Some(s) => {
-            let mut cache = m.cache.borrow_mut();
-            let entry = cache
-                .entry(key_str.to_string())
-                .or_insert_with(|| CString::new(s.clone()).unwrap_or_default());
-            entry.as_ptr()
-        }
+    match lookup_string_key(&m.global_metadata, key_str) {
+        Some(s) => cache_cstr(m, key_str.to_string(), || s),
         None => ptr::null(),
     }
 }
 
 /// Look up an integer value by dot-notation key.
 /// Returns `default_val` if the key is not found or is not an integer.
+///
+/// The pseudo-key `"version"` is special-cased: it returns the wire-format
+/// version from the message preamble (see [`tgm_metadata_version`]), not a
+/// CBOR `version` field.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_int(
     meta: *const TgmMetadata,
@@ -1917,7 +1921,9 @@ pub extern "C" fn tgm_metadata_get_int(
     lookup_int_key(&m.global_metadata, key_str).unwrap_or(default_val)
 }
 
-/// Look up a float value by dot-notation key.
+/// Look up a float value by dot-notation key.  Integer leaves are widened to
+/// `f64`.  Returns `default_val` if the key is not found or the value is not
+/// numeric.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_float(
     meta: *const TgmMetadata,
@@ -1935,6 +1941,156 @@ pub extern "C" fn tgm_metadata_get_float(
 
     let m = unsafe { &(*meta) };
     lookup_float_key(&m.global_metadata, key_str).unwrap_or(default_val)
+}
+
+// ---------------------------------------------------------------------------
+// Per-object metadata accessors
+//
+// The message-level getters above search `base` and return the first match,
+// so `base[i]` for a multi-object message is unreachable through them.  These
+// `_at` variants scope the lookup to a single object — the C equivalent of
+// Rust's `meta.base[obj_index].get(key)` — so a caller can walk every object.
+// ---------------------------------------------------------------------------
+
+/// Look up a string value in object `obj_index`'s metadata by dot-notation key
+/// (e.g. `"shortName"`, `"mars.class"`, `"geometry.gridType"`).
+///
+/// Scoped to `base[obj_index]` only — no cross-object first-match, no `extra`
+/// fallback, and `_reserved_` is skipped at the first level (use the object
+/// accessors for the tensor shape/dtype).  Integer / float / bool leaves are
+/// coerced to their string form.
+///
+/// Returns NULL if the handle is null, `obj_index` is out of range, the key is
+/// absent, the value is a container (map / array), null, or bytes, or the value
+/// contains an interior NUL byte (not representable as a C string).  The pointer
+/// is valid until the metadata handle is freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_get_string_at(
+    meta: *const TgmMetadata,
+    obj_index: usize,
+    key: *const c_char,
+) -> *const c_char {
+    if meta.is_null() || key.is_null() {
+        return ptr::null();
+    }
+    let key_str = match unsafe { CStr::from_ptr(key) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null(),
+    };
+    let m = unsafe { &(*meta) };
+    let Some(entry) = m.global_metadata.base.get(obj_index) else {
+        return ptr::null();
+    };
+    match lookup_cbor_in_object(entry, key_str).and_then(cbor_as_string) {
+        Some(s) => cache_cstr(m, format!("{obj_index}\0{key_str}"), || s),
+        None => ptr::null(),
+    }
+}
+
+/// Look up an integer value in object `obj_index`'s metadata by dot-notation
+/// key.  Returns `default_val` if the handle is null, `obj_index` is out of
+/// range, the key is absent, or the value is not an integer.  See
+/// [`tgm_metadata_get_string_at`] for scoping rules.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_get_int_at(
+    meta: *const TgmMetadata,
+    obj_index: usize,
+    key: *const c_char,
+    default_val: i64,
+) -> i64 {
+    if meta.is_null() || key.is_null() {
+        return default_val;
+    }
+    let key_str = match unsafe { CStr::from_ptr(key) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return default_val,
+    };
+    let m = unsafe { &(*meta) };
+    match m.global_metadata.base.get(obj_index) {
+        Some(entry) => lookup_cbor_in_object(entry, key_str)
+            .and_then(cbor_as_i64)
+            .unwrap_or(default_val),
+        None => default_val,
+    }
+}
+
+/// Look up a float value in object `obj_index`'s metadata by dot-notation key.
+/// Returns `default_val` if the handle is null, `obj_index` is out of range,
+/// the key is absent, or the value is not numeric.  Integer leaves are widened
+/// to `f64`.  See [`tgm_metadata_get_string_at`] for scoping rules.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_get_float_at(
+    meta: *const TgmMetadata,
+    obj_index: usize,
+    key: *const c_char,
+    default_val: f64,
+) -> f64 {
+    if meta.is_null() || key.is_null() {
+        return default_val;
+    }
+    let key_str = match unsafe { CStr::from_ptr(key) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return default_val,
+    };
+    let m = unsafe { &(*meta) };
+    match m.global_metadata.base.get(obj_index) {
+        Some(entry) => lookup_cbor_in_object(entry, key_str)
+            .and_then(cbor_as_f64)
+            .unwrap_or(default_val),
+        None => default_val,
+    }
+}
+
+/// Serialise object `obj_index`'s full metadata (`base[obj_index]`) to a JSON
+/// object string — including any `_reserved_.tensor` descriptor.
+///
+/// This is the enumerate-everything companion to the typed getters: a caller
+/// that does not know the key set ahead of time (e.g. a metadata viewer) can
+/// display or parse the whole object without walking CBOR itself.  Returns
+/// NULL for a null handle or an out-of-range `obj_index`.  The pointer is valid
+/// until the metadata handle is freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_object_to_json(
+    meta: *const TgmMetadata,
+    obj_index: usize,
+) -> *const c_char {
+    if meta.is_null() {
+        return ptr::null();
+    }
+    let m = unsafe { &(*meta) };
+    let Some(entry) = m.global_metadata.base.get(obj_index) else {
+        return ptr::null();
+    };
+    cache_cstr(m, format!("\0json\0{obj_index}"), || {
+        cbor_map_to_json(entry).to_string()
+    })
+}
+
+/// Serialise the whole global metadata to a JSON object string, shaped
+/// `{ "base": [...], "_reserved_": {...}, "_extra_": {...} }` (empty sections
+/// omitted).  Returns NULL for a null handle; the pointer is valid until the
+/// metadata handle is freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_to_json(meta: *const TgmMetadata) -> *const c_char {
+    if meta.is_null() {
+        return ptr::null();
+    }
+    let m = unsafe { &(*meta) };
+    cache_cstr(m, "\0json".to_string(), || {
+        let gm = &m.global_metadata;
+        let mut root = serde_json::Map::new();
+        if !gm.base.is_empty() {
+            let base: Vec<serde_json::Value> = gm.base.iter().map(cbor_map_to_json).collect();
+            root.insert("base".to_string(), serde_json::Value::Array(base));
+        }
+        if !gm.reserved.is_empty() {
+            root.insert("_reserved_".to_string(), cbor_map_to_json(&gm.reserved));
+        }
+        if !gm.extra.is_empty() {
+            root.insert("_extra_".to_string(), cbor_map_to_json(&gm.extra));
+        }
+        serde_json::Value::Object(root).to_string()
+    })
 }
 
 /// Free a metadata handle.
@@ -2346,6 +2502,65 @@ fn resolve_cbor_path<'a>(
     None
 }
 
+/// Navigate a dot-path within a single `base[i]` entry.
+///
+/// Scoped to exactly this object — no cross-object first-match and no
+/// `extra` fallback (unlike [`lookup_cbor_value`]).  `_reserved_` is skipped
+/// at the first level, matching the message-level getters (the object's
+/// tensor descriptor is reached via the object accessors instead).
+fn lookup_cbor_in_object<'a>(
+    entry: &'a BTreeMap<String, ciborium::Value>,
+    key: &str,
+) -> Option<&'a ciborium::Value> {
+    if key.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.is_empty() || parts[0].is_empty() {
+        return None;
+    }
+    resolve_in_btree_skip_reserved(entry, &parts)
+}
+
+/// Coerce a CBOR value to a display string (text / number / bool).
+fn cbor_as_string(v: &ciborium::Value) -> Option<String> {
+    match v {
+        ciborium::Value::Text(s) => Some(s.clone()),
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            Some(n.to_string())
+        }
+        ciborium::Value::Float(f) => Some(f.to_string()),
+        ciborium::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Coerce a CBOR value to `i64` (integers only).
+fn cbor_as_i64(v: &ciborium::Value) -> Option<i64> {
+    match v {
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            i64::try_from(n).ok()
+        }
+        _ => None,
+    }
+}
+
+/// Coerce a CBOR value to `f64` (float, or integer widened).
+fn cbor_as_f64(v: &ciborium::Value) -> Option<f64> {
+    match v {
+        ciborium::Value::Float(f) => Some(*f),
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            // i128 → f64 may lose precision for very large integers, but this
+            // is the expected behavior for a float accessor on an integer value.
+            Some(n as f64)
+        }
+        _ => None,
+    }
+}
+
 fn lookup_string_key(global_metadata: &GlobalMetadata, key: &str) -> Option<String> {
     if key.is_empty() {
         return None;
@@ -2358,16 +2573,7 @@ fn lookup_string_key(global_metadata: &GlobalMetadata, key: &str) -> Option<Stri
         return Some(tensogram::WIRE_VERSION.to_string());
     }
 
-    lookup_cbor_value(global_metadata, key).and_then(|v| match v {
-        ciborium::Value::Text(s) => Some(s.clone()),
-        ciborium::Value::Integer(i) => {
-            let n: i128 = (*i).into();
-            Some(n.to_string())
-        }
-        ciborium::Value::Float(f) => Some(f.to_string()),
-        ciborium::Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    })
+    lookup_cbor_value(global_metadata, key).and_then(cbor_as_string)
 }
 
 fn lookup_int_key(global_metadata: &GlobalMetadata, key: &str) -> Option<i64> {
@@ -2376,26 +2582,104 @@ fn lookup_int_key(global_metadata: &GlobalMetadata, key: &str) -> Option<i64> {
         return Some(tensogram::WIRE_VERSION as i64);
     }
 
-    lookup_cbor_value(global_metadata, key).and_then(|v| match v {
-        ciborium::Value::Integer(i) => {
-            let n: i128 = (*i).into();
-            i64::try_from(n).ok()
-        }
-        _ => None,
-    })
+    lookup_cbor_value(global_metadata, key).and_then(cbor_as_i64)
 }
 
 fn lookup_float_key(global_metadata: &GlobalMetadata, key: &str) -> Option<f64> {
-    lookup_cbor_value(global_metadata, key).and_then(|v| match v {
-        ciborium::Value::Float(f) => Some(*f),
+    lookup_cbor_value(global_metadata, key).and_then(cbor_as_f64)
+}
+
+/// Convert a CBOR value to a `serde_json::Value` for the metadata JSON export.
+///
+/// Faithful for the value kinds that appear in tensogram metadata; the
+/// awkward cases are handled explicitly:
+/// - integers outside `i64`/`u64` range become strings (JSON has no i128),
+/// - non-finite floats become `null` (JSON has no NaN/Inf),
+/// - byte strings become lowercase hex,
+/// - non-text map keys become their debug form (metadata keys are text).
+fn cbor_to_json(v: &ciborium::Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    match v {
+        ciborium::Value::Null => J::Null,
+        ciborium::Value::Bool(b) => J::Bool(*b),
         ciborium::Value::Integer(i) => {
             let n: i128 = (*i).into();
-            // i128 → f64 may lose precision for very large integers, but this
-            // is the expected behavior for a float accessor on an integer value.
-            Some(n as f64)
+            if let Ok(x) = i64::try_from(n) {
+                J::from(x)
+            } else if let Ok(x) = u64::try_from(n) {
+                J::from(x)
+            } else {
+                J::String(n.to_string())
+            }
         }
-        _ => None,
-    })
+        ciborium::Value::Float(f) => serde_json::Number::from_f64(*f).map_or(J::Null, J::Number),
+        ciborium::Value::Text(s) => J::String(s.clone()),
+        ciborium::Value::Bytes(b) => {
+            // Single allocation — `format!` per byte would allocate a String each.
+            use std::fmt::Write as _;
+            let mut hex = String::with_capacity(b.len() * 2);
+            for byte in b {
+                let _ = write!(hex, "{byte:02x}");
+            }
+            J::String(hex)
+        }
+        ciborium::Value::Array(a) => J::Array(a.iter().map(cbor_to_json).collect()),
+        ciborium::Value::Map(m) => {
+            let mut obj = serde_json::Map::with_capacity(m.len());
+            for (k, val) in m {
+                let key = match k {
+                    ciborium::Value::Text(s) => s.clone(),
+                    other => format!("{other:?}"),
+                };
+                obj.insert(key, cbor_to_json(val));
+            }
+            J::Object(obj)
+        }
+        // Tag / other exotic kinds are not produced by the metadata encoder.
+        _ => J::Null,
+    }
+}
+
+/// Convert a metadata sub-map (`base[i]`, `_reserved_`, `_extra_`) to a JSON
+/// object.  Their keys are always text, unlike a nested `ciborium::Value::Map`,
+/// so this is the simple companion to [`cbor_to_json`] used by the exporters.
+fn cbor_map_to_json(map: &BTreeMap<String, ciborium::Value>) -> serde_json::Value {
+    serde_json::Value::Object(
+        map.iter()
+            .map(|(k, v)| (k.clone(), cbor_to_json(v)))
+            .collect(),
+    )
+}
+
+/// Cache the string produced by `build` under `key` and return a borrowed
+/// pointer valid until the handle is freed, or NULL if the string cannot be a
+/// C string (it contains an interior NUL byte).
+///
+/// This is how every string-returning metadata accessor hands ownership to C
+/// without a separate free: the `CString` lives in the handle, so the returned
+/// pointer outlives the transient `RefMut`.  `build` runs **only on a cache
+/// miss**, so a repeat call (e.g. re-fetching an object's JSON) returns the
+/// cached pointer without re-serialising.
+///
+/// A value with an interior NUL is not representable as a C string, so it
+/// yields NULL (the accessors' "no usable value" signal) rather than a
+/// silently-truncated empty string.  (Serialised JSON never hits this: serde
+/// escapes NUL as `\u0000`.)
+///
+/// Cache keys are namespaced to avoid collision between the accessors that
+/// share the map: message-level `get_string` uses the raw (NUL-free) C key;
+/// `get_string_at` uses `"{obj_index}\0{key}"`; the JSON exporters use
+/// `"\0json"` / `"\0json\0{obj_index}"` — all disjoint because a C key can
+/// neither contain nor start with a NUL.
+fn cache_cstr(m: &TgmMetadata, key: String, build: impl FnOnce() -> String) -> *const c_char {
+    use std::collections::btree_map::Entry;
+    match m.cache.borrow_mut().entry(key) {
+        Entry::Occupied(e) => e.into_mut().as_ptr(),
+        Entry::Vacant(slot) => match CString::new(build()) {
+            Ok(cs) => slot.insert(cs).as_ptr(),
+            Err(_) => ptr::null(),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3019,6 +3303,273 @@ mod tests {
         extra.insert("str".into(), ciborium::Value::Text("hello".into()));
         let meta = make_meta(vec![], extra);
         assert!(lookup_float_key(&meta, "str").is_none());
+    }
+
+    // ── per-object accessors (lookup_cbor_in_object + _at getters) ─────
+
+    /// Two-object metadata: object 0 = 2t/sfc, object 1 = msl at 500 hPa with
+    /// a nested geometry and a `_reserved_.tensor` descriptor.
+    fn two_object_meta() -> GlobalMetadata {
+        let mut e0 = BTreeMap::new();
+        e0.insert("shortName".into(), ciborium::Value::Text("2t".into()));
+        e0.insert("level".into(), ciborium::Value::Integer(0.into()));
+        e0.insert(
+            "_reserved_".into(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("tensor".into()),
+                ciborium::Value::Map(vec![(
+                    ciborium::Value::Text("dtype".into()),
+                    ciborium::Value::Text("float64".into()),
+                )]),
+            )]),
+        );
+
+        let mut e1 = BTreeMap::new();
+        e1.insert("shortName".into(), ciborium::Value::Text("msl".into()));
+        e1.insert("level".into(), ciborium::Value::Integer(500.into()));
+        e1.insert("scale".into(), ciborium::Value::Float(0.01));
+        e1.insert(
+            "geometry".into(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("gridType".into()),
+                ciborium::Value::Text("regular_ll".into()),
+            )]),
+        );
+        make_meta(vec![e0, e1], BTreeMap::new())
+    }
+
+    #[test]
+    fn lookup_in_object_scopes_to_index() {
+        let m = two_object_meta();
+        assert!(matches!(
+            lookup_cbor_in_object(&m.base[0], "shortName"),
+            Some(ciborium::Value::Text(s)) if s == "2t"
+        ));
+        assert!(matches!(
+            lookup_cbor_in_object(&m.base[1], "shortName"),
+            Some(ciborium::Value::Text(s)) if s == "msl"
+        ));
+    }
+
+    #[test]
+    fn lookup_in_object_nested_dot_path() {
+        let m = two_object_meta();
+        assert!(matches!(
+            lookup_cbor_in_object(&m.base[1], "geometry.gridType"),
+            Some(ciborium::Value::Text(s)) if s == "regular_ll"
+        ));
+        // object 0 has no geometry
+        assert!(lookup_cbor_in_object(&m.base[0], "geometry.gridType").is_none());
+    }
+
+    #[test]
+    fn lookup_in_object_skips_reserved() {
+        let m = two_object_meta();
+        assert!(lookup_cbor_in_object(&m.base[0], "_reserved_.tensor.dtype").is_none());
+    }
+
+    #[test]
+    fn lookup_in_object_empty_key() {
+        let m = two_object_meta();
+        assert!(lookup_cbor_in_object(&m.base[0], "").is_none());
+    }
+
+    /// Build a live handle and exercise the extern `_at` getters end-to-end.
+    fn make_handle(gm: GlobalMetadata) -> TgmMetadata {
+        TgmMetadata {
+            global_metadata: gm,
+            cache: std::cell::RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    #[test]
+    fn get_string_at_reads_each_object() {
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let k = CString::new("shortName").unwrap();
+        let s0 = tgm_metadata_get_string_at(hp, 0, k.as_ptr());
+        let s1 = tgm_metadata_get_string_at(hp, 1, k.as_ptr());
+        assert!(!s0.is_null() && !s1.is_null());
+        let v0 = unsafe { CStr::from_ptr(s0) }.to_str().unwrap();
+        let v1 = unsafe { CStr::from_ptr(s1) }.to_str().unwrap();
+        assert_eq!((v0, v1), ("2t", "msl"));
+    }
+
+    #[test]
+    fn get_int_and_float_at() {
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let level = CString::new("level").unwrap();
+        assert_eq!(tgm_metadata_get_int_at(hp, 0, level.as_ptr(), -1), 0);
+        assert_eq!(tgm_metadata_get_int_at(hp, 1, level.as_ptr(), -1), 500);
+        let scale = CString::new("scale").unwrap();
+        assert_eq!(tgm_metadata_get_float_at(hp, 1, scale.as_ptr(), 0.0), 0.01);
+        // absent key → default; wrong type → default
+        let missing = CString::new("nope").unwrap();
+        assert_eq!(tgm_metadata_get_int_at(hp, 0, missing.as_ptr(), 42), 42);
+        assert_eq!(tgm_metadata_get_int_at(hp, 1, scale.as_ptr(), 42), 42);
+    }
+
+    #[test]
+    fn get_at_out_of_range_and_null() {
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let k = CString::new("shortName").unwrap();
+        assert!(tgm_metadata_get_string_at(hp, 9, k.as_ptr()).is_null());
+        assert_eq!(tgm_metadata_get_int_at(hp, 9, k.as_ptr(), 7), 7);
+        assert!(tgm_metadata_get_string_at(ptr::null(), 0, k.as_ptr()).is_null());
+    }
+
+    #[test]
+    fn object_to_json_roundtrips_via_serde() {
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let p = tgm_metadata_object_to_json(hp, 1);
+        assert!(!p.is_null());
+        let text = unsafe { CStr::from_ptr(p) }.to_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["shortName"], "msl");
+        assert_eq!(v["level"], 500);
+        assert_eq!(v["geometry"]["gridType"], "regular_ll");
+        // out of range → null
+        assert!(tgm_metadata_object_to_json(hp, 9).is_null());
+    }
+
+    #[test]
+    fn to_json_has_base_array() {
+        let h = make_handle(two_object_meta());
+        let p = tgm_metadata_to_json(&h as *const TgmMetadata);
+        let text = unsafe { CStr::from_ptr(p) }.to_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["base"].as_array().unwrap().len(), 2);
+        assert_eq!(v["base"][0]["shortName"], "2t");
+    }
+
+    #[test]
+    fn cbor_to_json_handles_awkward_kinds() {
+        // bytes → hex, non-finite float → null, big int → string
+        assert_eq!(
+            cbor_to_json(&ciborium::Value::Bytes(vec![0xde, 0xad])),
+            serde_json::Value::String("dead".into())
+        );
+        assert_eq!(
+            cbor_to_json(&ciborium::Value::Float(f64::NAN)),
+            serde_json::Value::Null
+        );
+        // u64::MAX exceeds i64 but is a valid CBOR integer → JSON number via u64.
+        assert_eq!(
+            cbor_to_json(&ciborium::Value::Integer(u64::MAX.into())),
+            serde_json::Value::from(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn get_string_at_container_value_is_null() {
+        // The key resolves to a map, not a scalar → NULL (not a stringified map).
+        let h = make_handle(two_object_meta());
+        let k = CString::new("geometry").unwrap();
+        assert!(tgm_metadata_get_string_at(&h as *const TgmMetadata, 1, k.as_ptr()).is_null());
+    }
+
+    #[test]
+    fn get_at_exact_boundary_index() {
+        // obj_index == num_objects (the classic off-by-one) must miss, not panic.
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let k = CString::new("shortName").unwrap();
+        assert!(tgm_metadata_get_string_at(hp, 2, k.as_ptr()).is_null());
+        assert_eq!(tgm_metadata_get_int_at(hp, 2, k.as_ptr(), -1), -1);
+        assert!(tgm_metadata_object_to_json(hp, 2).is_null());
+    }
+
+    #[test]
+    fn json_exporters_null_handle() {
+        let k = CString::new("x").unwrap();
+        assert!(tgm_metadata_object_to_json(ptr::null(), 0).is_null());
+        assert!(tgm_metadata_to_json(ptr::null()).is_null());
+        assert!(tgm_metadata_get_int_at(ptr::null(), 0, k.as_ptr(), 5) == 5);
+        assert!(tgm_metadata_get_float_at(ptr::null(), 0, k.as_ptr(), 1.5) == 1.5);
+    }
+
+    #[test]
+    fn to_json_on_empty_metadata_is_empty_object() {
+        let h = make_handle(make_meta(vec![], BTreeMap::new()));
+        let p = tgm_metadata_to_json(&h as *const TgmMetadata);
+        let text = unsafe { CStr::from_ptr(p) }.to_str().unwrap();
+        assert_eq!(text, "{}");
+    }
+
+    #[test]
+    fn cache_cstr_interior_nul_returns_null() {
+        // A value with an interior NUL is not representable as a C string, so
+        // cache_cstr returns NULL (not a truncated empty string, not a panic).
+        let h = make_handle(make_meta(vec![], BTreeMap::new()));
+        assert!(cache_cstr(&h, "k".to_string(), || "a\0b".to_string()).is_null());
+    }
+
+    #[test]
+    fn get_string_at_no_cross_object_bleed() {
+        // Only object 1 carries `geometry`; object 0 must not first-match into it.
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let k = CString::new("geometry.gridType").unwrap();
+        assert!(tgm_metadata_get_string_at(hp, 0, k.as_ptr()).is_null());
+        let s1 = tgm_metadata_get_string_at(hp, 1, k.as_ptr());
+        assert_eq!(
+            unsafe { CStr::from_ptr(s1) }.to_str().unwrap(),
+            "regular_ll"
+        );
+    }
+
+    #[test]
+    fn get_string_at_nul_value_returns_null() {
+        // A stored value with an interior NUL is not representable as a C string,
+        // so it surfaces as NULL end-to-end (not "", not a panic).
+        let mut e = BTreeMap::new();
+        e.insert("weird".into(), ciborium::Value::Text("a\0b".into()));
+        let h = make_handle(make_meta(vec![e], BTreeMap::new()));
+        let k = CString::new("weird").unwrap();
+        assert!(tgm_metadata_get_string_at(&h as *const TgmMetadata, 0, k.as_ptr()).is_null());
+    }
+
+    #[test]
+    fn get_float_at_wrong_type_returns_default() {
+        // base[0].shortName is text → the float accessor yields the default.
+        let h = make_handle(two_object_meta());
+        let k = CString::new("shortName").unwrap();
+        assert_eq!(
+            tgm_metadata_get_float_at(&h as *const TgmMetadata, 0, k.as_ptr(), 9.5),
+            9.5
+        );
+    }
+
+    #[test]
+    fn object_to_json_serialises_arrays() {
+        let mut e = BTreeMap::new();
+        e.insert(
+            "pl".into(),
+            ciborium::Value::Array(vec![
+                ciborium::Value::Integer(1.into()),
+                ciborium::Value::Integer(2.into()),
+            ]),
+        );
+        let h = make_handle(make_meta(vec![e], BTreeMap::new()));
+        let p = tgm_metadata_object_to_json(&h as *const TgmMetadata, 0);
+        let text = unsafe { CStr::from_ptr(p) }.to_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["pl"], serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn object_to_json_caches_pointer_across_calls() {
+        // A repeat call returns the same cached CString — proving `build` runs
+        // once (lazily) and is not re-serialised on a hit.
+        let h = make_handle(two_object_meta());
+        let hp = &h as *const TgmMetadata;
+        let p1 = tgm_metadata_object_to_json(hp, 0);
+        let p2 = tgm_metadata_object_to_json(hp, 0);
+        assert!(!p1.is_null());
+        assert_eq!(p1, p2);
     }
 
     // ── parse_encode_json ──
