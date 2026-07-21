@@ -9,6 +9,7 @@ FetchContent_MakeAvailable(googletest)
 set(TENSOGRAM_TEST_SOURCES
     test_encode_decode.cpp
     test_metadata.cpp
+    test_meta_value.cpp
     test_descriptor.cpp
     test_file.cpp
     test_iterators.cpp
