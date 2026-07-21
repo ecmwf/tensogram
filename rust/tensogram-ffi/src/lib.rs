@@ -55,9 +55,9 @@ use tensogram::validate::{
     ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
 };
 use tensogram::{
-    DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, RESERVED_KEY,
-    StreamingEncoder, TensogramError, TensogramFile, decode, decode_metadata, decode_object,
-    decode_range, encode, encode_pre_encoded, parse_hash_name, scan,
+    DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, MetaType, MetaValue,
+    RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode, decode_metadata,
+    decode_object, decode_range, encode, encode_pre_encoded, parse_hash_name, scan,
 };
 
 // ---------------------------------------------------------------------------
@@ -322,6 +322,24 @@ pub struct TgmMetadata {
     global_metadata: GlobalMetadata,
     /// Cache for string accessors (key → null-terminated value).
     cache: std::cell::RefCell<BTreeMap<String, CString>>,
+    /// Append-only arena backing every borrowed [`TgmValue`] cursor handed to
+    /// C by the `tgm_metadata_*` / `tgm_value_*` accessors.
+    ///
+    /// Handles are **borrowed** views: the caller never frees them. Each stored
+    /// [`TgmValue`] borrows into `global_metadata` (never mutated or moved after
+    /// construction) and holds a back-pointer to this handle so nested
+    /// navigators can allocate arena-backed children. The arena is dropped
+    /// together with `global_metadata` at `tgm_metadata_free`, so no stored
+    /// handle can outlive the data it points at. Append-only (never cleared
+    /// mid-life) so previously returned pointers stay valid.
+    ///
+    /// The `Box` is **not** redundant with the `Vec`'s own heap storage: the C
+    /// API hands out raw `*const TgmValue` into these entries, so each element
+    /// must keep a stable address across `Vec` reallocations. A `Vec<TgmValue>`
+    /// would move its elements on growth and dangle every outstanding handle;
+    /// boxing pins each cursor. Hence the `clippy::vec_box` allow.
+    #[allow(clippy::vec_box)]
+    value_arena: std::cell::RefCell<Vec<Box<TgmValue>>>,
 }
 
 /// File handle.
@@ -1325,6 +1343,7 @@ pub extern "C" fn tgm_decode_metadata(
             let m = Box::new(TgmMetadata {
                 global_metadata,
                 cache: std::cell::RefCell::new(BTreeMap::new()),
+                value_arena: std::cell::RefCell::new(Vec::new()),
             });
             unsafe {
                 *out = Box::into_raw(m);
@@ -1750,6 +1769,7 @@ pub extern "C" fn tgm_message_metadata(
     let meta = Box::new(TgmMetadata {
         global_metadata: m.global_metadata.clone(),
         cache: std::cell::RefCell::new(BTreeMap::new()),
+        value_arena: std::cell::RefCell::new(Vec::new()),
     });
     unsafe {
         *out = Box::into_raw(meta);
@@ -1978,10 +1998,11 @@ pub extern "C" fn tgm_metadata_get_string_at(
         Err(_) => return ptr::null(),
     };
     let m = unsafe { &(*meta) };
-    let Some(entry) = m.global_metadata.base.get(obj_index) else {
-        return ptr::null();
-    };
-    match lookup_cbor_in_object(entry, key_str).and_then(cbor_as_string) {
+    match m
+        .global_metadata
+        .get_value_at(obj_index, key_str)
+        .and_then(cbor_as_string)
+    {
         Some(s) => cache_cstr(m, format!("{obj_index}\0{key_str}"), || s),
         None => ptr::null(),
     }
@@ -2006,12 +2027,10 @@ pub extern "C" fn tgm_metadata_get_int_at(
         Err(_) => return default_val,
     };
     let m = unsafe { &(*meta) };
-    match m.global_metadata.base.get(obj_index) {
-        Some(entry) => lookup_cbor_in_object(entry, key_str)
-            .and_then(cbor_as_i64)
-            .unwrap_or(default_val),
-        None => default_val,
-    }
+    m.global_metadata
+        .get_value_at(obj_index, key_str)
+        .and_then(cbor_as_i64)
+        .unwrap_or(default_val)
 }
 
 /// Look up a float value in object `obj_index`'s metadata by dot-notation key.
@@ -2033,12 +2052,10 @@ pub extern "C" fn tgm_metadata_get_float_at(
         Err(_) => return default_val,
     };
     let m = unsafe { &(*meta) };
-    match m.global_metadata.base.get(obj_index) {
-        Some(entry) => lookup_cbor_in_object(entry, key_str)
-            .and_then(cbor_as_f64)
-            .unwrap_or(default_val),
-        None => default_val,
-    }
+    m.global_metadata
+        .get_value_at(obj_index, key_str)
+        .and_then(cbor_as_f64)
+        .unwrap_or(default_val)
 }
 
 /// Serialise object `obj_index`'s full metadata (`base[obj_index]`) to a JSON
@@ -2091,6 +2108,538 @@ pub extern "C" fn tgm_metadata_to_json(meta: *const TgmMetadata) -> *const c_cha
         }
         serde_json::Value::Object(root).to_string()
     })
+}
+
+// ---------------------------------------------------------------------------
+// Value cursor (precise, zero-copy metadata access — plan §6.2)
+//
+// The value cursor is the single primitive for existence, typed extraction,
+// enumeration and structural navigation, mirroring `tensogram::MetaValue`.
+//
+// **Scoping.** `tgm_metadata_get` / `tgm_metadata_has` are *message-level*:
+// first match across `base[0..]` (skipping `_reserved_` at the first segment),
+// then fall back to `_extra_` (an explicit `extra.` / `_extra_.` prefix targets
+// `_extra_` directly). `tgm_metadata_get_at` / `tgm_metadata_has_at` are
+// *per-object*: scoped to `base[obj]` only — no cross-object first-match, no
+// `_extra_` fallback, `_reserved_` hidden at the first segment. `_reserved_` is
+// therefore hidden from the path getters but *visible* when enumerating a
+// section via `tgm_metadata_object`.
+//
+// **Lifetime.** Every `const tgm_value_t*` (and the `ptr+len` string/bytes it
+// yields) is a **borrowed** view owned by the `tgm_metadata_t`; it is valid
+// until `tgm_metadata_free` and must **never** be freed by the caller.
+//
+// **Coercion.** None. `tgm_value_as_string` is text-only, `tgm_value_as_i64` /
+// `tgm_value_as_u64` are integer-only (each reporting range success), and
+// `tgm_value_as_f64` accepts a float or an integer widened to `f64`. "Wrong
+// type" is reported distinctly (false / NULL) from "absent" (a NULL handle from
+// the lookup). A stored `0` / `""` / null is thus unambiguously present.
+// ---------------------------------------------------------------------------
+
+/// The kind of a metadata value (cbindgen: `tgm_value_type`, variants
+/// `TGM_VALUE_TYPE_*`).
+///
+/// Mirrors [`tensogram::MetaType`]. CBOR integers are i128-backed and surface
+/// as a single [`TgmValueType::Int`]; use [`tgm_value_as_i64`] /
+/// [`tgm_value_as_u64`] to extract with range checking.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmValueType {
+    Null,
+    Bool,
+    Int,
+    Float,
+    String,
+    Bytes,
+    Array,
+    Map,
+}
+
+impl From<MetaType> for TgmValueType {
+    fn from(t: MetaType) -> Self {
+        match t {
+            MetaType::Null => TgmValueType::Null,
+            MetaType::Bool => TgmValueType::Bool,
+            MetaType::Int => TgmValueType::Int,
+            MetaType::Float => TgmValueType::Float,
+            MetaType::String => TgmValueType::String,
+            MetaType::Bytes => TgmValueType::Bytes,
+            MetaType::Array => TgmValueType::Array,
+            MetaType::Map => TgmValueType::Map,
+        }
+    }
+}
+
+/// Opaque borrowed value cursor (cbindgen: `tgm_value_t`).
+///
+/// A handle wraps a borrowing [`MetaValue`] cursor plus a back-pointer to the
+/// owning [`TgmMetadata`] (so nested navigators can allocate arena-backed
+/// children). It is **borrowed**: the caller never frees it; it is valid until
+/// `tgm_metadata_free`. cbindgen emits it opaque (private fields, no `repr`),
+/// exactly like `tgm_metadata_t`.
+pub struct TgmValue {
+    /// Borrowed cursor into the owning handle's parsed metadata. The `'static`
+    /// lifetime is a controlled fiction — see [`store_value`]'s invariant.
+    value: MetaValue<'static>,
+    /// Back-pointer to the owning handle. Never dereferenced after
+    /// `tgm_metadata_free` (the handle it points to owns this arena entry, so
+    /// both die together).
+    owner: *const TgmMetadata,
+}
+
+/// Store a borrowed [`MetaValue`] cursor in the metadata handle's append-only
+/// arena and return a borrowed `*const TgmValue` for C.
+///
+/// # Soundness invariant
+///
+/// The returned handle borrows into `m.global_metadata`, which is owned by the
+/// same `TgmMetadata` and is never mutated or moved after construction. The
+/// arena (`m.value_arena`) is dropped together with `global_metadata` at
+/// `tgm_metadata_free`, so every stored cursor is valid for exactly the
+/// handle's lifetime — the borrowed-until-free contract the C API documents.
+/// Widening the cursor's lifetime to `'static` is therefore sound: no stored
+/// handle can outlive the data it points at.
+///
+/// Boxing keeps each cursor at a stable heap address; pushing the `Box` into
+/// the arena `Vec` (which may reallocate) only moves the `Box` pointer, never
+/// the pointed-to [`TgmValue`], so the returned pointer stays valid for the
+/// handle's whole life (the arena is append-only — never cleared mid-life).
+fn store_value(m: &TgmMetadata, v: MetaValue<'_>) -> *const TgmValue {
+    // SAFETY: lifetime widening only — see the soundness invariant above. The
+    // cursor borrows data owned by `m` that outlives the arena, so extending
+    // its lifetime to `'static` is sound for as long as the handle (and thus
+    // the arena) lives. `MetaValue` is `Copy` and holds only shared references,
+    // so this transmute changes no bit pattern beyond the (erased) lifetime.
+    let value: MetaValue<'static> =
+        unsafe { std::mem::transmute::<MetaValue<'_>, MetaValue<'static>>(v) };
+    let boxed = Box::new(TgmValue {
+        value,
+        owner: std::ptr::from_ref(m),
+    });
+    let handle_ptr: *const TgmValue = std::ptr::addr_of!(*boxed);
+    m.value_arena.borrow_mut().push(boxed);
+    handle_ptr
+}
+
+/// Reborrow a `const tgm_value_t*` as `&TgmValue`, treating NULL as `None`.
+///
+/// # Safety
+///
+/// `v` must be NULL or a still-live pointer returned by one of the
+/// `tgm_metadata_*` / `tgm_value_*` accessors (i.e. arena-backed by a
+/// `tgm_metadata_t` that has not been freed).
+unsafe fn value_handle<'a>(v: *const TgmValue) -> Option<&'a TgmValue> {
+    unsafe { v.as_ref() }
+}
+
+/// Look up a metadata value by dot-notation path (message-level).
+///
+/// Message-level scoping: first match across `base[0..]` (skipping `_reserved_`
+/// at the first segment), then `_extra_` fallback; an explicit `extra.` /
+/// `_extra_.` prefix targets `_extra_` directly. Presence ⇔ a non-NULL handle,
+/// so a stored `0` / `""` / null is distinguishable from an absent key.
+///
+/// Returns a **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`,
+/// never freed by the caller), or NULL if `meta` / `path` is NULL, `path` is
+/// not valid UTF-8, or the path is absent. Inspect the value with
+/// `tgm_value_get_type` and the precise (no-coercion) `tgm_value_as_*` /
+/// navigation accessors. Unlike the legacy `tgm_metadata_get_string`, there is
+/// no `version` pseudo-key here (the wire version lives in the preamble — use
+/// `tgm_metadata_version`).
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_get(
+    meta: *const TgmMetadata,
+    path: *const c_char,
+) -> *const TgmValue {
+    if meta.is_null() || path.is_null() {
+        return ptr::null();
+    }
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null(),
+    };
+    let m = unsafe { &*meta };
+    match m.global_metadata.get(path_str) {
+        Some(v) => store_value(m, v),
+        None => ptr::null(),
+    }
+}
+
+/// Look up a metadata value by dot-notation path, scoped to object
+/// `obj_index` (`base[obj_index]` only).
+///
+/// Per-object scoping: no cross-object first-match, no `_extra_` fallback, and
+/// `_reserved_` hidden at the first segment (use `tgm_metadata_object` to
+/// enumerate `_reserved_`). Returns a **borrowed** `tgm_value_t*` (valid until
+/// `tgm_metadata_free`, never freed by the caller), or NULL if `meta` / `path`
+/// is NULL, `path` is not valid UTF-8, `obj_index` is out of range, or the path
+/// is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_get_at(
+    meta: *const TgmMetadata,
+    obj_index: usize,
+    path: *const c_char,
+) -> *const TgmValue {
+    if meta.is_null() || path.is_null() {
+        return ptr::null();
+    }
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null(),
+    };
+    let m = unsafe { &*meta };
+    match m.global_metadata.get_at(obj_index, path_str) {
+        Some(v) => store_value(m, v),
+        None => ptr::null(),
+    }
+}
+
+/// Existence check for a message-level dot-notation path.
+///
+/// Answers *presence* for any type (including CBOR null), the cheap companion
+/// to `tgm_metadata_get` with the same scoping (first match across `base`, then
+/// `_extra_`; `_reserved_` hidden at the first segment). Returns `false` for a
+/// NULL handle, a NULL / non-UTF-8 `path`, or an absent path.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_has(meta: *const TgmMetadata, path: *const c_char) -> bool {
+    if meta.is_null() || path.is_null() {
+        return false;
+    }
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    unsafe { &*meta }.global_metadata.contains(path_str)
+}
+
+/// Existence check for a per-object dot-notation path (`base[obj_index]` only).
+///
+/// Same per-object scoping as `tgm_metadata_get_at` (no cross-object match, no
+/// `_extra_` fallback, `_reserved_` hidden at the first segment). Returns
+/// `false` for a NULL handle, a NULL / non-UTF-8 `path`, an out-of-range
+/// `obj_index`, or an absent path.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_has_at(
+    meta: *const TgmMetadata,
+    obj_index: usize,
+    path: *const c_char,
+) -> bool {
+    if meta.is_null() || path.is_null() {
+        return false;
+    }
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    unsafe { &*meta }
+        .global_metadata
+        .contains_at(obj_index, path_str)
+}
+
+/// View object `obj_index`'s full metadata map (`base[obj_index]`) as a map
+/// value for enumeration.
+///
+/// **Includes** `_reserved_` (parity with Python's `meta.base[i]` and the JSON
+/// export), unlike the path getters which hide it. Enumerate with
+/// `tgm_value_map_len` / `tgm_value_map_key_at` / `tgm_value_map_value_at`, or
+/// look up a single key with `tgm_value_map_get`. Returns a **borrowed**
+/// `tgm_value_t*` (valid until `tgm_metadata_free`, never freed by the caller),
+/// or NULL for a NULL handle or an out-of-range `obj_index`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_object(
+    meta: *const TgmMetadata,
+    obj_index: usize,
+) -> *const TgmValue {
+    if meta.is_null() {
+        return ptr::null();
+    }
+    let m = unsafe { &*meta };
+    match m.global_metadata.object(obj_index) {
+        Some(v) => store_value(m, v),
+        None => ptr::null(),
+    }
+}
+
+/// View the message-level `_extra_` section as a map value for enumeration.
+///
+/// Returns a **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`,
+/// never freed by the caller); NULL only for a NULL handle. When there is no
+/// `_extra_` data the handle is an empty map (`tgm_value_map_len` == 0), which
+/// is distinct from NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_extra(meta: *const TgmMetadata) -> *const TgmValue {
+    if meta.is_null() {
+        return ptr::null();
+    }
+    let m = unsafe { &*meta };
+    store_value(m, m.global_metadata.extra_view())
+}
+
+/// View the message-level `_reserved_` section as a map value for enumeration.
+///
+/// The library-managed namespace (e.g. tensor descriptors) that the path
+/// getters hide. Returns a **borrowed** `tgm_value_t*` (valid until
+/// `tgm_metadata_free`, never freed by the caller); NULL only for a NULL
+/// handle. An empty section is an empty map, distinct from NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_metadata_reserved(meta: *const TgmMetadata) -> *const TgmValue {
+    if meta.is_null() {
+        return ptr::null();
+    }
+    let m = unsafe { &*meta };
+    store_value(m, m.global_metadata.reserved_view())
+}
+
+/// The kind of a value handle (`TGM_VALUE_TYPE_*`).
+///
+/// Returns `TGM_VALUE_TYPE_NULL` for a NULL handle (as well as for a genuine
+/// CBOR null — use the typed extractors to disambiguate if needed).
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_get_type(v: *const TgmValue) -> TgmValueType {
+    match unsafe { value_handle(v) } {
+        Some(h) => h.value.value_type().into(),
+        None => TgmValueType::Null,
+    }
+}
+
+/// Extract a boolean (no coercion).
+///
+/// Returns `true` and writes `*out` when the handle is a boolean; returns
+/// `false` (leaving `*out` untouched) for a NULL handle, a NULL `out`, or any
+/// non-boolean value. `*out` is thus written **only** on success.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_as_bool(v: *const TgmValue, out: *mut bool) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    match unsafe { value_handle(v) }.and_then(|h| h.value.as_bool()) {
+        Some(b) => {
+            unsafe { *out = b };
+            true
+        }
+        None => false,
+    }
+}
+
+/// Extract a signed 64-bit integer (integer values only, no coercion).
+///
+/// Returns `true` and writes `*out` when the handle is an integer in `i64`
+/// range; returns `false` (leaving `*out` untouched) for a NULL handle, a NULL
+/// `out`, a non-integer value, or an integer outside `i64` range (try
+/// `tgm_value_as_u64`). Floats are **not** truncated.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_as_i64(v: *const TgmValue, out: *mut i64) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    match unsafe { value_handle(v) }.and_then(|h| h.value.as_i64()) {
+        Some(i) => {
+            unsafe { *out = i };
+            true
+        }
+        None => false,
+    }
+}
+
+/// Extract an unsigned 64-bit integer (integer values only, no coercion).
+///
+/// Returns `true` and writes `*out` when the handle is an integer in `u64`
+/// range; returns `false` (leaving `*out` untouched) for a NULL handle, a NULL
+/// `out`, a non-integer value, or a negative / out-of-range integer.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_as_u64(v: *const TgmValue, out: *mut u64) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    match unsafe { value_handle(v) }.and_then(|h| h.value.as_u64()) {
+        Some(u) => {
+            unsafe { *out = u };
+            true
+        }
+        None => false,
+    }
+}
+
+/// Extract a double (float, or an integer widened to `f64`).
+///
+/// This is the one accessor that widens: a float extracts as-is and an integer
+/// is widened to `f64` (which may lose precision for very large magnitudes).
+/// Returns `true` and writes `*out` on success; returns `false` (leaving `*out`
+/// untouched) for a NULL handle, a NULL `out`, or a non-numeric value.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_as_f64(v: *const TgmValue, out: *mut f64) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    match unsafe { value_handle(v) }.and_then(|h| h.value.as_f64()) {
+        Some(f) => {
+            unsafe { *out = f };
+            true
+        }
+        None => false,
+    }
+}
+
+/// Borrow a string value as a UTF-8 `ptr + len` (text values only).
+///
+/// On success returns a **borrowed** pointer into the parsed metadata (valid
+/// until `tgm_metadata_free`, never freed by the caller) and writes the byte
+/// length to `*len_out`. The buffer is **not** guaranteed NUL-terminated and
+/// may contain interior NUL bytes (use `*len_out`, not `strlen`). Returns NULL
+/// (leaving `*len_out` untouched) for a NULL handle, a NULL `len_out`, or any
+/// non-string value.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_as_string(
+    v: *const TgmValue,
+    len_out: *mut usize,
+) -> *const c_char {
+    if len_out.is_null() {
+        return ptr::null();
+    }
+    match unsafe { value_handle(v) }.and_then(|h| h.value.as_str()) {
+        Some(s) => {
+            unsafe { *len_out = s.len() };
+            s.as_ptr().cast::<c_char>()
+        }
+        None => ptr::null(),
+    }
+}
+
+/// Borrow a byte-string value as a `ptr + len` (byte-string values only).
+///
+/// On success returns a **borrowed** pointer into the parsed metadata (valid
+/// until `tgm_metadata_free`, never freed by the caller) and writes the length
+/// to `*len_out`. Returns NULL (leaving `*len_out` untouched) for a NULL
+/// handle, a NULL `len_out`, or any non-bytes value. A zero-length byte string
+/// still returns a non-NULL pointer with `*len_out == 0`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_as_bytes(v: *const TgmValue, len_out: *mut usize) -> *const u8 {
+    if len_out.is_null() {
+        return ptr::null();
+    }
+    match unsafe { value_handle(v) }.and_then(|h| h.value.as_bytes()) {
+        Some(b) => {
+            unsafe { *len_out = b.len() };
+            b.as_ptr()
+        }
+        None => ptr::null(),
+    }
+}
+
+/// Number of elements in an array value; `0` for a NULL handle or any
+/// non-array value.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_array_len(v: *const TgmValue) -> usize {
+    match unsafe { value_handle(v) } {
+        Some(h) if h.value.value_type() == MetaType::Array => h.value.len(),
+        _ => 0,
+    }
+}
+
+/// Index into an array value.
+///
+/// Returns a **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`,
+/// never freed by the caller) for the element at `index`, or NULL for a NULL
+/// handle, a non-array value, or an out-of-range index.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_array_get(v: *const TgmValue, index: usize) -> *const TgmValue {
+    let Some(h) = (unsafe { value_handle(v) }) else {
+        return ptr::null();
+    };
+    match h.value.get_index(index) {
+        // SAFETY: `h.owner` is the handle that owns this arena entry; it is
+        // alive because the caller still holds `v` (borrowed until free).
+        Some(child) => store_value(unsafe { &*h.owner }, child),
+        None => ptr::null(),
+    }
+}
+
+/// Number of entries in a map value (including a section map such as
+/// `base[i]` / `_extra_` / `_reserved_`); `0` for a NULL handle or any
+/// non-map value.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_map_len(v: *const TgmValue) -> usize {
+    match unsafe { value_handle(v) } {
+        Some(h) if h.value.value_type() == MetaType::Map => h.value.len(),
+        _ => 0,
+    }
+}
+
+/// Borrow the `index`-th key of a map value as a UTF-8 `ptr + len`.
+///
+/// Keys are yielded in iteration order (section maps and canonical CBOR maps
+/// are key-sorted). On success returns a **borrowed** pointer (valid until
+/// `tgm_metadata_free`, never freed by the caller) and writes the byte length
+/// to `*len_out`; the buffer is not guaranteed NUL-terminated. Returns NULL
+/// (leaving `*len_out` untouched) for a NULL handle, a NULL `len_out`, a
+/// non-map value, an out-of-range index, or a non-text key.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_map_key_at(
+    v: *const TgmValue,
+    index: usize,
+    len_out: *mut usize,
+) -> *const c_char {
+    if len_out.is_null() {
+        return ptr::null();
+    }
+    match unsafe { value_handle(v) }.and_then(|h| h.value.key_at(index)) {
+        Some(s) => {
+            unsafe { *len_out = s.len() };
+            s.as_ptr().cast::<c_char>()
+        }
+        None => ptr::null(),
+    }
+}
+
+/// Borrow the `index`-th value of a map value (in the same order as
+/// `tgm_value_map_key_at`).
+///
+/// Returns a **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`,
+/// never freed by the caller), or NULL for a NULL handle, a non-map value, or
+/// an out-of-range index.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_map_value_at(
+    v: *const TgmValue,
+    index: usize,
+) -> *const TgmValue {
+    let Some(h) = (unsafe { value_handle(v) }) else {
+        return ptr::null();
+    };
+    match h.value.value_at(index) {
+        // SAFETY: see `tgm_value_array_get`.
+        Some(child) => store_value(unsafe { &*h.owner }, child),
+        None => ptr::null(),
+    }
+}
+
+/// Look up a single (non-dotted) key in a map value.
+///
+/// `key` is one map segment — this does **not** split on `.` (use the
+/// dot-notation `tgm_metadata_get` for message-level paths). Returns a
+/// **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`, never freed by
+/// the caller), or NULL for a NULL handle, a NULL / non-UTF-8 `key`, a non-map
+/// value, or an absent key. On a section map this can reach `_reserved_`
+/// (enumeration parity).
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_value_map_get(
+    v: *const TgmValue,
+    key: *const c_char,
+) -> *const TgmValue {
+    if key.is_null() {
+        return ptr::null();
+    }
+    let Some(h) = (unsafe { value_handle(v) }) else {
+        return ptr::null();
+    };
+    let key_str = match unsafe { CStr::from_ptr(key) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null(),
+    };
+    match h.value.get_key(key_str) {
+        // SAFETY: see `tgm_value_array_get`.
+        Some(child) => store_value(unsafe { &*h.owner }, child),
+        None => ptr::null(),
+    }
 }
 
 /// Free a metadata handle.
@@ -2419,108 +2968,12 @@ pub extern "C" fn tgm_file_close(file: *mut TgmFile) {
 // ---------------------------------------------------------------------------
 // Metadata key lookup helpers
 // ---------------------------------------------------------------------------
-
-/// Look up a CBOR value by dot-notation key with arbitrary nesting depth.
-///
-/// Supports `"key"`, `"ns.field"`, `"grib.geography.Ni"`, etc.
-/// Search order: `base[i]` (skip `_reserved_`, first match) → `extra`.
-fn lookup_cbor_value<'a>(
-    global_metadata: &'a GlobalMetadata,
-    key: &str,
-) -> Option<&'a ciborium::Value> {
-    if key.is_empty() {
-        return None;
-    }
-    let parts: Vec<&str> = key.split('.').collect();
-
-    if parts.is_empty() || parts[0].is_empty() {
-        return None;
-    }
-    if parts[0] == "version" {
-        return None; // use tgm_metadata_version instead
-    }
-
-    // Explicit _extra_ or extra prefix targets the extra map directly
-    if parts[0] == "_extra_" || parts[0] == "extra" {
-        if parts.len() > 1 {
-            return resolve_in_btree(&global_metadata.extra, &parts[1..]);
-        }
-        return None;
-    }
-
-    // Search base entries (skip _reserved_ key within each entry)
-    for entry in &global_metadata.base {
-        if let Some(val) = resolve_in_btree_skip_reserved(entry, &parts) {
-            return Some(val);
-        }
-    }
-    // Fall back to extra
-    resolve_in_btree(&global_metadata.extra, &parts)
-}
-
-/// Walk a dot-path in a BTreeMap, skipping `_reserved_` keys at the first level.
-fn resolve_in_btree_skip_reserved<'a>(
-    map: &'a BTreeMap<String, ciborium::Value>,
-    parts: &[&str],
-) -> Option<&'a ciborium::Value> {
-    let (first, rest) = parts.split_first()?;
-    if *first == RESERVED_KEY {
-        return None;
-    }
-    let value = map.get(*first)?;
-    resolve_cbor_path(value, rest)
-}
-
-/// Walk a dot-path in a BTreeMap (no _reserved_ filtering).
-fn resolve_in_btree<'a>(
-    map: &'a BTreeMap<String, ciborium::Value>,
-    parts: &[&str],
-) -> Option<&'a ciborium::Value> {
-    let (first, rest) = parts.split_first()?;
-    let value = map.get(*first)?;
-    resolve_cbor_path(value, rest)
-}
-
-/// Recursively walk remaining path segments into a CBOR value.
-///
-/// When no segments remain, returns the current value.
-/// When segments remain, the current value must be a `Map` to navigate further.
-fn resolve_cbor_path<'a>(
-    value: &'a ciborium::Value,
-    remaining: &[&str],
-) -> Option<&'a ciborium::Value> {
-    if remaining.is_empty() {
-        return Some(value);
-    }
-    if let ciborium::Value::Map(entries) = value {
-        for (k, v) in entries {
-            if matches!(k, ciborium::Value::Text(s) if s == remaining[0]) {
-                return resolve_cbor_path(v, &remaining[1..]);
-            }
-        }
-    }
-    None
-}
-
-/// Navigate a dot-path within a single `base[i]` entry.
-///
-/// Scoped to exactly this object — no cross-object first-match and no
-/// `extra` fallback (unlike [`lookup_cbor_value`]).  `_reserved_` is skipped
-/// at the first level, matching the message-level getters (the object's
-/// tensor descriptor is reached via the object accessors instead).
-fn lookup_cbor_in_object<'a>(
-    entry: &'a BTreeMap<String, ciborium::Value>,
-    key: &str,
-) -> Option<&'a ciborium::Value> {
-    if key.is_empty() {
-        return None;
-    }
-    let parts: Vec<&str> = key.split('.').collect();
-    if parts.is_empty() || parts[0].is_empty() {
-        return None;
-    }
-    resolve_in_btree_skip_reserved(entry, &parts)
-}
+//
+// The dot-path walkers (first-match across `base[i]`, `_extra_` fallback,
+// `_reserved_` hiding) now live in `tensogram`'s single source of truth
+// (`tensogram::GlobalMetadata::get_value` / `get_value_at`). The legacy
+// coercing getters below delegate to those core accessors and keep their own
+// display-coercion (`cbor_as_*`) plus the `version` pseudo-key unchanged.
 
 /// Coerce a CBOR value to a display string (text / number / bool).
 fn cbor_as_string(v: &ciborium::Value) -> Option<String> {
@@ -2573,7 +3026,7 @@ fn lookup_string_key(global_metadata: &GlobalMetadata, key: &str) -> Option<Stri
         return Some(tensogram::WIRE_VERSION.to_string());
     }
 
-    lookup_cbor_value(global_metadata, key).and_then(cbor_as_string)
+    global_metadata.get_value(key).and_then(cbor_as_string)
 }
 
 fn lookup_int_key(global_metadata: &GlobalMetadata, key: &str) -> Option<i64> {
@@ -2582,11 +3035,11 @@ fn lookup_int_key(global_metadata: &GlobalMetadata, key: &str) -> Option<i64> {
         return Some(tensogram::WIRE_VERSION as i64);
     }
 
-    lookup_cbor_value(global_metadata, key).and_then(cbor_as_i64)
+    global_metadata.get_value(key).and_then(cbor_as_i64)
 }
 
 fn lookup_float_key(global_metadata: &GlobalMetadata, key: &str) -> Option<f64> {
-    lookup_cbor_value(global_metadata, key).and_then(cbor_as_f64)
+    global_metadata.get_value(key).and_then(cbor_as_f64)
 }
 
 /// Convert a CBOR value to a `serde_json::Value` for the metadata JSON export.
@@ -3063,25 +3516,26 @@ mod tests {
         }
     }
 
-    // ── lookup_cbor_value ─────────────────────────────────────────────
+    // ── message-level path walking (delegates to core get_value) ──────
 
     #[test]
     fn lookup_cbor_empty_key() {
         let meta = make_meta(vec![], BTreeMap::new());
-        assert!(lookup_cbor_value(&meta, "").is_none());
+        assert!(meta.get_value("").is_none());
     }
 
     #[test]
     fn lookup_cbor_dot_only() {
         let meta = make_meta(vec![], BTreeMap::new());
-        assert!(lookup_cbor_value(&meta, ".").is_none());
+        assert!(meta.get_value(".").is_none());
     }
 
     #[test]
     fn lookup_cbor_version_returns_none() {
-        // version is handled by tgm_metadata_version, not lookup_cbor_value
+        // version is a preamble field, not a CBOR key (handled by
+        // tgm_metadata_version), so the core path walker returns None.
         let meta = make_meta(vec![], BTreeMap::new());
-        assert!(lookup_cbor_value(&meta, "version").is_none());
+        assert!(meta.get_value("version").is_none());
     }
 
     #[test]
@@ -3089,7 +3543,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("centre".into(), ciborium::Value::Text("ecmwf".into()));
         let meta = make_meta(vec![entry], BTreeMap::new());
-        let val = lookup_cbor_value(&meta, "centre");
+        let val = meta.get_value("centre");
         assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "ecmwf"));
     }
 
@@ -3099,14 +3553,14 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("source".into(), ciborium::Value::Text("test".into()));
         let meta = make_meta(vec![], extra);
-        let val = lookup_cbor_value(&meta, "source");
+        let val = meta.get_value("source");
         assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "test"));
     }
 
     #[test]
     fn lookup_cbor_no_match() {
         let meta = make_meta(vec![], BTreeMap::new());
-        assert!(lookup_cbor_value(&meta, "nonexistent").is_none());
+        assert!(meta.get_value("nonexistent").is_none());
     }
 
     #[test]
@@ -3122,9 +3576,9 @@ mod tests {
         entry.insert("param".into(), ciborium::Value::Text("2t".into()));
         let meta = make_meta(vec![entry], BTreeMap::new());
         // _reserved_ path should be skipped
-        assert!(lookup_cbor_value(&meta, "_reserved_.tensor").is_none());
+        assert!(meta.get_value("_reserved_.tensor").is_none());
         // Regular key should still be found
-        assert!(lookup_cbor_value(&meta, "param").is_some());
+        assert!(meta.get_value("param").is_some());
     }
 
     #[test]
@@ -3133,7 +3587,7 @@ mod tests {
         extra.insert("custom".into(), ciborium::Value::Text("val".into()));
         let meta = make_meta(vec![], extra);
         // _extra_.custom should resolve directly in extra
-        let val = lookup_cbor_value(&meta, "_extra_.custom");
+        let val = meta.get_value("_extra_.custom");
         assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "val"));
     }
 
@@ -3143,7 +3597,7 @@ mod tests {
         extra.insert("custom".into(), ciborium::Value::Text("val".into()));
         let meta = make_meta(vec![], extra);
         // extra.custom should also resolve in extra
-        let val = lookup_cbor_value(&meta, "extra.custom");
+        let val = meta.get_value("extra.custom");
         assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "val"));
     }
 
@@ -3151,8 +3605,8 @@ mod tests {
     fn lookup_cbor_extra_prefix_alone_returns_none() {
         let meta = make_meta(vec![], BTreeMap::new());
         // Bare "_extra_" without subkey returns None
-        assert!(lookup_cbor_value(&meta, "_extra_").is_none());
-        assert!(lookup_cbor_value(&meta, "extra").is_none());
+        assert!(meta.get_value("_extra_").is_none());
+        assert!(meta.get_value("extra").is_none());
     }
 
     #[test]
@@ -3162,7 +3616,7 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("shared".into(), ciborium::Value::Text("from_extra".into()));
         let meta = make_meta(vec![entry], extra);
-        let val = lookup_cbor_value(&meta, "shared");
+        let val = meta.get_value("shared");
         assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "from_base"));
     }
 
@@ -3178,7 +3632,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("a".into(), b_val);
         let meta = make_meta(vec![entry], BTreeMap::new());
-        let val = lookup_cbor_value(&meta, "a.b.c.d.e");
+        let val = meta.get_value("a.b.c.d.e");
         assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "deep"));
     }
 
@@ -3189,31 +3643,46 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("param".into(), ciborium::Value::Text("msl".into()));
         let meta = make_meta(vec![entry0, entry1], BTreeMap::new());
-        let val = lookup_cbor_value(&meta, "param");
+        let val = meta.get_value("param");
         assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "2t"));
     }
 
-    // ── resolve_cbor_path ─────────────────────────────────────────────
+    // ── nested path resolution (delegates to core get_value) ──────────
 
     #[test]
     fn resolve_cbor_path_empty_remaining() {
-        let value = ciborium::Value::Text("hello".into());
-        assert_eq!(resolve_cbor_path(&value, &[]), Some(&value));
+        // A single-segment path with no remaining segments returns the value.
+        let mut entry = BTreeMap::new();
+        entry.insert("k".into(), ciborium::Value::Text("hello".into()));
+        let meta = make_meta(vec![entry], BTreeMap::new());
+        assert!(matches!(
+            meta.get_value("k"),
+            Some(ciborium::Value::Text(s)) if s == "hello"
+        ));
     }
 
     #[test]
     fn resolve_cbor_path_non_map_with_remaining() {
-        let value = ciborium::Value::Text("hello".into());
-        assert!(resolve_cbor_path(&value, &["key"]).is_none());
+        // Cannot descend into a scalar: a remaining segment yields None.
+        let mut entry = BTreeMap::new();
+        entry.insert("k".into(), ciborium::Value::Text("hello".into()));
+        let meta = make_meta(vec![entry], BTreeMap::new());
+        assert!(meta.get_value("k.key").is_none());
     }
 
     #[test]
     fn resolve_cbor_path_map_missing_key() {
-        let value = ciborium::Value::Map(vec![(
-            ciborium::Value::Text("a".into()),
-            ciborium::Value::Text("b".into()),
-        )]);
-        assert!(resolve_cbor_path(&value, &["missing"]).is_none());
+        // Descending into a map with an absent next segment yields None.
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            "m".into(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("a".into()),
+                ciborium::Value::Text("b".into()),
+            )]),
+        );
+        let meta = make_meta(vec![entry], BTreeMap::new());
+        assert!(meta.get_value("m.missing").is_none());
     }
 
     // ── lookup_string_key ──
@@ -3305,7 +3774,7 @@ mod tests {
         assert!(lookup_float_key(&meta, "str").is_none());
     }
 
-    // ── per-object accessors (lookup_cbor_in_object + _at getters) ─────
+    // ── per-object accessors (core get_value_at + _at getters) ────────
 
     /// Two-object metadata: object 0 = 2t/sfc, object 1 = msl at 500 hPa with
     /// a nested geometry and a `_reserved_.tensor` descriptor.
@@ -3342,11 +3811,11 @@ mod tests {
     fn lookup_in_object_scopes_to_index() {
         let m = two_object_meta();
         assert!(matches!(
-            lookup_cbor_in_object(&m.base[0], "shortName"),
+            m.get_value_at(0, "shortName"),
             Some(ciborium::Value::Text(s)) if s == "2t"
         ));
         assert!(matches!(
-            lookup_cbor_in_object(&m.base[1], "shortName"),
+            m.get_value_at(1, "shortName"),
             Some(ciborium::Value::Text(s)) if s == "msl"
         ));
     }
@@ -3355,23 +3824,23 @@ mod tests {
     fn lookup_in_object_nested_dot_path() {
         let m = two_object_meta();
         assert!(matches!(
-            lookup_cbor_in_object(&m.base[1], "geometry.gridType"),
+            m.get_value_at(1, "geometry.gridType"),
             Some(ciborium::Value::Text(s)) if s == "regular_ll"
         ));
         // object 0 has no geometry
-        assert!(lookup_cbor_in_object(&m.base[0], "geometry.gridType").is_none());
+        assert!(m.get_value_at(0, "geometry.gridType").is_none());
     }
 
     #[test]
     fn lookup_in_object_skips_reserved() {
         let m = two_object_meta();
-        assert!(lookup_cbor_in_object(&m.base[0], "_reserved_.tensor.dtype").is_none());
+        assert!(m.get_value_at(0, "_reserved_.tensor.dtype").is_none());
     }
 
     #[test]
     fn lookup_in_object_empty_key() {
         let m = two_object_meta();
-        assert!(lookup_cbor_in_object(&m.base[0], "").is_none());
+        assert!(m.get_value_at(0, "").is_none());
     }
 
     /// Build a live handle and exercise the extern `_at` getters end-to-end.
@@ -3379,6 +3848,7 @@ mod tests {
         TgmMetadata {
             global_metadata: gm,
             cache: std::cell::RefCell::new(BTreeMap::new()),
+            value_arena: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -3820,25 +4290,27 @@ mod tests {
         assert!(!matches!(cbor, ciborium::Value::Null));
     }
 
-    // ── resolve helpers ──
+    // ── path-walker edge cases (delegates to core get_value / get_value_at) ──
 
     #[test]
     fn resolve_in_btree_skip_reserved_blocks_reserved() {
-        let mut map = BTreeMap::new();
-        map.insert("_reserved_".into(), ciborium::Value::Text("secret".into()));
-        assert!(resolve_in_btree_skip_reserved(&map, &["_reserved_"]).is_none());
+        // `_reserved_` is hidden at the first segment of a per-object path.
+        let mut entry = BTreeMap::new();
+        entry.insert("_reserved_".into(), ciborium::Value::Text("secret".into()));
+        let meta = make_meta(vec![entry], BTreeMap::new());
+        assert!(meta.get_value_at(0, "_reserved_").is_none());
     }
 
     #[test]
     fn resolve_in_btree_empty_parts() {
-        let map = BTreeMap::new();
-        assert!(resolve_in_btree(&map, &[]).is_none());
+        let meta = make_meta(vec![], BTreeMap::new());
+        assert!(meta.get_value("").is_none());
     }
 
     #[test]
     fn resolve_in_btree_skip_reserved_empty_parts() {
-        let map = BTreeMap::new();
-        assert!(resolve_in_btree_skip_reserved(&map, &[]).is_none());
+        let meta = make_meta(vec![BTreeMap::new()], BTreeMap::new());
+        assert!(meta.get_value_at(0, "").is_none());
     }
 
     // ── validate FFI ──
@@ -6998,6 +7470,378 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(msg.contains("null"), "expected null-arg msg, got: {msg}");
+    }
+
+    // ── value cursor (tgm_value_t) — plan §6.2 ────────────────────────
+
+    /// Map helper (nested `ciborium::Value::Map`).
+    fn cbor_map(pairs: &[(&str, ciborium::Value)]) -> ciborium::Value {
+        ciborium::Value::Map(
+            pairs
+                .iter()
+                .map(|(k, v)| (ciborium::Value::Text((*k).to_string()), v.clone()))
+                .collect(),
+        )
+    }
+
+    /// Rich two-object fixture exercising every value kind plus the tricky
+    /// cases the plan calls out: a stored `0`, an empty string, a huge `u64`
+    /// out of `i64` range, a negative int, bytes, an array, a nested map, a
+    /// per-object `_reserved_`, `_extra_` and a message-level `_reserved_`.
+    fn cursor_meta() -> GlobalMetadata {
+        let e0: BTreeMap<String, ciborium::Value> = [
+            ("name".to_string(), ciborium::Value::Text("2t".into())),
+            ("count".to_string(), ciborium::Value::Integer(0.into())),
+            ("empty".to_string(), ciborium::Value::Text(String::new())),
+            ("flag".to_string(), ciborium::Value::Bool(true)),
+            ("ratio".to_string(), ciborium::Value::Float(2.5)),
+            ("neg".to_string(), ciborium::Value::Integer((-5i64).into())),
+            ("huge".to_string(), ciborium::Value::Integer(u64::MAX.into())),
+            (
+                "blob".to_string(),
+                ciborium::Value::Bytes(vec![1, 2, 3, 0, 4]),
+            ),
+            (
+                "shape".to_string(),
+                ciborium::Value::Array(vec![
+                    ciborium::Value::Integer(1.into()),
+                    ciborium::Value::Integer(2.into()),
+                    ciborium::Value::Integer(3.into()),
+                ]),
+            ),
+            (
+                "mars".to_string(),
+                cbor_map(&[
+                    ("class", ciborium::Value::Text("od".into())),
+                    ("stream", ciborium::Value::Text("oper".into())),
+                ]),
+            ),
+            (
+                RESERVED_KEY.to_string(),
+                cbor_map(&[(
+                    "tensor",
+                    cbor_map(&[("dtype", ciborium::Value::Text("float64".into()))]),
+                )]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let e1: BTreeMap<String, ciborium::Value> =
+            [("name".to_string(), ciborium::Value::Text("msl".into()))]
+                .into_iter()
+                .collect();
+
+        let extra: BTreeMap<String, ciborium::Value> =
+            [("src".to_string(), ciborium::Value::Text("x".into()))]
+                .into_iter()
+                .collect();
+
+        let reserved: BTreeMap<String, ciborium::Value> = [(
+            "global_tensor".to_string(),
+            ciborium::Value::Text("g".into()),
+        )]
+        .into_iter()
+        .collect();
+
+        GlobalMetadata {
+            base: vec![e0, e1],
+            extra,
+            reserved,
+        }
+    }
+
+    /// Read a cursor string as an owned `String`, or `None` if not a string.
+    fn cursor_str(v: *const TgmValue) -> Option<String> {
+        let mut len: usize = 0;
+        let p = tgm_value_as_string(v, &mut len);
+        if p.is_null() {
+            return None;
+        }
+        let bytes = unsafe { slice::from_raw_parts(p.cast::<u8>(), len) };
+        Some(std::str::from_utf8(bytes).unwrap().to_string())
+    }
+
+    /// Read a cursor byte string as an owned `Vec<u8>`, or `None` if not bytes.
+    fn cursor_bytes(v: *const TgmValue) -> Option<Vec<u8>> {
+        let mut len: usize = 0;
+        let p = tgm_value_as_bytes(v, &mut len);
+        if p.is_null() {
+            return None;
+        }
+        Some(unsafe { slice::from_raw_parts(p, len) }.to_vec())
+    }
+
+    #[test]
+    fn value_has_vs_absent_incl_zero_and_empty() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+        let key = |s: &str| CString::new(s).unwrap();
+
+        // A stored 0 and an empty string are PRESENT (default-hiding is gone).
+        assert!(tgm_metadata_has(hp, key("count").as_ptr()));
+        assert!(tgm_metadata_has(hp, key("empty").as_ptr()));
+        assert!(!tgm_metadata_has(hp, key("missing").as_ptr()));
+
+        // ...and get() yields a real handle for each, distinct from absent NULL.
+        let count = tgm_metadata_get(hp, key("count").as_ptr());
+        let mut i: i64 = -1;
+        assert!(tgm_value_as_i64(count, &mut i) && i == 0);
+
+        let empty = tgm_metadata_get(hp, key("empty").as_ptr());
+        assert_eq!(cursor_str(empty).as_deref(), Some(""));
+
+        assert!(tgm_metadata_get(hp, key("missing").as_ptr()).is_null());
+    }
+
+    #[test]
+    fn value_typed_extractors_precise_no_coercion() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+        let get = |s: &str| tgm_metadata_get(hp, CString::new(s).unwrap().as_ptr());
+
+        // bool: right type true, wrong type false.
+        let flag = get("flag");
+        let mut b = false;
+        assert!(tgm_value_as_bool(flag, &mut b) && b);
+        let mut i = 0i64;
+        assert!(!tgm_value_as_i64(flag, &mut i)); // no coercion bool→int
+
+        // i64: right type, and NOT extracted from float / string / bool.
+        let count = get("count");
+        let mut ci = -1i64;
+        assert!(tgm_value_as_i64(count, &mut ci) && ci == 0);
+        assert!(!tgm_value_as_i64(get("ratio"), &mut i));
+        assert!(!tgm_value_as_i64(get("name"), &mut i));
+
+        // f64: float as-is, integer widened, but string not coerced.
+        let mut f = 0.0f64;
+        assert!(tgm_value_as_f64(get("ratio"), &mut f) && (f - 2.5).abs() < 1e-12);
+        assert!(tgm_value_as_f64(count, &mut f) && f == 0.0); // int widened
+        assert!(!tgm_value_as_f64(get("name"), &mut f));
+
+        // u64 vs i64 range: huge fits u64 not i64; neg fits i64 not u64.
+        let mut u = 0u64;
+        assert!(tgm_value_as_u64(get("huge"), &mut u) && u == u64::MAX);
+        assert!(!tgm_value_as_i64(get("huge"), &mut i));
+        assert!(tgm_value_as_i64(get("neg"), &mut i) && i == -5);
+        assert!(!tgm_value_as_u64(get("neg"), &mut u));
+
+        // string: text only.
+        assert_eq!(cursor_str(get("name")).as_deref(), Some("2t"));
+        assert!(cursor_str(count).is_none());
+
+        // bytes: byte string only (interior NUL preserved via ptr+len).
+        assert_eq!(cursor_bytes(get("blob")), Some(vec![1, 2, 3, 0, 4]));
+        assert!(cursor_bytes(get("name")).is_none());
+    }
+
+    #[test]
+    fn value_get_type_covers_every_kind() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+        let ty = |s: &str| tgm_value_get_type(tgm_metadata_get(hp, CString::new(s).unwrap().as_ptr()));
+        assert_eq!(ty("name"), TgmValueType::String);
+        assert_eq!(ty("count"), TgmValueType::Int);
+        assert_eq!(ty("ratio"), TgmValueType::Float);
+        assert_eq!(ty("flag"), TgmValueType::Bool);
+        assert_eq!(ty("blob"), TgmValueType::Bytes);
+        assert_eq!(ty("shape"), TgmValueType::Array);
+        assert_eq!(ty("mars"), TgmValueType::Map);
+        // NULL handle reports NULL type.
+        assert_eq!(tgm_value_get_type(ptr::null()), TgmValueType::Null);
+    }
+
+    #[test]
+    fn value_array_navigation() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+        let shape = tgm_metadata_get(hp, CString::new("shape").unwrap().as_ptr());
+        assert_eq!(tgm_value_array_len(shape), 3);
+        // map_len on an array is 0 (kind-precise).
+        assert_eq!(tgm_value_map_len(shape), 0);
+
+        let mut got = Vec::new();
+        for idx in 0..tgm_value_array_len(shape) {
+            let elem = tgm_value_array_get(shape, idx);
+            let mut n = 0i64;
+            assert!(tgm_value_as_i64(elem, &mut n));
+            got.push(n);
+        }
+        assert_eq!(got, vec![1, 2, 3]);
+        // out of range → NULL.
+        assert!(tgm_value_array_get(shape, 3).is_null());
+    }
+
+    #[test]
+    fn value_nested_map_navigation() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+        // Dot-path reaches the nested leaf directly (maps only).
+        let via_path = tgm_metadata_get(hp, CString::new("mars.class").unwrap().as_ptr());
+        assert_eq!(cursor_str(via_path).as_deref(), Some("od"));
+
+        // ...and cursor navigation agrees.
+        let mars = tgm_metadata_get(hp, CString::new("mars").unwrap().as_ptr());
+        assert_eq!(tgm_value_map_len(mars), 2);
+        let class = tgm_value_map_get(mars, CString::new("class").unwrap().as_ptr());
+        assert_eq!(cursor_str(class).as_deref(), Some("od"));
+        // map_get is single-segment: a dotted key does not split.
+        assert!(tgm_value_map_get(mars, CString::new("class.x").unwrap().as_ptr()).is_null());
+        assert!(tgm_value_map_get(mars, CString::new("nope").unwrap().as_ptr()).is_null());
+        // array_len on a map is 0.
+        assert_eq!(tgm_value_array_len(mars), 0);
+    }
+
+    #[test]
+    fn value_map_enumeration_is_key_sorted() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+        let mars = tgm_metadata_get(hp, CString::new("mars").unwrap().as_ptr());
+
+        let key_at = |i: usize| -> Option<String> {
+            let mut len: usize = 0;
+            let p = tgm_value_map_key_at(mars, i, &mut len);
+            if p.is_null() {
+                return None;
+            }
+            let bytes = unsafe { slice::from_raw_parts(p.cast::<u8>(), len) };
+            Some(std::str::from_utf8(bytes).unwrap().to_string())
+        };
+        // Canonical CBOR maps are key-sorted: class < stream.
+        assert_eq!(key_at(0).as_deref(), Some("class"));
+        assert_eq!(key_at(1).as_deref(), Some("stream"));
+        assert!(key_at(2).is_none()); // out of range
+
+        assert_eq!(
+            cursor_str(tgm_value_map_value_at(mars, 0)).as_deref(),
+            Some("od")
+        );
+        assert_eq!(
+            cursor_str(tgm_value_map_value_at(mars, 1)).as_deref(),
+            Some("oper")
+        );
+        assert!(tgm_value_map_value_at(mars, 2).is_null());
+    }
+
+    #[test]
+    fn value_section_views_object_extra_reserved() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+
+        // object(0) enumerates the whole base[0] map INCLUDING _reserved_.
+        let obj0 = tgm_metadata_object(hp, 0);
+        assert_eq!(tgm_value_get_type(obj0), TgmValueType::Map);
+        assert!(!tgm_value_map_get(obj0, CString::new("name").unwrap().as_ptr()).is_null());
+        let reserved_in_obj = tgm_value_map_get(obj0, CString::new(RESERVED_KEY).unwrap().as_ptr());
+        assert!(!reserved_in_obj.is_null());
+        // ...and can descend into it.
+        let tensor = tgm_value_map_get(reserved_in_obj, CString::new("tensor").unwrap().as_ptr());
+        let dtype = tgm_value_map_get(tensor, CString::new("dtype").unwrap().as_ptr());
+        assert_eq!(cursor_str(dtype).as_deref(), Some("float64"));
+        // OOB object → NULL.
+        assert!(tgm_metadata_object(hp, 9).is_null());
+
+        // _extra_ view.
+        let extra = tgm_metadata_extra(hp);
+        assert_eq!(tgm_value_get_type(extra), TgmValueType::Map);
+        assert_eq!(
+            cursor_str(tgm_value_map_get(extra, CString::new("src").unwrap().as_ptr())).as_deref(),
+            Some("x")
+        );
+
+        // message-level _reserved_ view.
+        let reserved = tgm_metadata_reserved(hp);
+        assert_eq!(tgm_value_get_type(reserved), TgmValueType::Map);
+        assert_eq!(
+            cursor_str(tgm_value_map_get(
+                reserved,
+                CString::new("global_tensor").unwrap().as_ptr()
+            ))
+            .as_deref(),
+            Some("g")
+        );
+    }
+
+    #[test]
+    fn value_per_object_scoping_and_reserved_hiding() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+        let name = CString::new("name").unwrap();
+
+        // Per-object scoping — no cross-object first-match.
+        assert_eq!(
+            cursor_str(tgm_metadata_get_at(hp, 0, name.as_ptr())).as_deref(),
+            Some("2t")
+        );
+        assert_eq!(
+            cursor_str(tgm_metadata_get_at(hp, 1, name.as_ptr())).as_deref(),
+            Some("msl")
+        );
+        assert!(tgm_metadata_has_at(hp, 0, name.as_ptr()));
+        assert!(tgm_metadata_has_at(hp, 1, name.as_ptr()));
+
+        // Out of range → NULL / false.
+        assert!(tgm_metadata_get_at(hp, 2, name.as_ptr()).is_null());
+        assert!(!tgm_metadata_has_at(hp, 2, name.as_ptr()));
+
+        // `_reserved_` is hidden from path getters at the first segment...
+        let res_path = CString::new("_reserved_.tensor").unwrap();
+        assert!(!tgm_metadata_has_at(hp, 0, res_path.as_ptr()));
+        assert!(tgm_metadata_get_at(hp, 0, res_path.as_ptr()).is_null());
+        // ...but object(0) enumeration still exposes it (asserted above).
+
+        // Message-level first-match: base[0].name wins over base[1].name.
+        assert_eq!(
+            cursor_str(tgm_metadata_get(hp, name.as_ptr())).as_deref(),
+            Some("2t")
+        );
+    }
+
+    #[test]
+    fn value_null_handle_safety() {
+        let h = make_handle(cursor_meta());
+        let hp = &h as *const TgmMetadata;
+        let key = CString::new("name").unwrap();
+
+        // NULL metadata / NULL path on the lookups.
+        assert!(tgm_metadata_get(ptr::null(), key.as_ptr()).is_null());
+        assert!(tgm_metadata_get(hp, ptr::null()).is_null());
+        assert!(!tgm_metadata_has(ptr::null(), key.as_ptr()));
+        assert!(!tgm_metadata_has(hp, ptr::null()));
+        assert!(tgm_metadata_get_at(ptr::null(), 0, key.as_ptr()).is_null());
+        assert!(tgm_metadata_object(ptr::null(), 0).is_null());
+        assert!(tgm_metadata_extra(ptr::null()).is_null());
+        assert!(tgm_metadata_reserved(ptr::null()).is_null());
+
+        // NULL value handle on every value accessor.
+        let mut b = false;
+        let mut i = 0i64;
+        let mut u = 0u64;
+        let mut f = 0.0f64;
+        let mut len: usize = 0;
+        assert!(!tgm_value_as_bool(ptr::null(), &mut b));
+        assert!(!tgm_value_as_i64(ptr::null(), &mut i));
+        assert!(!tgm_value_as_u64(ptr::null(), &mut u));
+        assert!(!tgm_value_as_f64(ptr::null(), &mut f));
+        assert!(tgm_value_as_string(ptr::null(), &mut len).is_null());
+        assert!(tgm_value_as_bytes(ptr::null(), &mut len).is_null());
+        assert_eq!(tgm_value_array_len(ptr::null()), 0);
+        assert!(tgm_value_array_get(ptr::null(), 0).is_null());
+        assert_eq!(tgm_value_map_len(ptr::null()), 0);
+        assert!(tgm_value_map_key_at(ptr::null(), 0, &mut len).is_null());
+        assert!(tgm_value_map_value_at(ptr::null(), 0).is_null());
+        assert!(tgm_value_map_get(ptr::null(), key.as_ptr()).is_null());
+
+        // NULL out-params leave nothing written and report failure.
+        let good = tgm_metadata_get(hp, key.as_ptr());
+        assert!(!tgm_value_as_bool(good, ptr::null_mut()));
+        assert!(!tgm_value_as_i64(good, ptr::null_mut()));
+        assert!(tgm_value_as_string(good, ptr::null_mut()).is_null());
+        assert!(tgm_value_as_bytes(good, ptr::null_mut()).is_null());
+        // NULL key on map_get.
+        let mars = tgm_metadata_get(hp, CString::new("mars").unwrap().as_ptr());
+        assert!(tgm_value_map_get(mars, ptr::null()).is_null());
     }
 }
 

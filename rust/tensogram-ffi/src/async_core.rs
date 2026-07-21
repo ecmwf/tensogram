@@ -1229,6 +1229,7 @@ pub extern "C" fn tgm_async_file_decode_metadata(
         Ok(TaskResult::Metadata(Box::new(TgmMetadata {
             global_metadata: gm,
             cache: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            value_arena: std::cell::RefCell::new(Vec::new()),
         })))
     };
     spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)

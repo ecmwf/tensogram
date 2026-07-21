@@ -23,6 +23,9 @@ usize_is_size_t = true
 [export.rename]
 # Error enum uses no _t suffix so prefix_with_name produces TGM_ERROR_OK not TGM_ERROR_T_OK
 "TgmError" = "tgm_error"
+# Value enum uses no _t suffix so prefix_with_name produces TGM_VALUE_TYPE_NULL
+"TgmValueType" = "tgm_value_type"
+"TgmValue" = "tgm_value_t"
 "TgmBytes" = "tgm_bytes_t"
 "TgmMessage" = "tgm_message_t"
 "TgmMetadata" = "tgm_metadata_t"
