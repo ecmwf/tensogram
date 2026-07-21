@@ -67,6 +67,17 @@ module tensogram
    public :: tensogram_metadata, tensogram_message_metadata
    public :: tensogram_metadata_get_string, tensogram_metadata_get_int
    public :: tensogram_metadata_get_float
+   !> Precise (no-coercion) metadata access — existence, typed try-get,
+   !> enumeration and nested/array navigation via the borrowed value cursor.
+   public :: tensogram_value
+   public :: tensogram_metadata_has, tensogram_metadata_get
+   public :: tensogram_metadata_try_get_int, tensogram_metadata_try_get_float
+   public :: tensogram_metadata_try_get_string, tensogram_metadata_try_get_bool
+   public :: tensogram_metadata_object, tensogram_metadata_extra
+   public :: tensogram_metadata_reserved, tensogram_metadata_num_objects
+   public :: TGM_VALUE_TYPE_NULL, TGM_VALUE_TYPE_BOOL, TGM_VALUE_TYPE_INT,   &
+             TGM_VALUE_TYPE_FLOAT, TGM_VALUE_TYPE_STRING, TGM_VALUE_TYPE_BYTES, &
+             TGM_VALUE_TYPE_ARRAY, TGM_VALUE_TYPE_MAP
    public :: tensogram_streaming_encoder
    public :: tensogram_streaming_encoder_create, tensogram_streaming_encoder_write
    public :: tensogram_streaming_encoder_finish, tensogram_streaming_encoder_count
@@ -94,6 +105,19 @@ module tensogram
    integer(c_int), parameter :: TGM_ERROR_MISSING_HASH  = 11
    integer(c_int), parameter :: TGM_ERROR_TIMEOUT       = 12
    integer(c_int), parameter :: TGM_ERROR_CANCELLED     = 13
+
+   ! ---- tgm_value_type enum — mirror of tensogram.h (header order) ---------
+   !  The kind of a metadata value handle. CBOR integers are i128-backed and
+   !  surface as the single TGM_VALUE_TYPE_INT; use %as_int / %as_uint to
+   !  extract with range checking.
+   integer(c_int), parameter :: TGM_VALUE_TYPE_NULL   = 0
+   integer(c_int), parameter :: TGM_VALUE_TYPE_BOOL   = 1
+   integer(c_int), parameter :: TGM_VALUE_TYPE_INT    = 2
+   integer(c_int), parameter :: TGM_VALUE_TYPE_FLOAT  = 3
+   integer(c_int), parameter :: TGM_VALUE_TYPE_STRING = 4
+   integer(c_int), parameter :: TGM_VALUE_TYPE_BYTES  = 5
+   integer(c_int), parameter :: TGM_VALUE_TYPE_ARRAY  = 6
+   integer(c_int), parameter :: TGM_VALUE_TYPE_MAP    = 7
 
    ! ---- Interoperable POD struct: tgm_bytes_t ------------------------------
    type, bind(C) :: tgm_bytes_t
@@ -154,6 +178,30 @@ module tensogram
       generic, public :: assignment(=) => metadata_assign
       final     :: metadata_final
    end type tensogram_metadata
+
+   ! ---- Borrowed metadata value cursor (tgm_value_t) -----------------------
+   !  A NON-OWNING view into a parent tensogram_metadata: existence, typed
+   !  extraction, enumeration and nested/array navigation, all zero-copy. The
+   !  handle (and any string/bytes it lends) is borrowed and valid only until
+   !  the parent metadata is freed — it must NOT outlive its parent, and is
+   !  never freed by the caller. A default-initialised (or absent-lookup)
+   !  cursor has a null `ptr`; test it with `%is_present()`.
+   type :: tensogram_value
+      type(c_ptr), private :: ptr = c_null_ptr
+   contains
+      procedure :: is_present => value_is_present  !> non-NULL handle?
+      procedure :: kind       => value_kind        !> TGM_VALUE_TYPE_* code
+      procedure :: as_int     => value_as_int      !> i64 (logical found)
+      procedure :: as_uint    => value_as_uint     !> u64 bits (logical found)
+      procedure :: as_float   => value_as_float    !> f64 or int-widened
+      procedure :: as_bool    => value_as_bool     !> bool (logical found)
+      procedure :: as_string  => value_as_string   !> text ptr+len (found)
+      procedure :: len        => value_len         !> array/map element count
+      procedure :: elem       => value_elem        !> array elem i (1-based)
+      procedure :: key        => value_key         !> map key i (1-based)
+      procedure :: value      => value_value       !> map value i (1-based)
+      procedure :: get        => value_get         !> single-segment map lookup
+   end type tensogram_value
 
    ! ---- Owned streaming encoder (RAII over tgm_streaming_encoder_t*) -------
    !  Writes a single multi-object message to a file progressively: the
@@ -438,6 +486,173 @@ module tensogram
          real(c_double)        :: v
       end function
 
+      ! ---- Metadata value cursor (Phase 4: metadata-access parity) ---------
+
+      function c_tgm_metadata_num_objects(meta) &
+            bind(C, name="tgm_metadata_num_objects") result(n)
+         import :: c_ptr, c_size_t
+         type(c_ptr), value :: meta
+         integer(c_size_t)  :: n
+      end function
+
+      function c_tgm_metadata_get(meta, path) &
+            bind(C, name="tgm_metadata_get") result(p)
+         import :: c_ptr
+         type(c_ptr), value :: meta
+         type(c_ptr), value :: path
+         type(c_ptr)        :: p
+      end function
+
+      function c_tgm_metadata_get_at(meta, obj, path) &
+            bind(C, name="tgm_metadata_get_at") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: meta
+         integer(c_size_t), value :: obj
+         type(c_ptr),       value :: path
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_metadata_has(meta, path) &
+            bind(C, name="tgm_metadata_has") result(b)
+         import :: c_ptr, c_bool
+         type(c_ptr), value :: meta
+         type(c_ptr), value :: path
+         logical(c_bool)    :: b
+      end function
+
+      function c_tgm_metadata_has_at(meta, obj, path) &
+            bind(C, name="tgm_metadata_has_at") result(b)
+         import :: c_ptr, c_size_t, c_bool
+         type(c_ptr),       value :: meta
+         integer(c_size_t), value :: obj
+         type(c_ptr),       value :: path
+         logical(c_bool)          :: b
+      end function
+
+      function c_tgm_metadata_object(meta, obj) &
+            bind(C, name="tgm_metadata_object") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: meta
+         integer(c_size_t), value :: obj
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_metadata_extra(meta) &
+            bind(C, name="tgm_metadata_extra") result(p)
+         import :: c_ptr
+         type(c_ptr), value :: meta
+         type(c_ptr)        :: p
+      end function
+
+      function c_tgm_metadata_reserved(meta) &
+            bind(C, name="tgm_metadata_reserved") result(p)
+         import :: c_ptr
+         type(c_ptr), value :: meta
+         type(c_ptr)        :: p
+      end function
+
+      function c_tgm_value_get_type(v) &
+            bind(C, name="tgm_value_get_type") result(t)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: v
+         integer(c_int)     :: t
+      end function
+
+      function c_tgm_value_as_bool(v, out) &
+            bind(C, name="tgm_value_as_bool") result(b)
+         import :: c_ptr, c_bool
+         type(c_ptr),     value       :: v
+         logical(c_bool), intent(out) :: out
+         logical(c_bool)              :: b
+      end function
+
+      function c_tgm_value_as_i64(v, out) &
+            bind(C, name="tgm_value_as_i64") result(b)
+         import :: c_ptr, c_int64_t, c_bool
+         type(c_ptr),        value       :: v
+         integer(c_int64_t), intent(out) :: out
+         logical(c_bool)                 :: b
+      end function
+
+      function c_tgm_value_as_u64(v, out) &
+            bind(C, name="tgm_value_as_u64") result(b)
+         import :: c_ptr, c_int64_t, c_bool
+         type(c_ptr),        value       :: v
+         integer(c_int64_t), intent(out) :: out   ! u64 bit pattern (no unsigned in F)
+         logical(c_bool)                 :: b
+      end function
+
+      function c_tgm_value_as_f64(v, out) &
+            bind(C, name="tgm_value_as_f64") result(b)
+         import :: c_ptr, c_double, c_bool
+         type(c_ptr),    value       :: v
+         real(c_double), intent(out) :: out
+         logical(c_bool)             :: b
+      end function
+
+      function c_tgm_value_as_string(v, len_out) &
+            bind(C, name="tgm_value_as_string") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value       :: v
+         integer(c_size_t), intent(out) :: len_out
+         type(c_ptr)                    :: p
+      end function
+
+      function c_tgm_value_as_bytes(v, len_out) &
+            bind(C, name="tgm_value_as_bytes") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value       :: v
+         integer(c_size_t), intent(out) :: len_out
+         type(c_ptr)                    :: p
+      end function
+
+      function c_tgm_value_array_len(v) &
+            bind(C, name="tgm_value_array_len") result(n)
+         import :: c_ptr, c_size_t
+         type(c_ptr), value :: v
+         integer(c_size_t)  :: n
+      end function
+
+      function c_tgm_value_array_get(v, index) &
+            bind(C, name="tgm_value_array_get") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: v
+         integer(c_size_t), value :: index
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_value_map_len(v) &
+            bind(C, name="tgm_value_map_len") result(n)
+         import :: c_ptr, c_size_t
+         type(c_ptr), value :: v
+         integer(c_size_t)  :: n
+      end function
+
+      function c_tgm_value_map_key_at(v, index, len_out) &
+            bind(C, name="tgm_value_map_key_at") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value       :: v
+         integer(c_size_t), value       :: index
+         integer(c_size_t), intent(out) :: len_out
+         type(c_ptr)                    :: p
+      end function
+
+      function c_tgm_value_map_value_at(v, index) &
+            bind(C, name="tgm_value_map_value_at") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: v
+         integer(c_size_t), value :: index
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_value_map_get(v, key) &
+            bind(C, name="tgm_value_map_get") result(p)
+         import :: c_ptr
+         type(c_ptr), value :: v
+         type(c_ptr), value :: key
+         type(c_ptr)        :: p
+      end function
+
       subroutine c_tgm_metadata_free(meta) bind(C, name="tgm_metadata_free")
          import :: c_ptr
          type(c_ptr), value :: meta
@@ -520,6 +735,26 @@ contains
          f(i:i) = buf(i)
       end do
    end function cptr_to_fstr
+
+   !> Copy exactly `n` bytes from a borrowed C buffer into a Fortran string.
+   !> Unlike cptr_to_fstr this does NOT stop at (nor require) a terminating
+   !> NUL: the metadata value cursor lends UTF-8 `ptr + len` buffers that may
+   !> hold interior NUL bytes and are not NUL-terminated. A zero length yields
+   !> an empty string WITHOUT dereferencing `p` (safe for the empty-string /
+   !> empty-key case, where `p` may be a non-dereferenceable sentinel).
+   function cptr_len_to_fstr(p, n) result(f)
+      type(c_ptr),       intent(in) :: p
+      integer(c_size_t), intent(in) :: n
+      character(len=:), allocatable   :: f
+      character(kind=c_char), pointer :: buf(:)
+      integer :: i
+      allocate(character(len=int(n)) :: f)
+      if (n == 0_c_size_t) return
+      call c_f_pointer(p, buf, [n])
+      do i = 1, int(n)
+         f(i:i) = buf(i)
+      end do
+   end function cptr_len_to_fstr
 
    pure function itoa(i) result(s)
       integer(c_int64_t), intent(in) :: i
@@ -1260,6 +1495,12 @@ contains
 
    !> Look up a string value by dot-notation key (searches base[i] then
    !> _extra_). Returns '' when the key is absent or not a string.
+   !>
+   !> DOC-DEPRECATED (coercing, absent==default): the '' sentinel cannot
+   !> distinguish an absent key from a stored empty string, and integer / float
+   !> / bool leaves are coerced to text. For precise access prefer
+   !> `tensogram_metadata_try_get_string` (found flag) or
+   !> `tensogram_metadata_get(...)%as_string(...)`.
    function tensogram_metadata_get_string(meta, key) result(val)
       type(tensogram_metadata), intent(in) :: meta
       character(len=*),         intent(in) :: key
@@ -1270,6 +1511,10 @@ contains
    end function tensogram_metadata_get_string
 
    !> Look up an integer value by dot-notation key; `default_val` when absent.
+   !>
+   !> DOC-DEPRECATED: `default_val` hides "absent" behind a real value equal to
+   !> the default. Prefer `tensogram_metadata_try_get_int` (found flag) or
+   !> `tensogram_metadata_get(...)%as_int(...)`.
    function tensogram_metadata_get_int(meta, key, default_val) result(v)
       type(tensogram_metadata), intent(in) :: meta
       character(len=*),         intent(in) :: key
@@ -1281,6 +1526,10 @@ contains
    end function tensogram_metadata_get_int
 
    !> Look up a float value by dot-notation key; `default_val` when absent.
+   !>
+   !> DOC-DEPRECATED: `default_val` hides "absent" behind a real value equal to
+   !> the default. Prefer `tensogram_metadata_try_get_float` (found flag) or
+   !> `tensogram_metadata_get(...)%as_float(...)`.
    function tensogram_metadata_get_float(meta, key, default_val) result(v)
       type(tensogram_metadata), intent(in) :: meta
       character(len=*),         intent(in) :: key
@@ -1290,6 +1539,258 @@ contains
       call f_to_cstr(trim(key), key_c)
       v = c_tgm_metadata_get_float(meta%ptr, c_loc(key_c), default_val)
    end function tensogram_metadata_get_float
+
+   ! =========================================================================
+   !  Precise metadata access — value cursor (tensogram_value) + accessors
+   !  (Phase 4: metadata-access parity). No coercion; absent is distinct from
+   !  wrong-type and from a stored default. All handles/strings are borrowed
+   !  from the parent tensogram_metadata and valid only until it is freed.
+   ! =========================================================================
+
+   !> .true. when this cursor refers to a present value (non-NULL handle).
+   logical function value_is_present(self)
+      class(tensogram_value), intent(in) :: self
+      value_is_present = c_associated(self%ptr)
+   end function value_is_present
+
+   !> The value kind as a TGM_VALUE_TYPE_* code. TGM_VALUE_TYPE_NULL for an
+   !> absent (non-present) cursor as well as a genuine CBOR null.
+   function value_kind(self) result(k)
+      class(tensogram_value), intent(in) :: self
+      integer(c_int) :: k
+      k = c_tgm_value_get_type(self%ptr)
+   end function value_kind
+
+   !> Extract a signed 64-bit integer (integer values only, no coercion).
+   !> Returns .true. and sets `val` only when the value is an i64-range integer.
+   logical function value_as_int(self, val)
+      class(tensogram_value), intent(in)  :: self
+      integer(c_int64_t),     intent(out) :: val
+      value_as_int = c_tgm_value_as_i64(self%ptr, val)
+   end function value_as_int
+
+   !> Extract an unsigned 64-bit integer as its i64 bit pattern (Fortran has no
+   !> unsigned type). Returns .true. only for a u64-range integer.
+   logical function value_as_uint(self, val)
+      class(tensogram_value), intent(in)  :: self
+      integer(c_int64_t),     intent(out) :: val
+      value_as_uint = c_tgm_value_as_u64(self%ptr, val)
+   end function value_as_uint
+
+   !> Extract a double: a float as-is, or an integer widened to f64 (the one
+   !> widening accessor). Returns .true. only for a numeric value.
+   logical function value_as_float(self, val)
+      class(tensogram_value), intent(in)  :: self
+      real(c_double),         intent(out) :: val
+      value_as_float = c_tgm_value_as_f64(self%ptr, val)
+   end function value_as_float
+
+   !> Extract a boolean (no coercion). Returns .true. and sets `val` only when
+   !> the value is a boolean.
+   logical function value_as_bool(self, val)
+      class(tensogram_value), intent(in)  :: self
+      logical,                intent(out) :: val
+      logical(c_bool) :: b
+      value_as_bool = c_tgm_value_as_bool(self%ptr, b)
+      if (value_as_bool) val = b
+   end function value_as_bool
+
+   !> Borrow a string value (text only). Returns .true. and allocates `val`
+   !> (exact byte length, interior NULs preserved) only when it is a string;
+   !> a stored empty string is a present string ('' with found=.true.), which
+   !> is distinct from an absent key (found=.false.).
+   logical function value_as_string(self, val)
+      class(tensogram_value),        intent(in)  :: self
+      character(len=:), allocatable, intent(out) :: val
+      type(c_ptr)       :: p
+      integer(c_size_t) :: n
+      p = c_tgm_value_as_string(self%ptr, n)
+      if (c_associated(p)) then
+         val = cptr_len_to_fstr(p, n)
+         value_as_string = .true.
+      else
+         value_as_string = .false.
+      end if
+   end function value_as_string
+
+   !> Number of elements in an array (or entries in a map); 0 for any other
+   !> kind or an absent cursor.
+   function value_len(self) result(n)
+      class(tensogram_value), intent(in) :: self
+      integer        :: n
+      integer(c_int) :: k
+      k = c_tgm_value_get_type(self%ptr)
+      if (k == TGM_VALUE_TYPE_ARRAY) then
+         n = int(c_tgm_value_array_len(self%ptr))
+      else if (k == TGM_VALUE_TYPE_MAP) then
+         n = int(c_tgm_value_map_len(self%ptr))
+      else
+         n = 0
+      end if
+   end function value_len
+
+   !> Array element `i` (1-based) as a value cursor; an absent cursor if `i`
+   !> is out of range or this is not an array.
+   function value_elem(self, i) result(v)
+      class(tensogram_value), intent(in) :: self
+      integer,                intent(in) :: i
+      type(tensogram_value) :: v
+      v%ptr = c_tgm_value_array_get(self%ptr, int(i - 1, c_size_t))
+   end function value_elem
+
+   !> Map key `i` (1-based) as a string; '' if out of range or not a map.
+   function value_key(self, i) result(k)
+      class(tensogram_value), intent(in) :: self
+      integer,                intent(in) :: i
+      character(len=:), allocatable :: k
+      type(c_ptr)       :: p
+      integer(c_size_t) :: n
+      p = c_tgm_value_map_key_at(self%ptr, int(i - 1, c_size_t), n)
+      if (c_associated(p)) then
+         k = cptr_len_to_fstr(p, n)
+      else
+         k = ''
+      end if
+   end function value_key
+
+   !> Map value `i` (1-based) as a value cursor (same order as %key).
+   function value_value(self, i) result(v)
+      class(tensogram_value), intent(in) :: self
+      integer,                intent(in) :: i
+      type(tensogram_value) :: v
+      v%ptr = c_tgm_value_map_value_at(self%ptr, int(i - 1, c_size_t))
+   end function value_value
+
+   !> Single-segment map lookup (does NOT split on '.'; use
+   !> tensogram_metadata_get for dot-paths). Absent cursor if the key is
+   !> missing or this is not a map. On a base[i] section this can reach
+   !> `_reserved_` (enumeration parity).
+   function value_get(self, key) result(v)
+      class(tensogram_value), intent(in) :: self
+      character(len=*),       intent(in) :: key
+      type(tensogram_value) :: v
+      character(kind=c_char), allocatable, target :: key_c(:)
+      call f_to_cstr(trim(key), key_c)
+      v%ptr = c_tgm_value_map_get(self%ptr, c_loc(key_c))
+   end function value_get
+
+   !> Number of objects (length of `base`) described in the metadata.
+   function tensogram_metadata_num_objects(meta) result(n)
+      type(tensogram_metadata), intent(in) :: meta
+      integer :: n
+      n = int(c_tgm_metadata_num_objects(meta%ptr))
+   end function tensogram_metadata_num_objects
+
+   !> Existence check for a dot-notation path. With `obj_index` (1-based) the
+   !> lookup is scoped to base[obj_index] (no cross-object first-match, no
+   !> _extra_ fallback, _reserved_ hidden at the first segment); without it the
+   !> lookup is message-level (first match across base[i], then _extra_).
+   logical function tensogram_metadata_has(meta, key, obj_index)
+      type(tensogram_metadata), intent(in)           :: meta
+      character(len=*),         intent(in)           :: key
+      integer,                  intent(in), optional :: obj_index
+      character(kind=c_char), allocatable, target :: key_c(:)
+      call f_to_cstr(trim(key), key_c)
+      if (present(obj_index)) then
+         tensogram_metadata_has = &
+            c_tgm_metadata_has_at(meta%ptr, int(obj_index - 1, c_size_t), c_loc(key_c))
+      else
+         tensogram_metadata_has = c_tgm_metadata_has(meta%ptr, c_loc(key_c))
+      end if
+   end function tensogram_metadata_has
+
+   !> Look up a value cursor by dot-notation path. Message-level by default,
+   !> or scoped to base[obj_index] (1-based) when `obj_index` is present.
+   !> Presence is `result%is_present()`, so a stored 0 / '' / null is
+   !> distinguishable from an absent key.
+   function tensogram_metadata_get(meta, key, obj_index) result(v)
+      type(tensogram_metadata), intent(in)           :: meta
+      character(len=*),         intent(in)           :: key
+      integer,                  intent(in), optional :: obj_index
+      type(tensogram_value) :: v
+      character(kind=c_char), allocatable, target :: key_c(:)
+      call f_to_cstr(trim(key), key_c)
+      if (present(obj_index)) then
+         v%ptr = c_tgm_metadata_get_at(meta%ptr, int(obj_index - 1, c_size_t), c_loc(key_c))
+      else
+         v%ptr = c_tgm_metadata_get(meta%ptr, c_loc(key_c))
+      end if
+   end function tensogram_metadata_get
+
+   !> Typed get: integer. Returns .true. and sets `value` only when the path is
+   !> present AND an i64-range integer. Scoping matches tensogram_metadata_get.
+   logical function tensogram_metadata_try_get_int(meta, key, value, obj_index)
+      type(tensogram_metadata), intent(in)           :: meta
+      character(len=*),         intent(in)           :: key
+      integer(c_int64_t),       intent(out)          :: value
+      integer,                  intent(in), optional :: obj_index
+      type(tensogram_value) :: v
+      v = tensogram_metadata_get(meta, key, obj_index)
+      tensogram_metadata_try_get_int = v%as_int(value)
+   end function tensogram_metadata_try_get_int
+
+   !> Typed get: float (float, or integer widened to f64). Returns .true. and
+   !> sets `value` only when the path is present AND numeric.
+   logical function tensogram_metadata_try_get_float(meta, key, value, obj_index)
+      type(tensogram_metadata), intent(in)           :: meta
+      character(len=*),         intent(in)           :: key
+      real(c_double),           intent(out)          :: value
+      integer,                  intent(in), optional :: obj_index
+      type(tensogram_value) :: v
+      v = tensogram_metadata_get(meta, key, obj_index)
+      tensogram_metadata_try_get_float = v%as_float(value)
+   end function tensogram_metadata_try_get_float
+
+   !> Typed get: string (text only, no coercion). Returns .true. and allocates
+   !> `value` only when the path is present AND a string (a stored '' counts).
+   logical function tensogram_metadata_try_get_string(meta, key, value, obj_index)
+      type(tensogram_metadata),      intent(in)           :: meta
+      character(len=*),              intent(in)           :: key
+      character(len=:), allocatable, intent(out)          :: value
+      integer,                       intent(in), optional :: obj_index
+      type(tensogram_value) :: v
+      v = tensogram_metadata_get(meta, key, obj_index)
+      tensogram_metadata_try_get_string = v%as_string(value)
+   end function tensogram_metadata_try_get_string
+
+   !> Typed get: boolean (no coercion). Returns .true. and sets `value` only
+   !> when the path is present AND a boolean.
+   logical function tensogram_metadata_try_get_bool(meta, key, value, obj_index)
+      type(tensogram_metadata), intent(in)           :: meta
+      character(len=*),         intent(in)           :: key
+      logical,                  intent(out)          :: value
+      integer,                  intent(in), optional :: obj_index
+      type(tensogram_value) :: v
+      v = tensogram_metadata_get(meta, key, obj_index)
+      tensogram_metadata_try_get_bool = v%as_bool(value)
+   end function tensogram_metadata_try_get_bool
+
+   !> View base[obj_index] (1-based) as a map cursor for enumeration. INCLUDES
+   !> `_reserved_` (parity with the JSON export / Python's meta.base[i]),
+   !> unlike the path getters which hide it. An out-of-range index yields an
+   !> absent cursor.
+   function tensogram_metadata_object(meta, obj_index) result(v)
+      type(tensogram_metadata), intent(in) :: meta
+      integer,                  intent(in) :: obj_index
+      type(tensogram_value) :: v
+      v%ptr = c_tgm_metadata_object(meta%ptr, int(obj_index - 1, c_size_t))
+   end function tensogram_metadata_object
+
+   !> View the message-level `_extra_` section as a map cursor. Empty section
+   !> is a present, empty map (%len() == 0) — distinct from an absent cursor.
+   function tensogram_metadata_extra(meta) result(v)
+      type(tensogram_metadata), intent(in) :: meta
+      type(tensogram_value) :: v
+      v%ptr = c_tgm_metadata_extra(meta%ptr)
+   end function tensogram_metadata_extra
+
+   !> View the message-level `_reserved_` section (library-managed namespace,
+   !> e.g. tensor descriptors) as a map cursor.
+   function tensogram_metadata_reserved(meta) result(v)
+      type(tensogram_metadata), intent(in) :: meta
+      type(tensogram_value) :: v
+      v%ptr = c_tgm_metadata_reserved(meta%ptr)
+   end function tensogram_metadata_reserved
 
    ! =========================================================================
    !  Streaming encoder
