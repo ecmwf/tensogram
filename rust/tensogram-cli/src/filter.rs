@@ -6,9 +6,7 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-use std::collections::BTreeMap;
-
-use tensogram::{GlobalMetadata, RESERVED_KEY};
+use tensogram::GlobalMetadata;
 
 /// A parsed where-clause filter.
 #[derive(Debug)]
@@ -47,98 +45,25 @@ pub fn parse_where(input: &str) -> Result<WhereClause, String> {
     }
 }
 
-/// Look up a dot-notation key in global metadata, returning the FIRST matching value.
+/// Look up a dot-notation key in global metadata, returning the FIRST matching
+/// value as a display string.
 ///
-/// Supports arbitrary nesting depth:
-///   - `version` → struct field
-///   - `mars.param` → `base[i]["mars"]["param"]`, …
-///   - `grib.geography.Ni` → `base[i]["grib"]["geography"]["Ni"]`, …
-///   - `a.b.c.d.e` → walks as many nested CBOR maps as needed
+/// Delegates path resolution to `tensogram`'s single source of truth
+/// ([`GlobalMetadata::get_value`]): first match across `base[i]` (skipping
+/// `_reserved_`) then `_extra_`, with an explicit `extra.` / `_extra_.` prefix
+/// targeting the extra map. The leaf value is stringified for CLI display.
 ///
-/// Search order: `base[i]` (skip `_reserved_` key, first match across entries) → `extra`.
+/// `version` is a pseudo-key — the wire-format version lives in the preamble
+/// (see `plans/WIRE_FORMAT.md` §3), not in the CBOR metadata frame. We report
+/// it here so `tensogram ls -p version` / `get -p version` keep returning `"3"`
+/// for ops scripts that depend on the column. Any per-message free-form
+/// `version` the caller put in the CBOR still flows through `_extra_` and is
+/// reachable via `_extra_.version`.
 pub fn lookup_key(metadata: &GlobalMetadata, key: &str) -> Option<String> {
-    if key.is_empty() {
-        return None;
-    }
-    let parts: Vec<&str> = key.split('.').collect();
-
-    if parts.is_empty() || parts[0].is_empty() {
-        return None;
-    }
-
-    // `version` is a pseudo-key — the wire-format version lives in the
-    // preamble (see `plans/WIRE_FORMAT.md` §3), not in the CBOR metadata
-    // frame.  We report it here as if it were a metadata field so that
-    // `tensogram ls -p version` and `tensogram get -p version` keep
-    // returning `"3"` for ops scripts that depend on the column.  Any
-    // per-message free-form `version` the caller put in the CBOR still
-    // flows through `_extra_` (see §6.1) and is reachable via
-    // `_extra_.version`.
-    if parts == ["version"] {
+    if key == "version" {
         return Some(tensogram::WIRE_VERSION.to_string());
     }
-
-    // Explicit _extra_.key prefix targets the extra map directly
-    if parts[0] == "_extra_" || parts[0] == "extra" {
-        if parts.len() > 1 {
-            return resolve_path_in_btree(&metadata.extra, &parts[1..]);
-        }
-        return None;
-    }
-
-    // Search base entries (skip _reserved_ key within each entry)
-    for entry in &metadata.base {
-        if let Some(val) = resolve_path_in_btree_skip_reserved(entry, &parts) {
-            return Some(val);
-        }
-    }
-    // Fall back to extra
-    resolve_path_in_btree(&metadata.extra, &parts)
-}
-
-/// Walk a dot-path starting from a `BTreeMap` root, skipping `_reserved_` keys.
-fn resolve_path_in_btree_skip_reserved(
-    map: &BTreeMap<String, ciborium::Value>,
-    parts: &[&str],
-) -> Option<String> {
-    let (first, rest) = parts.split_first()?;
-    if *first == RESERVED_KEY {
-        return None;
-    }
-    let value = map.get(*first)?;
-    resolve_in_cbor(value, rest)
-}
-
-/// Walk a dot-path starting from a `BTreeMap` root.
-///
-/// The first segment indexes the `BTreeMap` by string key.
-/// Remaining segments navigate nested `CborValue::Map` layers.
-fn resolve_path_in_btree(
-    map: &BTreeMap<String, ciborium::Value>,
-    parts: &[&str],
-) -> Option<String> {
-    let (first, rest) = parts.split_first()?;
-    let value = map.get(*first)?;
-    resolve_in_cbor(value, rest)
-}
-
-/// Recursively walk remaining path segments into a `CborValue`.
-///
-/// When no segments remain, stringify the leaf value.
-/// When segments remain, the current value must be a `CborValue::Map`
-/// to navigate further; otherwise returns `None`.
-fn resolve_in_cbor(value: &ciborium::Value, remaining: &[&str]) -> Option<String> {
-    if remaining.is_empty() {
-        return Some(cbor_value_to_string(value));
-    }
-    if let ciborium::Value::Map(entries) = value {
-        for (k, v) in entries {
-            if matches!(k, ciborium::Value::Text(s) if s == remaining[0]) {
-                return resolve_in_cbor(v, &remaining[1..]);
-            }
-        }
-    }
-    None
+    metadata.get_value(key).map(cbor_value_to_string)
 }
 
 /// Test if global metadata matches a where-clause.
@@ -168,8 +93,11 @@ fn cbor_value_to_string(value: &ciborium::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::BTreeMap;
+
     use ciborium::Value;
+
+    use super::*;
 
     #[test]
     fn test_parse_eq() {

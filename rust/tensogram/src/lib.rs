@@ -15,6 +15,7 @@ pub mod file;
 pub mod framing;
 pub mod hash;
 pub mod iter;
+pub mod meta_access;
 pub mod metadata;
 // Internal thread-dispatch helpers for the multi-threaded coding
 // pipeline.  Callers configure threading via `EncodeOptions.threads`
@@ -50,6 +51,7 @@ pub use framing::{
 };
 pub use hash::{HASH_ALGORITHM_NAME, compute_hash, parse_hash_name};
 pub use iter::{FileMessageIter, MessageIter, ObjectIter, messages, objects, objects_metadata};
+pub use meta_access::{MetaType, MetaValue};
 pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};
 pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
 pub use pipeline::{DEFAULT_SIMPLE_PACKING_BITS, DataPipeline, apply_pipeline};
