@@ -442,6 +442,133 @@ impl PyMetadata {
         self.inner.extra.contains_key(key)
     }
 
+    /// Number of data objects (length of ``base``).
+    #[getter]
+    fn num_objects(&self) -> usize {
+        self.inner.num_objects()
+    }
+
+    /// Mapping-style ``meta.get(key, default=None)``.
+    ///
+    /// Flat (single top-level) key access with the same first-match search
+    /// as ``meta[key]`` / ``key in meta`` — each ``base[i]`` (skipping
+    /// ``_reserved_``) then ``extra`` — but returns *default* (``None`` when
+    /// omitted) instead of raising ``KeyError``.  This is **not** dot-path
+    /// access; use :meth:`get_path` for ``"a.b.c"`` navigation.
+    #[pyo3(signature = (key, default=None))]
+    fn get(&self, py: Python<'_>, key: &str, default: Option<PyObject>) -> PyResult<PyObject> {
+        match self.flat_get(key) {
+            Some(v) => cbor_to_py(py, v),
+            None => Ok(default.unwrap_or_else(|| py.None())),
+        }
+    }
+
+    /// Ordered, unique top-level keys reachable via ``meta[key]``.
+    ///
+    /// The union of each ``base[i]``'s keys (excluding ``_reserved_``) then
+    /// ``extra``'s keys, de-duplicated preserving first-seen order.  Agrees
+    /// with ``in`` / ``__getitem__`` / :meth:`get` / ``iter(meta)``.
+    fn keys(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let list = PyList::new(py, self.message_level_keys())?;
+        Ok(list.into_any().unbind())
+    }
+
+    /// First-match values paired with :meth:`keys`, in the same order.
+    fn values(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let keys = self.message_level_keys();
+        let mut vals: Vec<PyObject> = Vec::with_capacity(keys.len());
+        for k in &keys {
+            // Every key came from `message_level_keys`, so `flat_get` resolves.
+            let v = self
+                .flat_get(k)
+                .expect("message-level key must resolve to a value");
+            vals.push(cbor_to_py(py, v)?);
+        }
+        let list = PyList::new(py, vals)?;
+        Ok(list.into_any().unbind())
+    }
+
+    /// ``(key, value)`` pairs for :meth:`keys`, in the same order.
+    fn items(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let keys = self.message_level_keys();
+        let mut pairs: Vec<PyObject> = Vec::with_capacity(keys.len());
+        for k in &keys {
+            let v = self
+                .flat_get(k)
+                .expect("message-level key must resolve to a value");
+            let key_obj = k.into_pyobject(py)?.into_any().unbind();
+            let val_obj = cbor_to_py(py, v)?;
+            let tuple = pyo3::types::PyTuple::new(py, [key_obj, val_obj])?;
+            pairs.push(tuple.into_any().unbind());
+        }
+        let list = PyList::new(py, pairs)?;
+        Ok(list.into_any().unbind())
+    }
+
+    /// Iterate the message-level keys (mirrors :meth:`keys`).
+    fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let list = PyList::new(py, self.message_level_keys())?;
+        let iter = list.into_any().try_iter()?;
+        Ok(iter.into_any().unbind())
+    }
+
+    /// Number of message-level keys (mirrors ``len(list(meta))``).
+    fn __len__(&self) -> usize {
+        self.message_level_keys().len()
+    }
+
+    // ── Dot-path helpers (precise, no coercion — delegate to core) ──
+
+    /// ``True`` if a message-level dot-path resolves to a value (any type).
+    ///
+    /// Mirrors ``GlobalMetadata::contains``: first-match across ``base[i]``
+    /// (``_reserved_`` hidden at the first segment) then ``_extra_``.
+    fn has_path(&self, path: &str) -> bool {
+        self.inner.contains(path)
+    }
+
+    /// Message-level dot-path lookup, e.g. ``meta.get_path("mars.class")``.
+    ///
+    /// Returns *default* (``None`` when omitted) if the path is absent.
+    /// Precise — no cross-type coercion.
+    #[pyo3(signature = (path, default=None))]
+    fn get_path(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        default: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        match self.inner.get_value(path) {
+            Some(v) => cbor_to_py(py, v),
+            None => Ok(default.unwrap_or_else(|| py.None())),
+        }
+    }
+
+    /// ``True`` if a dot-path resolves within ``base[obj]`` only.
+    ///
+    /// No ``_extra_`` fallback, no cross-object first-match, ``_reserved_``
+    /// hidden at the first segment.
+    fn has_path_at(&self, obj: usize, path: &str) -> bool {
+        self.inner.contains_at(obj, path)
+    }
+
+    /// Per-object dot-path lookup scoped to ``base[obj]``.
+    ///
+    /// Returns *default* (``None`` when omitted) if the path is absent.
+    #[pyo3(signature = (obj, path, default=None))]
+    fn get_path_at(
+        &self,
+        py: Python<'_>,
+        obj: usize,
+        path: &str,
+        default: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        match self.inner.get_value_at(obj, path) {
+            Some(v) => cbor_to_py(py, v),
+            None => Ok(default.unwrap_or_else(|| py.None())),
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Metadata(version={}, base_len={}, extra_keys={:?})",
@@ -449,6 +576,48 @@ impl PyMetadata {
             self.inner.base.len(),
             self.inner.extra.keys().collect::<Vec<_>>()
         )
+    }
+}
+
+// Private (non-Python) helpers shared by the Mapping methods above.  Kept in a
+// plain `impl` block so they are NOT exported as `#[pymethods]`.
+impl PyMetadata {
+    /// Flat-key message-level first-match lookup (mirrors ``__getitem__``):
+    /// the first ``base[i]`` containing `key` (skipping ``_reserved_``), then
+    /// ``extra``.  Returns the borrowed CBOR value, or `None` if absent.
+    fn flat_get(&self, key: &str) -> Option<&ciborium::Value> {
+        if key != RESERVED_KEY {
+            for entry in &self.inner.base {
+                if let Some(v) = entry.get(key) {
+                    return Some(v);
+                }
+            }
+        }
+        self.inner.extra.get(key)
+    }
+
+    /// Ordered, de-duplicated set of top-level keys reachable via
+    /// ``__getitem__``: each ``base[i]``'s keys (excluding ``_reserved_``)
+    /// then ``extra``'s keys, preserving first-seen order.
+    fn message_level_keys(&self) -> Vec<String> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut keys: Vec<String> = Vec::new();
+        for entry in &self.inner.base {
+            for k in entry.keys() {
+                if k == RESERVED_KEY {
+                    continue;
+                }
+                if seen.insert(k.as_str()) {
+                    keys.push(k.clone());
+                }
+            }
+        }
+        for k in self.inner.extra.keys() {
+            if seen.insert(k.as_str()) {
+                keys.push(k.clone());
+            }
+        }
+        keys
     }
 }
 

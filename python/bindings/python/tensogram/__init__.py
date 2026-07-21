@@ -9,13 +9,23 @@
 """Tensogram Python bindings."""
 
 from collections import namedtuple
+from collections.abc import Mapping
 
 from .tensogram import *  # noqa: F403
 
 # `from .tensogram import *` skips dunder names, so re-export the package
 # version explicitly. It is stamped into the compiled extension from the
 # crate's CARGO_PKG_VERSION, so it always matches the installed binary.
+from .tensogram import Metadata as Metadata
 from .tensogram import __version__ as __version__
+
+# `Metadata` implements the full read-only Mapping protocol at the Rust level
+# (``__getitem__``/``__iter__``/``__len__``/``__contains__``/``get``/``keys``/
+# ``values``/``items``).  Register it as a virtual subclass so
+# ``isinstance(meta, collections.abc.Mapping)`` is True and generic code that
+# dispatches on Mapping accepts it. Duck-typing already works; this makes the
+# relationship explicit.
+Mapping.register(Metadata)
 
 Message = namedtuple("Message", ["metadata", "objects"])
 """Decoded message with named fields.
