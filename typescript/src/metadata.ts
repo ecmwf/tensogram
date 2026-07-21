@@ -68,6 +68,136 @@ function resolveEntryPath(entry: BaseEntry, parts: readonly string[]): CborValue
   return resolvePath(entry, parts);
 }
 
+/**
+ * Message-level existence check for a dotted key.
+ *
+ * Thin convenience over {@link getMetaKey}: `true` iff the key resolves to
+ * a present value (of any type, including CBOR `null` — decoded as JS
+ * `null`). Because absent keys yield `undefined`, `undefined` is the
+ * unambiguous "absent" signal and a stored `null`/`0`/`""` still counts
+ * as present.
+ *
+ * @returns `true` if the key is present, `false` if absent.
+ */
+export function hasMetaKey(meta: GlobalMetadata, path: string): boolean {
+  return getMetaKey(meta, path) !== undefined;
+}
+
+/**
+ * Look up a dotted key **scoped to a single `base[obj]` entry**.
+ *
+ * Per-object semantics (mirrors core `get_at`): no cross-object
+ * first-match, no `_extra_` fallback, and `_reserved_` is hidden at the
+ * first path segment. A key present only in a *different* `base[i]` is not
+ * visible here.
+ *
+ * @param obj  zero-based index into `meta.base`.
+ * @returns the value, or `undefined` if the path is empty, `obj` is out of
+ *   range, or the key is absent within that entry. (`undefined` = absent;
+ *   a stored `null`/`0`/`""` is returned as-is.)
+ */
+export function getMetaKeyAt(meta: GlobalMetadata, obj: number, path: string): CborValue | undefined {
+  if (typeof path !== 'string' || path.length === 0) return undefined;
+  const entry = meta.base?.[obj];
+  if (entry === undefined) return undefined;
+  return resolveEntryPath(entry, path.split('.'));
+}
+
+/**
+ * Per-object existence check for a dotted key.
+ *
+ * Thin convenience over {@link getMetaKeyAt} with the same per-object
+ * scoping (no first-match, no `_extra_` fallback, `_reserved_` hidden).
+ *
+ * @returns `true` if the key is present in `base[obj]`, else `false`.
+ */
+export function hasMetaKeyAt(meta: GlobalMetadata, obj: number, path: string): boolean {
+  return getMetaKeyAt(meta, obj, path) !== undefined;
+}
+
+// ── Typed getters (precise — no coercion) ─────────────────────────────────
+//
+// Each returns the value only when it is *both* present *and* of the exact
+// expected JS type; otherwise `undefined` (mirroring the "undefined =
+// absent OR wrong-type" contract of the core `as_*` extractors). A present
+// value of the wrong type is indistinguishable from absent through these
+// helpers — use {@link getMetaKey} / {@link hasMetaKey} when you need to
+// tell them apart.
+
+/**
+ * Message-level string getter. Returns the value only if present *and* a
+ * JS `string` (mirrors core `as_str`); otherwise `undefined`.
+ */
+export function getMetaString(meta: GlobalMetadata, path: string): string | undefined {
+  const v = getMetaKey(meta, path);
+  return typeof v === 'string' ? v : undefined;
+}
+
+/**
+ * Message-level integer getter. Returns the value only if present *and* an
+ * integer JS `number` (`Number.isInteger`, mirrors core `as_i64`);
+ * otherwise `undefined`. Non-integer floats and `bigint` yield `undefined`.
+ */
+export function getMetaInt(meta: GlobalMetadata, path: string): number | undefined {
+  const v = getMetaKey(meta, path);
+  return typeof v === 'number' && Number.isInteger(v) ? v : undefined;
+}
+
+/**
+ * Message-level float getter. Returns any finite JS `number` — integers
+ * included (mirrors core `as_f64`, which widens ints to float); otherwise
+ * `undefined`. `NaN`/`±Infinity` and `bigint` yield `undefined`.
+ */
+export function getMetaFloat(meta: GlobalMetadata, path: string): number | undefined {
+  const v = getMetaKey(meta, path);
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * Message-level boolean getter. Returns the value only if present *and* a
+ * JS `boolean` (mirrors core `as_bool`); otherwise `undefined`.
+ */
+export function getMetaBool(meta: GlobalMetadata, path: string): boolean | undefined {
+  const v = getMetaKey(meta, path);
+  return typeof v === 'boolean' ? v : undefined;
+}
+
+/**
+ * Per-object string getter, scoped to `base[obj]`. See
+ * {@link getMetaString} for typing and {@link getMetaKeyAt} for scoping.
+ */
+export function getMetaStringAt(meta: GlobalMetadata, obj: number, path: string): string | undefined {
+  const v = getMetaKeyAt(meta, obj, path);
+  return typeof v === 'string' ? v : undefined;
+}
+
+/**
+ * Per-object integer getter, scoped to `base[obj]`. See {@link getMetaInt}
+ * for typing and {@link getMetaKeyAt} for scoping.
+ */
+export function getMetaIntAt(meta: GlobalMetadata, obj: number, path: string): number | undefined {
+  const v = getMetaKeyAt(meta, obj, path);
+  return typeof v === 'number' && Number.isInteger(v) ? v : undefined;
+}
+
+/**
+ * Per-object float getter, scoped to `base[obj]`. See {@link getMetaFloat}
+ * for typing and {@link getMetaKeyAt} for scoping.
+ */
+export function getMetaFloatAt(meta: GlobalMetadata, obj: number, path: string): number | undefined {
+  const v = getMetaKeyAt(meta, obj, path);
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * Per-object boolean getter, scoped to `base[obj]`. See {@link getMetaBool}
+ * for typing and {@link getMetaKeyAt} for scoping.
+ */
+export function getMetaBoolAt(meta: GlobalMetadata, obj: number, path: string): boolean | undefined {
+  const v = getMetaKeyAt(meta, obj, path);
+  return typeof v === 'boolean' ? v : undefined;
+}
+
 function resolvePath(
   root: CborValue | { readonly [k: string]: CborValue } | undefined,
   parts: readonly string[],

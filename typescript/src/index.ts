@@ -18,8 +18,11 @@
  *   whole-buffer decoding with dtype-aware payload views
  * - {@link decodeStream} — progressive decode over a `ReadableStream<Uint8Array>`
  * - {@link TensogramFile} — random-access file / URL / in-memory reader
- * - {@link getMetaKey}, {@link computeCommon}, {@link cborValuesEqual} —
- *   metadata helpers
+ * - {@link getMetaKey}, {@link hasMetaKey}, {@link getMetaKeyAt},
+ *   {@link hasMetaKeyAt}, typed getters ({@link getMetaString},
+ *   {@link getMetaInt}, {@link getMetaFloat}, {@link getMetaBool} and their
+ *   `*At` per-object variants), {@link computeCommon},
+ *   {@link cborValuesEqual} — metadata helpers
  * - {@link typedArrayFor}, {@link payloadByteSize}, {@link shapeElementCount},
  *   {@link DTYPE_BYTE_WIDTH}, {@link SUPPORTED_DTYPES}, {@link isDtype} —
  *   dtype introspection and dispatch
@@ -44,7 +47,22 @@ export { encode } from './encode.js';
 export { decode, decodeMetadata, decodeObject, scan } from './decode.js';
 export { decodeStream } from './streaming.js';
 export { TensogramFile } from './file.js';
-export { getMetaKey, computeCommon, cborValuesEqual } from './metadata.js';
+export {
+  getMetaKey,
+  hasMetaKey,
+  getMetaKeyAt,
+  hasMetaKeyAt,
+  getMetaString,
+  getMetaInt,
+  getMetaFloat,
+  getMetaBool,
+  getMetaStringAt,
+  getMetaIntAt,
+  getMetaFloatAt,
+  getMetaBoolAt,
+  computeCommon,
+  cborValuesEqual,
+} from './metadata.js';
 export { DTYPE_BYTE_WIDTH, payloadByteSize, shapeElementCount, typedArrayFor, isDtype, SUPPORTED_DTYPES } from './dtype.js';
 
 // ── Optional auth helpers ─────────────────────────────────────────────────
