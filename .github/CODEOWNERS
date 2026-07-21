@@ -5,7 +5,7 @@
 # approval / merge policy — including the two-approval rule for the elevated
 # paths flagged below — is in AGENTS.md and CONTRIBUTING.md ("Review & merge").
 
-*                               @tlmquintino @sametd @HCookie @tmi
+*                               @tlmquintino @sametd @tmi
 
 # Elevated review (two approvals): wire format, C ABI / generated header, and
 # security-sensitive code.
@@ -16,4 +16,4 @@
 /rust/tensogram-ffi/            @tlmquintino @sametd @tmi
 
 # Application specific packages
-/python/tensogram-anemoi        @HCookie
+/python/tensogram-anemoi/        @HCookie
