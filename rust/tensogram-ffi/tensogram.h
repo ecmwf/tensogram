@@ -75,6 +75,25 @@ typedef enum {
 } tgm_error;
 
 /**
+ * The kind of a metadata value (cbindgen: `tgm_value_type`, variants
+ * `TGM_VALUE_TYPE_*`).
+ *
+ * Mirrors [`tensogram::MetaType`]. CBOR integers are i128-backed and surface
+ * as a single [`TgmValueType::Int`]; use [`tgm_value_as_i64`] /
+ * [`tgm_value_as_u64`] to extract with range checking.
+ */
+typedef enum {
+  TGM_VALUE_TYPE_NULL,
+  TGM_VALUE_TYPE_BOOL,
+  TGM_VALUE_TYPE_INT,
+  TGM_VALUE_TYPE_FLOAT,
+  TGM_VALUE_TYPE_STRING,
+  TGM_VALUE_TYPE_BYTES,
+  TGM_VALUE_TYPE_ARRAY,
+  TGM_VALUE_TYPE_MAP,
+} tgm_value_type;
+
+/**
  * Status returned by `tgm_async_streaming_encoder_try_object_count`.
  *
  * Distinguishes the three states the previous overloaded sentinel
@@ -170,6 +189,17 @@ typedef struct tgm_scan_result_t tgm_scan_result_t;
  * Opaque handle for a streaming encoder that writes data objects progressively.
  */
 typedef struct tgm_streaming_encoder_t tgm_streaming_encoder_t;
+
+/**
+ * Opaque borrowed value cursor (cbindgen: `tgm_value_t`).
+ *
+ * A handle wraps a borrowing [`MetaValue`] cursor plus a back-pointer to the
+ * owning [`TgmMetadata`] (so nested navigators can allocate arena-backed
+ * children). It is **borrowed**: the caller never frees it; it is valid until
+ * `tgm_metadata_free`. cbindgen emits it opaque (private fields, no `repr`),
+ * exactly like `tgm_metadata_t`.
+ */
+typedef struct tgm_value_t tgm_value_t;
 
 /**
  * An owned byte buffer returned by encode functions.
@@ -679,6 +709,217 @@ const char *tgm_metadata_object_to_json(const tgm_metadata_t *meta, size_t obj_i
  * metadata handle is freed.
  */
 const char *tgm_metadata_to_json(const tgm_metadata_t *meta);
+
+/**
+ * Look up a metadata value by dot-notation path (message-level).
+ *
+ * Message-level scoping: first match across `base[0..]` (skipping `_reserved_`
+ * at the first segment), then `_extra_` fallback; an explicit `extra.` /
+ * `_extra_.` prefix targets `_extra_` directly. Presence ⇔ a non-NULL handle,
+ * so a stored `0` / `""` / null is distinguishable from an absent key.
+ *
+ * Returns a **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`,
+ * never freed by the caller), or NULL if `meta` / `path` is NULL, `path` is
+ * not valid UTF-8, or the path is absent. Inspect the value with
+ * `tgm_value_get_type` and the precise (no-coercion) `tgm_value_as_*` /
+ * navigation accessors. Unlike the legacy `tgm_metadata_get_string`, there is
+ * no `version` pseudo-key here (the wire version lives in the preamble — use
+ * `tgm_metadata_version`).
+ */
+const tgm_value_t *tgm_metadata_get(const tgm_metadata_t *meta, const char *path);
+
+/**
+ * Look up a metadata value by dot-notation path, scoped to object
+ * `obj_index` (`base[obj_index]` only).
+ *
+ * Per-object scoping: no cross-object first-match, no `_extra_` fallback, and
+ * `_reserved_` hidden at the first segment (use `tgm_metadata_object` to
+ * enumerate `_reserved_`). Returns a **borrowed** `tgm_value_t*` (valid until
+ * `tgm_metadata_free`, never freed by the caller), or NULL if `meta` / `path`
+ * is NULL, `path` is not valid UTF-8, `obj_index` is out of range, or the path
+ * is absent.
+ */
+const tgm_value_t *tgm_metadata_get_at(const tgm_metadata_t *meta,
+                                       size_t obj_index,
+                                       const char *path);
+
+/**
+ * Existence check for a message-level dot-notation path.
+ *
+ * Answers *presence* for any type (including CBOR null), the cheap companion
+ * to `tgm_metadata_get` with the same scoping (first match across `base`, then
+ * `_extra_`; `_reserved_` hidden at the first segment). Returns `false` for a
+ * NULL handle, a NULL / non-UTF-8 `path`, or an absent path.
+ */
+bool tgm_metadata_has(const tgm_metadata_t *meta, const char *path);
+
+/**
+ * Existence check for a per-object dot-notation path (`base[obj_index]` only).
+ *
+ * Same per-object scoping as `tgm_metadata_get_at` (no cross-object match, no
+ * `_extra_` fallback, `_reserved_` hidden at the first segment). Returns
+ * `false` for a NULL handle, a NULL / non-UTF-8 `path`, an out-of-range
+ * `obj_index`, or an absent path.
+ */
+bool tgm_metadata_has_at(const tgm_metadata_t *meta, size_t obj_index, const char *path);
+
+/**
+ * View object `obj_index`'s full metadata map (`base[obj_index]`) as a map
+ * value for enumeration.
+ *
+ * **Includes** `_reserved_` (parity with Python's `meta.base[i]` and the JSON
+ * export), unlike the path getters which hide it. Enumerate with
+ * `tgm_value_map_len` / `tgm_value_map_key_at` / `tgm_value_map_value_at`, or
+ * look up a single key with `tgm_value_map_get`. Returns a **borrowed**
+ * `tgm_value_t*` (valid until `tgm_metadata_free`, never freed by the caller),
+ * or NULL for a NULL handle or an out-of-range `obj_index`.
+ */
+const tgm_value_t *tgm_metadata_object(const tgm_metadata_t *meta, size_t obj_index);
+
+/**
+ * View the message-level `_extra_` section as a map value for enumeration.
+ *
+ * Returns a **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`,
+ * never freed by the caller); NULL only for a NULL handle. When there is no
+ * `_extra_` data the handle is an empty map (`tgm_value_map_len` == 0), which
+ * is distinct from NULL.
+ */
+const tgm_value_t *tgm_metadata_extra(const tgm_metadata_t *meta);
+
+/**
+ * View the message-level `_reserved_` section as a map value for enumeration.
+ *
+ * The library-managed namespace (e.g. tensor descriptors) that the path
+ * getters hide. Returns a **borrowed** `tgm_value_t*` (valid until
+ * `tgm_metadata_free`, never freed by the caller); NULL only for a NULL
+ * handle. An empty section is an empty map, distinct from NULL.
+ */
+const tgm_value_t *tgm_metadata_reserved(const tgm_metadata_t *meta);
+
+/**
+ * The kind of a value handle (`TGM_VALUE_TYPE_*`).
+ *
+ * Returns `TGM_VALUE_TYPE_NULL` for a NULL handle (as well as for a genuine
+ * CBOR null — use the typed extractors to disambiguate if needed).
+ */
+tgm_value_type tgm_value_get_type(const tgm_value_t *v);
+
+/**
+ * Extract a boolean (no coercion).
+ *
+ * Returns `true` and writes `*out` when the handle is a boolean; returns
+ * `false` (leaving `*out` untouched) for a NULL handle, a NULL `out`, or any
+ * non-boolean value. `*out` is thus written **only** on success.
+ */
+bool tgm_value_as_bool(const tgm_value_t *v, bool *out);
+
+/**
+ * Extract a signed 64-bit integer (integer values only, no coercion).
+ *
+ * Returns `true` and writes `*out` when the handle is an integer in `i64`
+ * range; returns `false` (leaving `*out` untouched) for a NULL handle, a NULL
+ * `out`, a non-integer value, or an integer outside `i64` range (try
+ * `tgm_value_as_u64`). Floats are **not** truncated.
+ */
+bool tgm_value_as_i64(const tgm_value_t *v, int64_t *out);
+
+/**
+ * Extract an unsigned 64-bit integer (integer values only, no coercion).
+ *
+ * Returns `true` and writes `*out` when the handle is an integer in `u64`
+ * range; returns `false` (leaving `*out` untouched) for a NULL handle, a NULL
+ * `out`, a non-integer value, or a negative / out-of-range integer.
+ */
+bool tgm_value_as_u64(const tgm_value_t *v, uint64_t *out);
+
+/**
+ * Extract a double (float, or an integer widened to `f64`).
+ *
+ * This is the one accessor that widens: a float extracts as-is and an integer
+ * is widened to `f64` (which may lose precision for very large magnitudes).
+ * Returns `true` and writes `*out` on success; returns `false` (leaving `*out`
+ * untouched) for a NULL handle, a NULL `out`, or a non-numeric value.
+ */
+bool tgm_value_as_f64(const tgm_value_t *v, double *out);
+
+/**
+ * Borrow a string value as a UTF-8 `ptr + len` (text values only).
+ *
+ * On success returns a **borrowed** pointer into the parsed metadata (valid
+ * until `tgm_metadata_free`, never freed by the caller) and writes the byte
+ * length to `*len_out`. The buffer is **not** guaranteed NUL-terminated and
+ * may contain interior NUL bytes (use `*len_out`, not `strlen`). Returns NULL
+ * (leaving `*len_out` untouched) for a NULL handle, a NULL `len_out`, or any
+ * non-string value.
+ */
+const char *tgm_value_as_string(const tgm_value_t *v, size_t *len_out);
+
+/**
+ * Borrow a byte-string value as a `ptr + len` (byte-string values only).
+ *
+ * On success returns a **borrowed** pointer into the parsed metadata (valid
+ * until `tgm_metadata_free`, never freed by the caller) and writes the length
+ * to `*len_out`. Returns NULL (leaving `*len_out` untouched) for a NULL
+ * handle, a NULL `len_out`, or any non-bytes value. A zero-length byte string
+ * still returns a non-NULL pointer with `*len_out == 0`.
+ */
+const uint8_t *tgm_value_as_bytes(const tgm_value_t *v, size_t *len_out);
+
+/**
+ * Number of elements in an array value; `0` for a NULL handle or any
+ * non-array value.
+ */
+size_t tgm_value_array_len(const tgm_value_t *v);
+
+/**
+ * Index into an array value.
+ *
+ * Returns a **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`,
+ * never freed by the caller) for the element at `index`, or NULL for a NULL
+ * handle, a non-array value, or an out-of-range index.
+ */
+const tgm_value_t *tgm_value_array_get(const tgm_value_t *v, size_t index);
+
+/**
+ * Number of entries in a map value (including a section map such as
+ * `base[i]` / `_extra_` / `_reserved_`); `0` for a NULL handle or any
+ * non-map value.
+ */
+size_t tgm_value_map_len(const tgm_value_t *v);
+
+/**
+ * Borrow the `index`-th key of a map value as a UTF-8 `ptr + len`.
+ *
+ * Keys are yielded in iteration order (section maps and canonical CBOR maps
+ * are key-sorted). On success returns a **borrowed** pointer (valid until
+ * `tgm_metadata_free`, never freed by the caller) and writes the byte length
+ * to `*len_out`; the buffer is not guaranteed NUL-terminated. Returns NULL
+ * (leaving `*len_out` untouched) for a NULL handle, a NULL `len_out`, a
+ * non-map value, an out-of-range index, or a non-text key.
+ */
+const char *tgm_value_map_key_at(const tgm_value_t *v, size_t index, size_t *len_out);
+
+/**
+ * Borrow the `index`-th value of a map value (in the same order as
+ * `tgm_value_map_key_at`).
+ *
+ * Returns a **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`,
+ * never freed by the caller), or NULL for a NULL handle, a non-map value, or
+ * an out-of-range index.
+ */
+const tgm_value_t *tgm_value_map_value_at(const tgm_value_t *v, size_t index);
+
+/**
+ * Look up a single (non-dotted) key in a map value.
+ *
+ * `key` is one map segment — this does **not** split on `.` (use the
+ * dot-notation `tgm_metadata_get` for message-level paths). Returns a
+ * **borrowed** `tgm_value_t*` (valid until `tgm_metadata_free`, never freed by
+ * the caller), or NULL for a NULL handle, a NULL / non-UTF-8 `key`, a non-map
+ * value, or an absent key. On a section map this can reach `_reserved_`
+ * (enumeration parity).
+ */
+const tgm_value_t *tgm_value_map_get(const tgm_value_t *v, const char *key);
 
 /**
  * Free a metadata handle.
