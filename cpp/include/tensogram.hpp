@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -607,6 +608,248 @@ private:
 };
 
 // ============================================================
+// value_type + meta_value — borrowed metadata value cursor
+// ============================================================
+
+/// The kind of a metadata value, mirroring the C `tgm_value_type` enum.
+///
+/// CBOR integers are i128-backed and surface as a single
+/// value_type::integer; use meta_value::as_int() / as_uint() to extract
+/// with range checking.  `floating`/`integer` are spelled out (rather
+/// than `float`/`int`) to avoid clashing with the C++ keywords.
+enum class value_type {
+    null,       ///< CBOR null (distinct from an absent key).
+    boolean,    ///< CBOR bool.
+    integer,    ///< CBOR integer (extract via as_int() / as_uint()).
+    floating,   ///< CBOR float.
+    string,     ///< CBOR text string (UTF-8).
+    bytes,      ///< CBOR byte string.
+    array,      ///< CBOR array (index via at() / operator[] / range-for).
+    map,        ///< CBOR map or a section view (enumerate via key_at()/value_at()).
+};
+
+namespace detail {
+
+/// Map a C `tgm_value_type` discriminant to the C++ value_type enum.
+[[nodiscard]] inline value_type value_type_from_c(tgm_value_type t) noexcept {
+    switch (t) {
+        case TGM_VALUE_TYPE_NULL:   return value_type::null;
+        case TGM_VALUE_TYPE_BOOL:   return value_type::boolean;
+        case TGM_VALUE_TYPE_INT:    return value_type::integer;
+        case TGM_VALUE_TYPE_FLOAT:  return value_type::floating;
+        case TGM_VALUE_TYPE_STRING: return value_type::string;
+        case TGM_VALUE_TYPE_BYTES:  return value_type::bytes;
+        case TGM_VALUE_TYPE_ARRAY:  return value_type::array;
+        case TGM_VALUE_TYPE_MAP:    return value_type::map;
+    }
+    // Defensive: an unknown discriminant from a future ABI decays to null.
+    return value_type::null;
+}
+
+} // namespace detail
+
+/// Non-owning cursor over a single metadata value (wraps a borrowed
+/// `const tgm_value_t*`).
+///
+/// A meta_value is a lightweight handle (one pointer).  It borrows from the
+/// parent tensogram::metadata and is only valid until that metadata handle is
+/// destroyed or moved-from.
+///
+/// @warning A meta_value — and any std::string_view / meta_value it yields —
+///          **must not outlive the parent metadata**.  Copying a meta_value
+///          copies the borrow, not the data.
+///
+/// The extraction accessors are **precise** (no cross-type coercion): as_int()
+/// only succeeds on integers, as_string() only on text, etc.  as_double() is
+/// the sole widening accessor (an integer widens to double).  Every accessor
+/// on an invalid cursor (see valid()) yields the empty result — std::nullopt,
+/// a null type, or size 0 — so navigation never dereferences a bad pointer.
+class meta_value {
+public:
+    /// The kind of this value (value_type::null for an invalid cursor).
+    [[nodiscard]] value_type type() const {
+        return detail::value_type_from_c(tgm_value_get_type(v_));
+    }
+
+    /// True if this cursor references a value (false only for the invalid
+    /// cursor returned by e.g. metadata::object() on an out-of-range index).
+    /// A genuine CBOR null is valid() — use is_null() to detect that.
+    [[nodiscard]] bool valid() const noexcept { return v_ != nullptr; }
+
+    [[nodiscard]] bool is_null()   const { return type() == value_type::null; }
+    [[nodiscard]] bool is_bool()   const { return type() == value_type::boolean; }
+    [[nodiscard]] bool is_int()    const { return type() == value_type::integer; }
+    [[nodiscard]] bool is_float()  const { return type() == value_type::floating; }
+    [[nodiscard]] bool is_string() const { return type() == value_type::string; }
+    [[nodiscard]] bool is_bytes()  const { return type() == value_type::bytes; }
+    [[nodiscard]] bool is_array()  const { return type() == value_type::array; }
+    [[nodiscard]] bool is_map()    const { return type() == value_type::map; }
+
+    /// Extract a signed 64-bit integer (integers in i64 range only).
+    /// @return The value, or std::nullopt for a non-integer / out-of-range.
+    [[nodiscard]] std::optional<std::int64_t> as_int() const {
+        std::int64_t out = 0;
+        if (tgm_value_as_i64(v_, &out)) return out;
+        return std::nullopt;
+    }
+
+    /// Extract an unsigned 64-bit integer (integers in u64 range only).
+    /// @return The value, or std::nullopt for a non-integer / out-of-range.
+    [[nodiscard]] std::optional<std::uint64_t> as_uint() const {
+        std::uint64_t out = 0;
+        if (tgm_value_as_u64(v_, &out)) return out;
+        return std::nullopt;
+    }
+
+    /// Extract a double.  This is the one widening accessor: a float extracts
+    /// as-is and an integer is widened to double (may lose precision).
+    /// @return The value, or std::nullopt for a non-numeric value.
+    [[nodiscard]] std::optional<double> as_double() const {
+        double out = 0.0;
+        if (tgm_value_as_f64(v_, &out)) return out;
+        return std::nullopt;
+    }
+
+    /// Extract a bool (no coercion).
+    /// @return The value, or std::nullopt for a non-boolean value.
+    [[nodiscard]] std::optional<bool> as_bool() const {
+        bool out = false;
+        if (tgm_value_as_bool(v_, &out)) return out;
+        return std::nullopt;
+    }
+
+    /// Borrow a text string as a std::string_view (text values only).
+    ///
+    /// The view uses the C API's `ptr + len` (never `strlen`), so interior NUL
+    /// bytes are preserved and the buffer need not be NUL-terminated.
+    /// @return A view borrowing from the parent metadata, or std::nullopt for
+    ///         a non-string value.
+    /// @warning The view must not outlive the parent metadata.
+    [[nodiscard]] std::optional<std::string_view> as_string() const {
+        std::size_t len = 0;
+        const char* p = tgm_value_as_string(v_, &len);
+        if (p == nullptr) return std::nullopt;
+        return std::string_view(p, len);
+    }
+
+    /// Copy a byte string into an owned vector (byte-string values only).
+    ///
+    /// Returns an owned copy (not a borrow) so the bytes may safely outlive
+    /// the parent metadata.  The project targets C++17, so this copies rather
+    /// than returning a std::span.
+    /// @return The bytes, or std::nullopt for a non-bytes value.
+    [[nodiscard]] std::optional<std::vector<std::uint8_t>> as_bytes() const {
+        std::size_t len = 0;
+        const std::uint8_t* p = tgm_value_as_bytes(v_, &len);
+        if (p == nullptr) return std::nullopt;
+        return std::vector<std::uint8_t>(p, p + len);
+    }
+
+    /// Number of elements in an array, or entries in a map; 0 otherwise.
+    [[nodiscard]] std::size_t size() const {
+        switch (type()) {
+            case value_type::array: return tgm_value_array_len(v_);
+            case value_type::map:   return tgm_value_map_len(v_);
+            default:                return 0;
+        }
+    }
+
+    // -- array access -----------------------------------------
+
+    /// Index into an array value.
+    /// @return The element, or std::nullopt for a non-array or out-of-range
+    ///         index (distinguishing "no element" from a present null).
+    [[nodiscard]] std::optional<meta_value> at(std::size_t index) const {
+        const tgm_value_t* child = tgm_value_array_get(v_, index);
+        if (child == nullptr) return std::nullopt;
+        return meta_value(child);
+    }
+
+    /// Unchecked array index.
+    /// @return The element, or an invalid meta_value (valid() == false) for a
+    ///         non-array or out-of-range index.  Prefer at() when the index
+    ///         may be out of range.
+    [[nodiscard]] meta_value operator[](std::size_t index) const {
+        return meta_value(tgm_value_array_get(v_, index));
+    }
+
+    /// Input iterator over the elements of an array value.
+    ///
+    /// Iterating a non-array yields nothing (begin() == end()).
+    class iterator {
+    public:
+        using value_type        = meta_value;
+        using difference_type   = std::ptrdiff_t;
+        using pointer           = void;
+        using reference         = meta_value;
+        using iterator_category = std::input_iterator_tag;
+
+        [[nodiscard]] meta_value operator*() const {
+            return meta_value(tgm_value_array_get(v_, index_));
+        }
+        iterator& operator++() { ++index_; return *this; }
+        iterator operator++(int) { auto tmp = *this; ++index_; return tmp; }
+        [[nodiscard]] bool operator==(const iterator& other) const { return index_ == other.index_; }
+        [[nodiscard]] bool operator!=(const iterator& other) const { return index_ != other.index_; }
+
+    private:
+        friend class meta_value;
+        iterator(const tgm_value_t* v, std::size_t index) : v_(v), index_(index) {}
+        const tgm_value_t* v_;
+        std::size_t index_;
+    };
+
+    [[nodiscard]] iterator begin() const { return iterator(v_, 0); }
+    [[nodiscard]] iterator end()   const { return iterator(v_, size()); }
+
+    // -- map access -------------------------------------------
+
+    /// True if a map value has an entry for @p key (single, non-dotted key).
+    [[nodiscard]] bool contains(std::string_view key) const {
+        const std::string k(key);
+        return tgm_value_map_get(v_, k.c_str()) != nullptr;
+    }
+
+    /// Look up a single (non-dotted) @p key in a map value.
+    ///
+    /// Does not split on `.` — use metadata::get() for dotted message-level
+    /// paths.  On a section view (from metadata::object()) this can reach
+    /// `_reserved_`.
+    /// @return The value, or std::nullopt for a non-map or absent key.
+    [[nodiscard]] std::optional<meta_value> get(std::string_view key) const {
+        const std::string k(key);
+        const tgm_value_t* child = tgm_value_map_get(v_, k.c_str());
+        if (child == nullptr) return std::nullopt;
+        return meta_value(child);
+    }
+
+    /// Borrow the @p index-th key of a map value (iteration order).
+    /// @return The key view, or std::nullopt for a non-map or out-of-range
+    ///         index.
+    /// @warning The view must not outlive the parent metadata.
+    [[nodiscard]] std::optional<std::string_view> key_at(std::size_t index) const {
+        std::size_t len = 0;
+        const char* p = tgm_value_map_key_at(v_, index, &len);
+        if (p == nullptr) return std::nullopt;
+        return std::string_view(p, len);
+    }
+
+    /// Borrow the @p index-th value of a map value (same order as key_at()).
+    /// @return The value, or std::nullopt for a non-map or out-of-range index.
+    [[nodiscard]] std::optional<meta_value> value_at(std::size_t index) const {
+        const tgm_value_t* child = tgm_value_map_value_at(v_, index);
+        if (child == nullptr) return std::nullopt;
+        return meta_value(child);
+    }
+
+private:
+    friend class metadata;
+
+    explicit meta_value(const tgm_value_t* v) noexcept : v_(v) {}
+    const tgm_value_t* v_;
+};
+
+// ============================================================
 // metadata — RAII wrapper for tgm_metadata_t
 // ============================================================
 
@@ -616,6 +859,16 @@ private:
 /// The lookup searches per-object `base` entries first (skipping internal
 /// `_reserved_` keys), then the message-level `extra` section.
 /// Move-only (copy is deleted).
+///
+/// Two access surfaces coexist:
+///   * The **precise** cursor API — contains() / get() / try_get_*() and the
+///     section views object() / extra() / reserved() returning meta_value —
+///     distinguishes absent from wrong-type from a real value equal to a
+///     default, and navigates nested maps and arrays without JSON.
+///   * The **legacy** default-based getters — get_string() / get_int() /
+///     get_float() and the `_at` variants — coerce across types and fold
+///     absent into a caller-supplied default.  They are retained unchanged;
+///     prefer the precise API for new code.
 class metadata {
 public:
     metadata(metadata&&) noexcept = default;
@@ -640,6 +893,11 @@ public:
     ///
     /// Searches `base` entries first, then `extra`.
     /// @return The value as a string, or "" if not found.
+    ///
+    /// @note Legacy default-based getter: this coerces int/float/bool leaves
+    ///       to text and cannot distinguish an absent key from a stored `""`.
+    ///       For new code prefer the precise API — contains(), get() and
+    ///       try_get_string() — which reports absence distinctly.
     [[nodiscard]] std::string get_string(std::string_view key) const {
         const std::string k(key);
         const char* s = tgm_metadata_get_string(handle_.get(), k.c_str());
@@ -650,6 +908,11 @@ public:
     ///
     /// Searches `base` entries first, then `extra`.
     /// @return The value, or @p default_val if not found.
+    ///
+    /// @note Legacy default-based getter: a returned @p default_val cannot be
+    ///       told apart from a stored value equal to it.  For new code prefer
+    ///       the precise API — contains() and try_get_int() — which reports
+    ///       absence and wrong-type as std::nullopt.
     [[nodiscard]] std::int64_t get_int(std::string_view key, std::int64_t default_val = 0) const {
         const std::string k(key);
         return tgm_metadata_get_int(handle_.get(), k.c_str(), default_val);
@@ -659,6 +922,11 @@ public:
     ///
     /// Searches `base` entries first, then `extra`.
     /// @return The value, or @p default_val if not found.
+    ///
+    /// @note Legacy default-based getter: a returned @p default_val cannot be
+    ///       told apart from a stored value equal to it.  For new code prefer
+    ///       the precise API — contains() and try_get_double() — which reports
+    ///       absence and wrong-type as std::nullopt.
     [[nodiscard]] double get_float(std::string_view key, double default_val = 0.0) const {
         const std::string k(key);
         return tgm_metadata_get_float(handle_.get(), k.c_str(), default_val);
@@ -671,6 +939,10 @@ public:
     /// navigate nested maps (e.g. "geometry.gridType"); `_reserved_` is skipped
     /// at the first path segment (matching the C FFI and Rust docs).
     /// @return The value as a string, or "" if not found / out of range.
+    ///
+    /// @note Legacy default-based getter (see get_string()).  For new code
+    ///       prefer the precise per-object API — contains_at(), get_at() and
+    ///       try_get_*() — plus object() to enumerate a whole `base[i]`.
     [[nodiscard]] std::string get_string_at(std::size_t obj_index, std::string_view key) const {
         const std::string k(key);
         const char* s = tgm_metadata_get_string_at(handle_.get(), obj_index, k.c_str());
@@ -697,6 +969,10 @@ public:
     /// JSON object string — the enumerate-everything companion to the typed
     /// getters, for callers that do not know the key set ahead of time.
     /// @return The JSON text, or "" if @p obj_index is out of range.
+    ///
+    /// @note This is a serialization/debug helper, **not** an access path.
+    ///       To enumerate keys programmatically without parsing JSON, use
+    ///       object() and the meta_value map accessors (key_at()/value_at()).
     [[nodiscard]] std::string object_to_json(std::size_t obj_index) const {
         const char* s = tgm_metadata_object_to_json(handle_.get(), obj_index);
         return s ? s : "";
@@ -704,9 +980,125 @@ public:
 
     /// Serialise the whole global metadata to a JSON object string, shaped
     /// `{ "base": [...], "_reserved_": {...}, "_extra_": {...} }`.
+    ///
+    /// @note Serialization/debug helper, not an access path — use get(),
+    ///       contains() and the section views for programmatic access.
     [[nodiscard]] std::string to_json() const {
         const char* s = tgm_metadata_to_json(handle_.get());
         return s ? s : "";
+    }
+
+    // -- precise cursor API (message-level) -------------------
+
+    /// True if a message-level dot-notation @p path exists (any type,
+    /// including a CBOR null).
+    ///
+    /// Same scoping as get(): first match across `base` (skipping `_reserved_`
+    /// at the first segment), then `_extra_`.  Distinguishes a present `0` /
+    /// `""` / null from an absent key.
+    [[nodiscard]] bool contains(std::string_view path) const {
+        const std::string p(path);
+        return tgm_metadata_has(handle_.get(), p.c_str());
+    }
+
+    /// True if dot-notation @p path exists within object @p obj (base[obj]).
+    ///
+    /// Per-object scoping: no cross-object first-match, no `_extra_` fallback,
+    /// `_reserved_` hidden at the first segment.
+    [[nodiscard]] bool contains_at(std::size_t obj, std::string_view path) const {
+        const std::string p(path);
+        return tgm_metadata_has_at(handle_.get(), obj, p.c_str());
+    }
+
+    /// Look up a message-level dot-notation @p path.
+    ///
+    /// First match across `base` (skipping `_reserved_` at the first segment),
+    /// then `_extra_`.  Presence ⇔ a value, so a stored `0` / `""` / null is
+    /// distinguishable from an absent key.
+    /// @return A borrowed cursor, or std::nullopt if the path is absent.
+    /// @warning The cursor must not outlive this metadata.
+    [[nodiscard]] std::optional<meta_value> get(std::string_view path) const {
+        const std::string p(path);
+        const tgm_value_t* v = tgm_metadata_get(handle_.get(), p.c_str());
+        if (v == nullptr) return std::nullopt;
+        return meta_value(v);
+    }
+
+    /// Look up a dot-notation @p path scoped to object @p obj (base[obj]).
+    ///
+    /// Per-object scoping (see contains_at()).
+    /// @return A borrowed cursor, or std::nullopt if absent / out of range.
+    /// @warning The cursor must not outlive this metadata.
+    [[nodiscard]] std::optional<meta_value> get_at(std::size_t obj, std::string_view path) const {
+        const std::string p(path);
+        const tgm_value_t* v = tgm_metadata_get_at(handle_.get(), obj, p.c_str());
+        if (v == nullptr) return std::nullopt;
+        return meta_value(v);
+    }
+
+    /// Convenience: message-level lookup extracted as a signed integer.
+    /// @return The value, or std::nullopt if absent or not an integer.
+    [[nodiscard]] std::optional<std::int64_t> try_get_int(std::string_view path) const {
+        if (const auto v = get(path)) return v->as_int();
+        return std::nullopt;
+    }
+
+    /// Convenience: message-level lookup extracted as an unsigned integer.
+    /// @return The value, or std::nullopt if absent or not an integer.
+    [[nodiscard]] std::optional<std::uint64_t> try_get_uint(std::string_view path) const {
+        if (const auto v = get(path)) return v->as_uint();
+        return std::nullopt;
+    }
+
+    /// Convenience: message-level lookup extracted as a double (integers
+    /// widen).
+    /// @return The value, or std::nullopt if absent or not numeric.
+    [[nodiscard]] std::optional<double> try_get_double(std::string_view path) const {
+        if (const auto v = get(path)) return v->as_double();
+        return std::nullopt;
+    }
+
+    /// Convenience: message-level lookup extracted as a string view.
+    /// @return A borrowed view, or std::nullopt if absent or not a string.
+    /// @warning The view must not outlive this metadata.
+    [[nodiscard]] std::optional<std::string_view> try_get_string(std::string_view path) const {
+        if (const auto v = get(path)) return v->as_string();
+        return std::nullopt;
+    }
+
+    /// Convenience: message-level lookup extracted as a bool.
+    /// @return The value, or std::nullopt if absent or not a bool.
+    [[nodiscard]] std::optional<bool> try_get_bool(std::string_view path) const {
+        if (const auto v = get(path)) return v->as_bool();
+        return std::nullopt;
+    }
+
+    // -- section views (for enumeration) ----------------------
+
+    /// View object @p obj's full metadata map (`base[obj]`) for enumeration.
+    ///
+    /// **Includes** `_reserved_` (parity with the JSON export), unlike the
+    /// path getters which hide it.  Enumerate via meta_value::size() /
+    /// key_at() / value_at(), or look up a key with meta_value::get().
+    /// @return A map cursor, or an invalid cursor (valid() == false) if @p obj
+    ///         is out of range.
+    [[nodiscard]] meta_value object(std::size_t obj) const {
+        return meta_value(tgm_metadata_object(handle_.get(), obj));
+    }
+
+    /// View the message-level `_extra_` section as a map for enumeration.
+    /// @return A map cursor; an empty section is an empty map (size() == 0),
+    ///         still valid().
+    [[nodiscard]] meta_value extra() const {
+        return meta_value(tgm_metadata_extra(handle_.get()));
+    }
+
+    /// View the message-level `_reserved_` section (library-managed keys such
+    /// as tensor descriptors) as a map for enumeration.
+    /// @return A map cursor; an empty section is an empty map (size() == 0),
+    ///         still valid().
+    [[nodiscard]] meta_value reserved() const {
+        return meta_value(tgm_metadata_reserved(handle_.get()));
     }
 
 private:
