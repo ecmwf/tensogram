@@ -9,8 +9,11 @@
 
 # Elevated review (two approvals): wire format, C ABI / generated header, and
 # security-sensitive code.
-/plans/WIRE_FORMAT.md           @tlmquintino @sametd @HCookie @tmi
-/plans/SECURITY_ANALYSIS.md     @tlmquintino @sametd @HCookie @tmi
-/rust/tensogram/src/wire.rs     @tlmquintino @sametd @HCookie @tmi
-/rust/tensogram/src/framing.rs  @tlmquintino @sametd @HCookie @tmi
-/rust/tensogram-ffi/            @tlmquintino @sametd @HCookie @tmi
+/plans/WIRE_FORMAT.md           @tlmquintino @sametd @tmi
+/plans/SECURITY_ANALYSIS.md     @tlmquintino @sametd @tmi
+/rust/tensogram/src/wire.rs     @tlmquintino @sametd @tmi
+/rust/tensogram/src/framing.rs  @tlmquintino @sametd @tmi
+/rust/tensogram-ffi/            @tlmquintino @sametd @tmi
+
+# Application specific packages
+/python/tensogram-anemoi        @HCookie
