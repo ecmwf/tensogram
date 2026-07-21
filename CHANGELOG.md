@@ -5,6 +5,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — symmetric metadata access across every binding
+
+Reading the CBOR metadata frame is now **capability-symmetric** across Rust, C,
+C++, Python, TypeScript, and Fortran, with Python's `Mapping` as the benchmark.
+The centrepiece is a **get-optional + value-cursor** model: a single lookup
+returns *either* nothing (the key is absent) *or* a borrowed value handle — so a
+stored `0` / `""` is never confused with a missing key, and *wrong type* is
+distinct from *absent*. The precise accessors do **no** cross-type coercion, and
+nested maps and arrays are reachable **without** a JSON dump.
+
+- **Core (Rust)** — a single source of truth in `tensogram::meta_access`:
+  `MetaType`, a borrowing `MetaValue` cursor (typed `as_*`, array indexing, map
+  enumeration/navigation), and `GlobalMetadata::{get, get_at, contains,
+  contains_at, object, extra_view, reserved_view, get_value, get_value_at,
+  num_objects}`. The dot-path / first-match / `_extra_`-fallback /
+  `_reserved_`-hiding logic (previously duplicated in the FFI and CLI) lives
+  here now.
+- **C** — an opaque borrowed cursor `tgm_value_t` (+ `tgm_value_type`):
+  `tgm_metadata_get/get_at/has/has_at`, `object/extra/reserved`,
+  `tgm_value_get_type` + `as_bool/i64/u64/f64/string/bytes`, and array/map
+  navigation. Strings/bytes are returned as `ptr + len` (fixing the
+  interior-NUL limitation).
+- **C++** — a non-owning `tensogram::meta_value` (typed `std::optional`
+  accessors, array range-for, map navigation) plus `metadata::{contains,
+  contains_at, get, get_at, try_get_int/uint/double/string/bool, object, extra,
+  reserved}`.
+- **Python** — `Metadata` is now a full `collections.abc.Mapping` (`get`,
+  `keys`, `values`, `items`, iteration, `len`) with dot-path helpers
+  `has_path` / `get_path` (+ `_at`) and `num_objects`; `base` / `extra` /
+  `reserved` stay native `dict`s.
+- **TypeScript** — `hasMetaKey` / `hasMetaKeyAt`, per-object `getMetaKeyAt`,
+  and precise typed getters `getMetaString/Int/Float/Bool` (+ `*At`).
+- **Fortran** — a `tensogram_value` cursor and module procedures
+  `tensogram_metadata_has`, `try_get_int/float/string/bool`, `get`,
+  `object/extra/reserved`, and `num_objects` (all with an optional `obj_index`
+  for per-object scoping).
+
+The existing default-returning getters (C `tgm_metadata_get_string/int/float`,
+C++ `metadata::get_*`, Fortran `tensogram_metadata_get_*`) are retained
+unchanged but **documented as convenience shortcuts** — they cannot distinguish
+a missing key from a real value equal to the default — and are scheduled for
+removal in a future major release. The metadata contract is documented in the
+new *Reading Metadata* guide (`docs/src/guide/metadata.md`).
+
 ## [0.23.0] - 2026-07-20
 
 ### Added — GRIB & NetCDF semantic round-trip (`to-grib` / `to-netcdf`)
