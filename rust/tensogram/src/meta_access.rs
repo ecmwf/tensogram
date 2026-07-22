@@ -355,11 +355,6 @@ fn message_level_lookup<'a>(meta: &'a GlobalMetadata, path: &str) -> Option<&'a 
     if parts[0].is_empty() {
         return None;
     }
-    // The wire version is a preamble field, not a CBOR key — consumers add the
-    // legacy `version` shortcut themselves.
-    if parts[0] == "version" && parts.len() == 1 {
-        return None;
-    }
 
     // Explicit `_extra_` / `extra` prefix targets the extra map directly.
     if parts[0] == "_extra_" || parts[0] == "extra" {
@@ -588,9 +583,21 @@ mod tests {
     }
 
     #[test]
-    fn version_pseudo_key_not_special_cased_in_core() {
-        let meta = GlobalMetadata::default();
-        assert!(meta.get("version").is_none());
-        assert!(!meta.contains("version"));
+    fn version_is_a_plain_key_not_a_pseudo_key() {
+        // The core walker does NOT special-case "version": the wire version is
+        // a preamble field (reached via `WIRE_VERSION` / `meta.version`), and
+        // consumers add that shortcut themselves. A literal "version" CBOR key
+        // resolves like any other, consistently between `get` and `get_at`.
+        let empty = GlobalMetadata::default();
+        assert!(empty.get("version").is_none());
+        assert!(!empty.contains("version"));
+
+        let meta = GlobalMetadata {
+            base: vec![entry(&[("version", Value::Text("1.2".into()))])],
+            ..Default::default()
+        };
+        assert!(meta.contains("version"));
+        assert_eq!(meta.get("version").unwrap().as_str(), Some("1.2"));
+        assert_eq!(meta.get_at(0, "version").unwrap().as_str(), Some("1.2"));
     }
 }
