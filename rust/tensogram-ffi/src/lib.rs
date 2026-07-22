@@ -2489,10 +2489,7 @@ pub extern "C" fn tgm_value_as_f64(v: *const TgmValue, out: *mut f64) -> bool {
 /// (leaving `*len_out` untouched) for a NULL handle, a NULL `len_out`, or any
 /// non-string value.
 #[unsafe(no_mangle)]
-pub extern "C" fn tgm_value_as_string(
-    v: *const TgmValue,
-    len_out: *mut usize,
-) -> *const c_char {
+pub extern "C" fn tgm_value_as_string(v: *const TgmValue, len_out: *mut usize) -> *const c_char {
     if len_out.is_null() {
         return ptr::null();
     }
@@ -2598,10 +2595,7 @@ pub extern "C" fn tgm_value_map_key_at(
 /// never freed by the caller), or NULL for a NULL handle, a non-map value, or
 /// an out-of-range index.
 #[unsafe(no_mangle)]
-pub extern "C" fn tgm_value_map_value_at(
-    v: *const TgmValue,
-    index: usize,
-) -> *const TgmValue {
+pub extern "C" fn tgm_value_map_value_at(v: *const TgmValue, index: usize) -> *const TgmValue {
     let Some(h) = (unsafe { value_handle(v) }) else {
         return ptr::null();
     };
@@ -2621,10 +2615,7 @@ pub extern "C" fn tgm_value_map_value_at(
 /// value, or an absent key. On a section map this can reach `_reserved_`
 /// (enumeration parity).
 #[unsafe(no_mangle)]
-pub extern "C" fn tgm_value_map_get(
-    v: *const TgmValue,
-    key: *const c_char,
-) -> *const TgmValue {
+pub extern "C" fn tgm_value_map_get(v: *const TgmValue, key: *const c_char) -> *const TgmValue {
     if key.is_null() {
         return ptr::null();
     }
@@ -7496,7 +7487,10 @@ mod tests {
             ("flag".to_string(), ciborium::Value::Bool(true)),
             ("ratio".to_string(), ciborium::Value::Float(2.5)),
             ("neg".to_string(), ciborium::Value::Integer((-5i64).into())),
-            ("huge".to_string(), ciborium::Value::Integer(u64::MAX.into())),
+            (
+                "huge".to_string(),
+                ciborium::Value::Integer(u64::MAX.into()),
+            ),
             (
                 "blob".to_string(),
                 ciborium::Value::Bytes(vec![1, 2, 3, 0, 4]),
@@ -7640,7 +7634,8 @@ mod tests {
     fn value_get_type_covers_every_kind() {
         let h = make_handle(cursor_meta());
         let hp = &h as *const TgmMetadata;
-        let ty = |s: &str| tgm_value_get_type(tgm_metadata_get(hp, CString::new(s).unwrap().as_ptr()));
+        let ty =
+            |s: &str| tgm_value_get_type(tgm_metadata_get(hp, CString::new(s).unwrap().as_ptr()));
         assert_eq!(ty("name"), TgmValueType::String);
         assert_eq!(ty("count"), TgmValueType::Int);
         assert_eq!(ty("ratio"), TgmValueType::Float);
@@ -7746,7 +7741,11 @@ mod tests {
         let extra = tgm_metadata_extra(hp);
         assert_eq!(tgm_value_get_type(extra), TgmValueType::Map);
         assert_eq!(
-            cursor_str(tgm_value_map_get(extra, CString::new("src").unwrap().as_ptr())).as_deref(),
+            cursor_str(tgm_value_map_get(
+                extra,
+                CString::new("src").unwrap().as_ptr()
+            ))
+            .as_deref(),
             Some("x")
         );
 
