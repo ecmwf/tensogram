@@ -452,19 +452,20 @@ impl PyMetadata {
     /// ``extra``'s keys, de-duplicated preserving first-seen order.  Agrees
     /// with ``in`` / ``__getitem__`` / :meth:`get` / ``iter(meta)``.
     fn keys(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let list = PyList::new(py, self.message_level_keys())?;
+        let keys: Vec<&str> = self
+            .message_level_entries()
+            .iter()
+            .map(|&(k, _)| k)
+            .collect();
+        let list = PyList::new(py, keys)?;
         Ok(list.into_any().unbind())
     }
 
     /// First-match values paired with :meth:`keys`, in the same order.
     fn values(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let keys = self.message_level_keys();
-        let mut vals: Vec<PyObject> = Vec::with_capacity(keys.len());
-        for k in &keys {
-            // Every key came from `message_level_keys`, so `flat_get` resolves.
-            let v = self
-                .flat_get(k)
-                .expect("message-level key must resolve to a value");
+        let entries = self.message_level_entries();
+        let mut vals: Vec<PyObject> = Vec::with_capacity(entries.len());
+        for &(_, v) in &entries {
             vals.push(cbor_to_py(py, v)?);
         }
         let list = PyList::new(py, vals)?;
@@ -473,12 +474,9 @@ impl PyMetadata {
 
     /// ``(key, value)`` pairs for :meth:`keys`, in the same order.
     fn items(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let keys = self.message_level_keys();
-        let mut pairs: Vec<PyObject> = Vec::with_capacity(keys.len());
-        for k in &keys {
-            let v = self
-                .flat_get(k)
-                .expect("message-level key must resolve to a value");
+        let entries = self.message_level_entries();
+        let mut pairs: Vec<PyObject> = Vec::with_capacity(entries.len());
+        for &(k, v) in &entries {
             let key_obj = k.into_pyobject(py)?.into_any().unbind();
             let val_obj = cbor_to_py(py, v)?;
             let tuple = pyo3::types::PyTuple::new(py, [key_obj, val_obj])?;
@@ -490,14 +488,19 @@ impl PyMetadata {
 
     /// Iterate the message-level keys (mirrors :meth:`keys`).
     fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let list = PyList::new(py, self.message_level_keys())?;
+        let keys: Vec<&str> = self
+            .message_level_entries()
+            .iter()
+            .map(|&(k, _)| k)
+            .collect();
+        let list = PyList::new(py, keys)?;
         let iter = list.into_any().try_iter()?;
         Ok(iter.into_any().unbind())
     }
 
     /// Number of message-level keys (mirrors ``len(list(meta))``).
     fn __len__(&self) -> usize {
-        self.message_level_keys().len()
+        self.message_level_entries().len()
     }
 
     // ── Dot-path helpers (precise, no coercion — delegate to core) ──
@@ -579,28 +582,31 @@ impl PyMetadata {
         self.inner.extra.get(key)
     }
 
-    /// Ordered, de-duplicated set of top-level keys reachable via
-    /// ``__getitem__``: each ``base[i]``'s keys (excluding ``_reserved_``)
-    /// then ``extra``'s keys, preserving first-seen order.
-    fn message_level_keys(&self) -> Vec<String> {
+    /// Ordered, de-duplicated ``(key, value)`` view of the message-level keys
+    /// reachable via ``__getitem__``: each ``base[i]``'s entries (excluding
+    /// ``_reserved_``) then ``extra``'s, preserving first-seen order. Pairing
+    /// each key with its first-match value in one pass lets ``keys`` /
+    /// ``values`` / ``items`` share a single source of truth without a
+    /// follow-up lookup (and thus no infallible `expect`).
+    fn message_level_entries(&self) -> Vec<(&str, &ciborium::Value)> {
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut keys: Vec<String> = Vec::new();
+        let mut out: Vec<(&str, &ciborium::Value)> = Vec::new();
         for entry in &self.inner.base {
-            for k in entry.keys() {
+            for (k, v) in entry {
                 if k == RESERVED_KEY {
                     continue;
                 }
                 if seen.insert(k.as_str()) {
-                    keys.push(k.clone());
+                    out.push((k.as_str(), v));
                 }
             }
         }
-        for k in self.inner.extra.keys() {
+        for (k, v) in &self.inner.extra {
             if seen.insert(k.as_str()) {
-                keys.push(k.clone());
+                out.push((k.as_str(), v));
             }
         }
-        keys
+        out
     }
 }
 
