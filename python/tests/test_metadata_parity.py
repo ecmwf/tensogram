@@ -22,13 +22,11 @@ from pathlib import Path
 import pytest
 import tensogram
 
-FIXTURE = (
-    Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "metadata_parity.tgm"
-)
+FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "metadata_parity.tgm"
 
 
 @pytest.fixture
-def meta() -> "tensogram.Metadata":
+def meta() -> tensogram.Metadata:
     return tensogram.decode_metadata(FIXTURE.read_bytes())
 
 
