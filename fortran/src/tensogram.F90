@@ -196,6 +196,7 @@ module tensogram
       procedure :: as_float   => value_as_float    !> f64 or int-widened
       procedure :: as_bool    => value_as_bool     !> bool (logical found)
       procedure :: as_string  => value_as_string   !> text ptr+len (found)
+      procedure :: as_bytes   => value_as_bytes    !> byte string (found)
       procedure :: len        => value_len         !> array/map element count
       procedure :: elem       => value_elem        !> array elem i (1-based)
       procedure :: key        => value_key         !> map key i (1-based)
@@ -1605,13 +1606,38 @@ contains
       type(c_ptr)       :: p
       integer(c_size_t) :: n
       p = c_tgm_value_as_string(self%ptr, n)
-      if (c_associated(p)) then
-         val = cptr_len_to_fstr(p, n)
-         value_as_string = .true.
-      else
-         value_as_string = .false.
-      end if
-   end function value_as_string
+       if (c_associated(p)) then
+          val = cptr_len_to_fstr(p, n)
+          value_as_string = .true.
+       else
+          value_as_string = .false.
+       end if
+    end function value_as_string
+
+    !> Borrow a byte-string value (byte strings only). Returns .true. and
+    !> allocates `val` to the exact length only when the value is a byte
+    !> string (a present zero-length byte string gives a size-0 array with
+    !> found=.true., distinct from an absent key, found=.false.); .false.
+    !> otherwise. Bytes map onto signed int8 — the same bit pattern, since
+    !> Fortran has no unsigned kind.
+    logical function value_as_bytes(self, val)
+       class(tensogram_value),         intent(in)  :: self
+       integer(c_int8_t), allocatable, intent(out) :: val(:)
+       type(c_ptr)                :: p
+       integer(c_size_t)          :: n
+       integer(c_int8_t), pointer :: view(:)
+       p = c_tgm_value_as_bytes(self%ptr, n)
+       if (.not. c_associated(p)) then
+          value_as_bytes = .false.
+          return
+       end if
+       allocate(val(n))
+       if (n > 0_c_size_t) then
+          call c_f_pointer(p, view, [n])
+          val = view
+       end if
+       value_as_bytes = .true.
+    end function value_as_bytes
 
    !> Number of elements in an array (or entries in a map); 0 for any other
    !> kind or an absent cursor.

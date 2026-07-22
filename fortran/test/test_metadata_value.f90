@@ -13,7 +13,8 @@
 !> top-level keys that flow into `_extra_`), then exercises the full value-cursor
 !> surface: existence (message-level + per-object), precise typed try-get
 !> (right-type success, wrong-type -> .false., absent-vs-empty), the value cursor
-!> (is_present / kind / as_int / as_uint / as_float / as_bool / as_string),
+!> (is_present / kind / as_int / as_uint / as_float / as_bool / as_string /
+!> as_bytes),
 !> nested-map navigation, array navigation, map enumeration via object(i)
 !> (incl. `_reserved_` visibility), the `_extra_` / `_reserved_` section views,
 !> per-object scoping, and num_objects.
@@ -53,6 +54,7 @@ program test_metadata_value
 
    real(c_float)      :: d0(2,2), d1(3,2)
    character(len=:), allocatable :: s, k
+   integer(c_int8_t), allocatable :: raw(:)
    integer(c_int64_t) :: i64, u64
    real(c_double)     :: r
    logical            :: b, ok
@@ -147,8 +149,14 @@ program test_metadata_value
    call assert(v%kind() == TGM_VALUE_TYPE_BOOL, 'kind(flag) == BOOL')
    v = tensogram_metadata_get(meta, 'mars')
    call assert(v%kind() == TGM_VALUE_TYPE_MAP, 'kind(mars) == MAP')
-   v = tensogram_metadata_get(meta, 'levels')
-   call assert(v%kind() == TGM_VALUE_TYPE_ARRAY, 'kind(levels) == ARRAY')
+    v = tensogram_metadata_get(meta, 'levels')
+    call assert(v%kind() == TGM_VALUE_TYPE_ARRAY, 'kind(levels) == ARRAY')
+
+    ! ---- as_bytes: wrong-type contract. (Byte-string metadata is produced by
+    ! the Rust side, e.g. GRIB local sections; the Fortran/JSON encode path
+    ! cannot emit it, so the found=.true. path is covered by the Rust oracle.)
+    v = tensogram_metadata_get(meta, 'name')
+    call assert(.not. v%as_bytes(raw), 'as_bytes(string) -> .false. (wrong type)')
 
    ! ---- as_int / as_uint range semantics ----------------------------------
    v = tensogram_metadata_get(meta, 'neg')
