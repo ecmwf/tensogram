@@ -78,6 +78,10 @@ pub enum MetaType {
 /// the `as_*` accessors, arrays via [`len`](Self::len) + [`get_index`](Self::get_index),
 /// and maps via [`get_key`](Self::get_key) or positional
 /// [`key_at`](Self::key_at) / [`value_at`](Self::value_at).
+///
+/// Map access is a linear (for a nested CBOR map) or logarithmic/positional
+/// (for a `base[i]` / `_extra_` / `_reserved_` section) scan — sized for the
+/// small maps that appear in metadata frames, not for large dictionaries.
 #[derive(Debug, Clone, Copy)]
 pub struct MetaValue<'a> {
     inner: Ref<'a>,
@@ -599,5 +603,100 @@ mod tests {
         assert!(meta.contains("version"));
         assert_eq!(meta.get("version").unwrap().as_str(), Some("1.2"));
         assert_eq!(meta.get_at(0, "version").unwrap().as_str(), Some("1.2"));
+    }
+
+    #[test]
+    fn bytes_extraction_and_wrong_type() {
+        let meta = GlobalMetadata {
+            base: vec![entry(&[
+                ("raw", Value::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+                ("empty", Value::Bytes(vec![])),
+                ("s", Value::Text("x".into())),
+            ])],
+            ..Default::default()
+        };
+        let raw = meta.get("raw").unwrap();
+        assert_eq!(raw.value_type(), MetaType::Bytes);
+        assert_eq!(raw.as_bytes(), Some([0xDE, 0xAD, 0xBE, 0xEF].as_slice()));
+        // A present zero-length byte string is `Some(&[])`, not absent.
+        assert_eq!(meta.get("empty").unwrap().as_bytes(), Some([].as_slice()));
+        // Wrong type is `None` (distinct from absent), and bytes don't stringify.
+        assert_eq!(meta.get("s").unwrap().as_bytes(), None);
+        assert_eq!(raw.as_str(), None);
+    }
+
+    #[test]
+    fn integer_range_boundaries() {
+        let meta = GlobalMetadata {
+            base: vec![entry(&[
+                ("huge", Value::Integer(u64::MAX.into())), // > i64::MAX
+                ("neg", Value::Integer((-1i64).into())),
+                ("max_i64", Value::Integer(i64::MAX.into())),
+            ])],
+            ..Default::default()
+        };
+        // u64-only value: `as_u64` succeeds, `as_i64` overflows to `None`.
+        assert_eq!(meta.get("huge").unwrap().as_u64(), Some(u64::MAX));
+        assert_eq!(meta.get("huge").unwrap().as_i64(), None);
+        // Negative: `as_i64` succeeds, `as_u64` is `None`.
+        assert_eq!(meta.get("neg").unwrap().as_i64(), Some(-1));
+        assert_eq!(meta.get("neg").unwrap().as_u64(), None);
+        // `i64::MAX` is representable both ways.
+        assert_eq!(meta.get("max_i64").unwrap().as_i64(), Some(i64::MAX));
+        assert_eq!(meta.get("max_i64").unwrap().as_u64(), Some(i64::MAX as u64));
+        // `as_f64` widens even the out-of-i64-range integer.
+        assert!(meta.get("huge").unwrap().as_f64().unwrap() > 1e19);
+    }
+
+    #[test]
+    fn interior_nul_string_is_preserved() {
+        let meta = GlobalMetadata {
+            base: vec![entry(&[("s", Value::Text("a\0b".into()))])],
+            ..Default::default()
+        };
+        let s = meta.get("s").unwrap().as_str().unwrap();
+        assert_eq!(s, "a\0b");
+        assert_eq!(s.len(), 3); // interior NUL kept — not truncated at the NUL
+    }
+
+    #[test]
+    fn array_of_maps_and_map_of_arrays() {
+        let meta = GlobalMetadata {
+            base: vec![entry(&[
+                (
+                    "items",
+                    Value::Array(vec![
+                        map(&[("id", Value::Integer(1.into()))]),
+                        map(&[("id", Value::Integer(2.into()))]),
+                    ]),
+                ),
+                (
+                    "grid",
+                    map(&[(
+                        "shape",
+                        Value::Array(vec![Value::Integer(2.into()), Value::Integer(3.into())]),
+                    )]),
+                ),
+            ])],
+            ..Default::default()
+        };
+        // Array-of-maps: index, then descend into the element map.
+        let items = meta.get("items").unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items.get_index(0).unwrap().get_key("id").unwrap().as_i64(),
+            Some(1)
+        );
+        assert_eq!(
+            items.get_index(1).unwrap().get_key("id").unwrap().as_i64(),
+            Some(2)
+        );
+        // Map-of-array: dot-path into the map, cursor into the array.
+        let shape = meta.get("grid.shape").unwrap();
+        assert_eq!(shape.value_type(), MetaType::Array);
+        assert_eq!(shape.get_index(1).unwrap().as_i64(), Some(3));
+        // Dot-paths navigate maps only — a numeric segment is not an array
+        // index, so "items.0" does not resolve (arrays use the cursor).
+        assert!(meta.get("items.0").is_none());
     }
 }
