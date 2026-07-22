@@ -414,17 +414,7 @@ impl PyMetadata {
     /// keys within each entry), then ``extra``.  Raises ``KeyError`` if the
     /// key is not found.
     fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
-        // Search base entries (skip the "_reserved_" key within each entry)
-        for entry in &self.inner.base {
-            if key == RESERVED_KEY {
-                continue;
-            }
-            if let Some(v) = entry.get(key) {
-                return cbor_to_py(py, v);
-            }
-        }
-        // Then search extra
-        match self.inner.extra.get(key) {
+        match self.flat_get(key) {
             Some(v) => cbor_to_py(py, v),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_string())),
         }
@@ -432,14 +422,7 @@ impl PyMetadata {
 
     /// Membership test: ``"key" in meta``.
     fn __contains__(&self, key: &str) -> bool {
-        if key != RESERVED_KEY {
-            for entry in &self.inner.base {
-                if entry.contains_key(key) {
-                    return true;
-                }
-            }
-        }
-        self.inner.extra.contains_key(key)
+        self.flat_get(key).is_some()
     }
 
     /// Number of data objects (length of ``base``).
