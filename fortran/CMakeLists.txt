@@ -197,5 +197,10 @@ if(TENSOGRAM_FORTRAN_TESTS)
     add_test(NAME error_enum_consistency
       COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_error_enum.sh
               ${CMAKE_CURRENT_SOURCE_DIR}/src/tensogram.F90 ${_tgm_header})
+    # Same single-source-of-truth guard for the TGM_VALUE_TYPE_* mirror vs the
+    # C `tgm_value_type` enum (the metadata value cursor).
+    add_test(NAME value_type_enum_consistency
+      COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_value_type_enum.sh
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/tensogram.F90 ${_tgm_header})
   endif()
 endif()
