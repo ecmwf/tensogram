@@ -160,14 +160,16 @@ class TestMessageLevelMapping:
                 continue
             assert meta.get(k) == meta.get_path(k)
 
-    def test_version_is_flat_only_not_a_dot_path(self, meta):
-        # ``version`` is reachable as a flat _extra_ key, but the dot-path
-        # walker refuses the single-segment ``version`` pseudo-key (it is a
-        # preamble field, not a CBOR key). This divergence is by design.
-        assert meta.get("version") == 3
+    def test_version_is_a_plain_key(self, meta):
+        # A literal ``version`` CBOR key (here in _extra_) resolves the same way
+        # through flat access and the dot-path walker — the walker does not
+        # special-case it. The wire-format version is a separate concept,
+        # exposed as the ``meta.version`` property (a preamble field).
+        assert meta.get("version") == 3  # flat _extra_ key
         assert "version" in meta
-        assert meta.get_path("version") is None
-        assert meta.has_path("version") is False
+        assert meta.get_path("version") == 3  # dot-path agrees
+        assert meta.has_path("version") is True
+        assert meta.version == 3  # preamble field, distinct concept
 
     def test_contains_agrees_with_keys(self, meta):
         keys = meta.keys()
