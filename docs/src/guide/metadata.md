@@ -116,8 +116,8 @@ if (tgm_metadata_has(meta, "mars.class")) {
 }
 
 int64_t out;
-if (tgm_metadata_get_at(meta, 0, "level") &&
-    tgm_value_as_i64(tgm_metadata_get_at(meta, 0, "level"), &out)) {
+const tgm_value_t *level = tgm_metadata_get_at(meta, 0, "level");  /* fetch once */
+if (level && tgm_value_as_i64(level, &out)) {
     /* out is set only on success */
 }
 
