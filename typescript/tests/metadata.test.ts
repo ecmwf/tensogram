@@ -331,14 +331,21 @@ base: [
     expect(getMetaFloat(meta, 'nonexistent')).toBeUndefined();
   });
 
-  it('getMetaFloat widens a bigint (large CBOR integer) to number', () => {
-    // CBOR integers beyond Number.MAX_SAFE_INTEGER decode as bigint; getMetaFloat
-    // mirrors core as_f64 and widens them (lossily) to a finite number, while
-    // getMetaInt keeps them undefined (a bigint is never a safe JS integer).
-    const big: GlobalMetadata = { base: [{ huge: 9_007_199_254_740_993n }], _extra_: {} };
+  it('numeric getters mirror core: bigint and NaN/±Infinity semantics', () => {
+    // Large CBOR integers decode as bigint; NaN/±Infinity are genuine floats.
+    const big: GlobalMetadata = {
+      base: [{ huge: 9_007_199_254_740_993n, bad: NaN, inf: Infinity }],
+      _extra_: {},
+    };
+    // getMetaInt spans the full integer range (mirrors as_i64/as_u64): bigint through.
+    expect(getMetaInt(big, 'huge')).toBe(9_007_199_254_740_993n);
+    // getMetaFloat widens the bigint to a number (mirrors `n as f64`).
     expect(getMetaFloat(big, 'huge')).toBe(Number(9_007_199_254_740_993n));
-    expect(Number.isFinite(getMetaFloat(big, 'huge'))).toBe(true);
-    expect(getMetaInt(big, 'huge')).toBeUndefined();
+    // NaN / ±Infinity are present float values, not "absent" (mirror as_f64).
+    expect(getMetaFloat(big, 'bad')).toBeNaN();
+    expect(getMetaFloat(big, 'inf')).toBe(Infinity);
+    // ...but NaN is not an integer.
+    expect(getMetaInt(big, 'bad')).toBeUndefined();
   });
 
   it('getMetaBool returns bools only, undefined for wrong type / absent', () => {
