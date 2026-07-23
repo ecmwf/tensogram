@@ -27,7 +27,7 @@ import {
 import type { GlobalMetadata } from '../src/index.js';
 import { makeDescriptor } from './helpers.js';
 
-describe('Phase 2 — metadata helpers', () => {
+describe('metadata helpers (getMetaKey / computeCommon)', () => {
   it('getMetaKey finds a key in base[0]', async () => {
     await init();
     const msg = encode(
@@ -211,7 +211,7 @@ base: [{ mars: { param: '2t', class: 'od' } }],
   });
 });
 
-describe('Phase 6 — symmetry helpers (existence, per-object, typed getters)', () => {
+describe('symmetry helpers (existence, per-object, typed getters)', () => {
   // A hand-built fixture that exercises every relevant kind: a key present in
   // one object but absent in another, an empty-string value, a zero value, a
   // bool/float/int, _reserved_ (which must stay hidden from path getters), and
