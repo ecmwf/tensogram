@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-23
+
 ### Added — symmetric metadata access across every binding
 
 Reading the CBOR metadata frame is now **capability-symmetric** across Rust, C,
