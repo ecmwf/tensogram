@@ -130,10 +130,13 @@ impl<'a> MetaValue<'a> {
         }
     }
 
-    /// `true` if this value is CBOR null.
+    /// `true` if this value reports [`MetaType::Null`] — a CBOR null, or an
+    /// exotic/unrepresentable kind (e.g. a CBOR tag, which the metadata encoder
+    /// never emits) that [`value_type`](Self::value_type) maps to null. Kept
+    /// consistent with `value_type()` so the two never disagree.
     #[must_use]
     pub fn is_null(&self) -> bool {
-        matches!(self.inner, Ref::Cbor(Value::Null))
+        self.value_type() == MetaType::Null
     }
 
     /// Extract a boolean (no coercion).
@@ -698,5 +701,21 @@ mod tests {
         // Dot-paths navigate maps only — a numeric segment is not an array
         // index, so "items.0" does not resolve (arrays use the cursor).
         assert!(meta.get("items.0").is_none());
+    }
+
+    #[test]
+    fn is_null_agrees_with_value_type_for_exotic_kinds() {
+        // A genuine CBOR null.
+        let null = Value::Null;
+        assert_eq!(MetaValue::cbor(&null).value_type(), MetaType::Null);
+        assert!(MetaValue::cbor(&null).is_null());
+        // A CBOR tag (never emitted by the encoder) maps to Null in both — the
+        // two must not disagree, even on adversarial metadata.
+        let tagged = Value::Tag(0, Box::new(Value::Text("x".into())));
+        assert_eq!(MetaValue::cbor(&tagged).value_type(), MetaType::Null);
+        assert!(MetaValue::cbor(&tagged).is_null());
+        // A real value is neither.
+        let s = Value::Text("x".into());
+        assert!(!MetaValue::cbor(&s).is_null());
     }
 }
