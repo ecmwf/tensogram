@@ -211,8 +211,12 @@ program test_metadata_value
    end do
    call assert(found_name,     'object(1) enumerates key: name')
    call assert(found_reserved, 'object(1) enumerates key: _reserved_ (parity)')
-   call assert(found_only0,    'object(1) enumerates key: only0')
-   call assert(.not. found_only1, 'object(1) does NOT contain only1 (per-object)')
+    call assert(found_only0,    'object(1) enumerates key: only0')
+    call assert(.not. found_only1, 'object(1) does NOT contain only1 (per-object)')
+    ! An out-of-range key reports found=.false. (distinct from a present
+    ! empty-string key, which would be '' with found=.true.).
+    k = o0%key(nkeys + 1, found=ok)
+    call assert(.not. ok, 'key(out-of-range) reports found=.false. (absent)')
 
    ! _reserved_ reachable via the section map (nav to tensor.dtype):
    resv = o0%get('_reserved_')

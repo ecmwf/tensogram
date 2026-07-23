@@ -1667,23 +1667,25 @@ contains
        v%ptr = c_tgm_value_array_get(self%ptr, int(i - 1, c_size_t))
     end function value_elem
 
-   !> Map key `i` (1-based) as a string; '' if out of range or not a map.
-   function value_key(self, i) result(k)
-      class(tensogram_value), intent(in) :: self
-      integer,                intent(in) :: i
-       character(len=:), allocatable :: k
-       type(c_ptr)       :: p
-       integer(c_size_t) :: n
-       if (i < 1) then       ! see value_elem: guard before the 0-based conversion
-          k = ''
-          return
-       end if
-       p = c_tgm_value_map_key_at(self%ptr, int(i - 1, c_size_t), n)
-      if (c_associated(p)) then
-         k = cptr_len_to_fstr(p, n)
-      else
-         k = ''
-      end if
+   !> Map key `i` (1-based) as a string; '' if out of range or not a map. The
+   !> optional `found` reports whether a key was actually present, so a genuine
+   !> empty-string key ('' with found=.true.) can be told apart from an absent
+   !> one ('' with found=.false.) — matching the C++ `optional<string_view>`.
+   !> (Metadata keys are non-empty identifiers in practice.)
+   function value_key(self, i, found) result(k)
+      class(tensogram_value), intent(in)  :: self
+      integer,                intent(in)  :: i
+      logical, optional,      intent(out) :: found
+      character(len=:), allocatable :: k
+      type(c_ptr)       :: p
+      integer(c_size_t) :: n
+      k = ''
+      if (present(found)) found = .false.
+      if (i < 1) return     ! out of range (see value_elem)
+      p = c_tgm_value_map_key_at(self%ptr, int(i - 1, c_size_t), n)
+      if (.not. c_associated(p)) return
+      k = cptr_len_to_fstr(p, n)     ! present (possibly '')
+      if (present(found)) found = .true.
    end function value_key
 
    !> Map value `i` (1-based) as a value cursor (same order as %key).
