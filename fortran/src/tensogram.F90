@@ -487,7 +487,7 @@ module tensogram
          real(c_double)        :: v
       end function
 
-      ! ---- Metadata value cursor (Phase 4: metadata-access parity) ---------
+      ! ---- Metadata value cursor (borrowed views into decoded metadata) ----
 
       function c_tgm_metadata_num_objects(meta) &
             bind(C, name="tgm_metadata_num_objects") result(n)
@@ -1543,7 +1543,7 @@ contains
 
    ! =========================================================================
    !  Precise metadata access — value cursor (tensogram_value) + accessors
-   !  (Phase 4: metadata-access parity). No coercion; absent is distinct from
+   !  (metadata-access parity). No coercion; absent is distinct from
    !  wrong-type and from a stored default. All handles/strings are borrowed
    !  from the parent tensogram_metadata and valid only until it is freed.
    ! =========================================================================

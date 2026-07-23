@@ -6,7 +6,7 @@
 ! granted to it by virtue of its status as an intergovernmental organisation nor
 ! does it submit to any jurisdiction.
 
-!> Precise metadata access (Phase 4: metadata-access parity).
+!> Precise metadata access (metadata-access parity).
 !>
 !> Builds a genuine TWO-object message via the streaming encoder (create-time
 !> `base:[{...},{...}]` is preserved 1:1 with the written objects, plus free-form
