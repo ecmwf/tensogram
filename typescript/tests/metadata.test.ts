@@ -331,6 +331,16 @@ base: [
     expect(getMetaFloat(meta, 'nonexistent')).toBeUndefined();
   });
 
+  it('getMetaFloat widens a bigint (large CBOR integer) to number', () => {
+    // CBOR integers beyond Number.MAX_SAFE_INTEGER decode as bigint; getMetaFloat
+    // mirrors core as_f64 and widens them (lossily) to a finite number, while
+    // getMetaInt keeps them undefined (a bigint is never a safe JS integer).
+    const big: GlobalMetadata = { base: [{ huge: 9_007_199_254_740_993n }], _extra_: {} };
+    expect(getMetaFloat(big, 'huge')).toBe(Number(9_007_199_254_740_993n));
+    expect(Number.isFinite(getMetaFloat(big, 'huge'))).toBe(true);
+    expect(getMetaInt(big, 'huge')).toBeUndefined();
+  });
+
   it('getMetaBool returns bools only, undefined for wrong type / absent', () => {
     expect(getMetaBool(meta, 'active')).toBe(false); // absent-vs-false: false is a value
     expect(getMetaBool(meta, 'count')).toBeUndefined(); // 0 is not a bool

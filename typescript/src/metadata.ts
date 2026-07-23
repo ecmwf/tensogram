@@ -144,13 +144,28 @@ export function getMetaInt(meta: GlobalMetadata, path: string): number | undefin
 }
 
 /**
+ * Widen a CBOR value to a finite float, mirroring core `as_f64`: a finite
+ * `number` as-is, or a `bigint` (a CBOR integer beyond the JS safe-integer
+ * range, per {@link CborValue}) widened to `number` — which may lose
+ * precision, exactly like Rust's `n as f64`. `undefined` for a non-numeric
+ * value, `NaN`/`±Infinity`, or a `bigint` too large to be finite as `number`.
+ */
+function asFloat(v: CborValue | undefined): number | undefined {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  if (typeof v === 'bigint') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Message-level float getter. Returns any finite JS `number` — integers
- * included (mirrors core `as_f64`, which widens ints to float); otherwise
- * `undefined`. `NaN`/`±Infinity` and `bigint` yield `undefined`.
+ * included (mirrors core `as_f64`, which widens ints to float), and a large
+ * `bigint` integer widened to `number`; otherwise `undefined`.
  */
 export function getMetaFloat(meta: GlobalMetadata, path: string): number | undefined {
-  const v = getMetaKey(meta, path);
-  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  return asFloat(getMetaKey(meta, path));
 }
 
 /**
@@ -185,8 +200,7 @@ export function getMetaIntAt(meta: GlobalMetadata, obj: number, path: string): n
  * for typing and {@link getMetaKeyAt} for scoping.
  */
 export function getMetaFloatAt(meta: GlobalMetadata, obj: number, path: string): number | undefined {
-  const v = getMetaKeyAt(meta, obj, path);
-  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  return asFloat(getMetaKeyAt(meta, obj, path));
 }
 
 /**
