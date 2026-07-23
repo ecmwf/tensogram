@@ -789,8 +789,13 @@ public:
         }
         iterator& operator++() { ++index_; return *this; }
         iterator operator++(int) { auto tmp = *this; ++index_; return tmp; }
-        [[nodiscard]] bool operator==(const iterator& other) const { return index_ == other.index_; }
-        [[nodiscard]] bool operator!=(const iterator& other) const { return index_ != other.index_; }
+        // Compare the source handle as well as the index, so iterators from two
+        // different arrays never compare equal (only same-array iterators are
+        // meaningfully comparable).
+        [[nodiscard]] bool operator==(const iterator& other) const {
+            return v_ == other.v_ && index_ == other.index_;
+        }
+        [[nodiscard]] bool operator!=(const iterator& other) const { return !(*this == other); }
 
     private:
         friend class meta_value;
