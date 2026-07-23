@@ -6,7 +6,7 @@
 # granted to it by virtue of its status as an intergovernmental organisation nor
 # does it submit to any jurisdiction.
 
-"""Phase 5 — Metadata access parity (see plans/METADATA_ACCESS_PARITY.md §6.5).
+"""Metadata access parity (see plans/METADATA_ACCESS_PARITY.md §6.5).
 
 Covers the new ``Metadata`` Mapping surface and dot-path helpers:
   - ``get`` / ``keys`` / ``values`` / ``items`` / ``__iter__`` / ``__len__``
