@@ -1,10 +1,12 @@
 # Metadata Access Parity — Design
 
-> **Status: PLAN — not yet implemented.** This document is the proposed
-> design for making CBOR-metadata access **symmetric across every binding**
-> (Rust, C, C++, Python, TypeScript/WASM, Fortran), with **Python as the
-> capability benchmark**. The JSON exporters (`*_to_json`) are **not** an
-> access path — they remain serialization/debug utilities only.
+> **Status: IMPLEMENTED (PR #161).** This document is the design for making
+> CBOR-metadata access **symmetric across every binding** (Rust, C, C++,
+> Python, TypeScript/WASM, Fortran), with **Python as the capability
+> benchmark**. The JSON exporters (`*_to_json`) are **not** an access path —
+> they remain serialization/debug utilities only. Sections below are the
+> design as shipped; where the implementation refined a decision (see §5 on
+> the `version` key), the text reflects the shipped behaviour.
 
 ## 1. Problem
 
@@ -81,8 +83,9 @@ optional value handle — not `has` *then* `get`.
   - *Message-level* (`get` / `has`): first match across `base[0..]`
     (skipping `_reserved_` at the first segment), then fall back to
     `_extra_`. Explicit `extra.` / `_extra_.` prefix targets `_extra_`
-    directly. The `version` pseudo-key resolves to the preamble wire
-    version (unchanged).
+    directly. There is **no** `version` pseudo-key in the walker: a literal
+    `version` CBOR key resolves like any other, and the wire-format version
+    is a separate preamble field reached via `WIRE_VERSION` / `meta.version`.
   - *Per-object* (`get_at(i, …)` / `has_at`): scoped to `base[i]` only —
     no cross-object first-match, no `_extra_` fallback, `_reserved_` hidden
     at the first segment.
