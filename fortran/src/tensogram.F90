@@ -1657,21 +1657,28 @@ contains
 
    !> Array element `i` (1-based) as a value cursor; an absent cursor if `i`
    !> is out of range or this is not an array.
-   function value_elem(self, i) result(v)
-      class(tensogram_value), intent(in) :: self
-      integer,                intent(in) :: i
-      type(tensogram_value) :: v
-      v%ptr = c_tgm_value_array_get(self%ptr, int(i - 1, c_size_t))
-   end function value_elem
+    function value_elem(self, i) result(v)
+       class(tensogram_value), intent(in) :: self
+       integer,                intent(in) :: i
+       type(tensogram_value) :: v
+       ! Guard the 1-based index explicitly: forming the 0-based C index from
+       ! i < 1 would convert a negative value to unsigned c_size_t (wrap-around).
+       if (i < 1) return  ! v defaults to an absent (C_NULL_PTR) cursor
+       v%ptr = c_tgm_value_array_get(self%ptr, int(i - 1, c_size_t))
+    end function value_elem
 
    !> Map key `i` (1-based) as a string; '' if out of range or not a map.
    function value_key(self, i) result(k)
       class(tensogram_value), intent(in) :: self
       integer,                intent(in) :: i
-      character(len=:), allocatable :: k
-      type(c_ptr)       :: p
-      integer(c_size_t) :: n
-      p = c_tgm_value_map_key_at(self%ptr, int(i - 1, c_size_t), n)
+       character(len=:), allocatable :: k
+       type(c_ptr)       :: p
+       integer(c_size_t) :: n
+       if (i < 1) then       ! see value_elem: guard before the 0-based conversion
+          k = ''
+          return
+       end if
+       p = c_tgm_value_map_key_at(self%ptr, int(i - 1, c_size_t), n)
       if (c_associated(p)) then
          k = cptr_len_to_fstr(p, n)
       else
@@ -1680,12 +1687,13 @@ contains
    end function value_key
 
    !> Map value `i` (1-based) as a value cursor (same order as %key).
-   function value_value(self, i) result(v)
-      class(tensogram_value), intent(in) :: self
-      integer,                intent(in) :: i
-      type(tensogram_value) :: v
-      v%ptr = c_tgm_value_map_value_at(self%ptr, int(i - 1, c_size_t))
-   end function value_value
+    function value_value(self, i) result(v)
+       class(tensogram_value), intent(in) :: self
+       integer,                intent(in) :: i
+       type(tensogram_value) :: v
+       if (i < 1) return  ! see value_elem: v defaults to an absent cursor
+       v%ptr = c_tgm_value_map_value_at(self%ptr, int(i - 1, c_size_t))
+    end function value_value
 
    !> Single-segment map lookup (does NOT split on '.'; use
    !> tensogram_metadata_get for dot-paths). Absent cursor if the key is
