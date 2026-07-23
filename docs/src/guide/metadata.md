@@ -84,14 +84,20 @@ if let Some(obj) = meta.object(0) {
     }
 }
 
-// arrays
-if let Some(shape) = meta.get("_reserved_.tensor.shape") {
-    // (reserved is reachable via object(0) enumeration; path getters hide it)
-}
+// arrays — reached through the cursor (dot-paths navigate maps only)
 if let Some(a) = meta.get_at(0, "levels") {
     if a.value_type() == MetaType::Array {
         let first = a.get_index(0).and_then(|v| v.as_i64());
     }
+}
+
+// _reserved_ is hidden from path getters; reach it by enumerating object(0)
+if let Some(shape) = meta.object(0)
+    .and_then(|o| o.get_key("_reserved_"))
+    .and_then(|r| r.get_key("tensor"))
+    .and_then(|t| t.get_key("shape"))
+{
+    let first_dim = shape.get_index(0).and_then(|v| v.as_i64());
 }
 ```
 
