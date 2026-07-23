@@ -102,8 +102,14 @@ program test_metadata_value
    ! stored empty / zero are present (not absent):
    call assert(tensogram_metadata_has(meta, 'empty', obj_index=1), 'has_at(1, empty) present')
    call assert(tensogram_metadata_has(meta, 'zero', obj_index=1),  'has_at(1, zero) present')
-   ! _reserved_ hidden from path getters at the first segment:
-   call assert(.not. tensogram_metadata_has(meta, '_reserved_'), 'has(_reserved_) hidden from path')
+    ! _reserved_ hidden from path getters at the first segment:
+    call assert(.not. tensogram_metadata_has(meta, '_reserved_'), 'has(_reserved_) hidden from path')
+    ! obj_index < 1 is out of range: absent, without relying on unsigned wrap-around.
+    call assert(.not. tensogram_metadata_has(meta, 'name', obj_index=0), 'has(obj_index=0) -> .false.')
+    w2 = tensogram_metadata_get(meta, 'name', obj_index=0)
+    call assert(.not. w2%is_present(), 'get(obj_index=0) absent')
+    w2 = tensogram_metadata_object(meta, 0)
+    call assert(.not. w2%is_present(), 'object(0) absent')
 
    ! ---- try_get_* : right-type success ------------------------------------
    ok = tensogram_metadata_try_get_string(meta, 'name', s)

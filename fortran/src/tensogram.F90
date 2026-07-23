@@ -1728,8 +1728,12 @@ contains
       character(kind=c_char), allocatable, target :: key_c(:)
       call f_to_cstr(trim(key), key_c)
       if (present(obj_index)) then
-         tensogram_metadata_has = &
-            c_tgm_metadata_has_at(meta%ptr, int(obj_index - 1, c_size_t), c_loc(key_c))
+         if (obj_index < 1) then     ! out of range: absent (see value_elem)
+            tensogram_metadata_has = .false.
+         else
+            tensogram_metadata_has = &
+               c_tgm_metadata_has_at(meta%ptr, int(obj_index - 1, c_size_t), c_loc(key_c))
+         end if
       else
          tensogram_metadata_has = c_tgm_metadata_has(meta%ptr, c_loc(key_c))
       end if
@@ -1747,6 +1751,7 @@ contains
       character(kind=c_char), allocatable, target :: key_c(:)
       call f_to_cstr(trim(key), key_c)
       if (present(obj_index)) then
+         if (obj_index < 1) return   ! out of range: v defaults to an absent cursor
          v%ptr = c_tgm_metadata_get_at(meta%ptr, int(obj_index - 1, c_size_t), c_loc(key_c))
       else
          v%ptr = c_tgm_metadata_get(meta%ptr, c_loc(key_c))
@@ -1809,6 +1814,7 @@ contains
       type(tensogram_metadata), intent(in) :: meta
       integer,                  intent(in) :: obj_index
       type(tensogram_value) :: v
+      if (obj_index < 1) return   ! out of range: v defaults to an absent cursor
       v%ptr = c_tgm_metadata_object(meta%ptr, int(obj_index - 1, c_size_t))
    end function tensogram_metadata_object
 
