@@ -189,6 +189,8 @@ const shape = meta.base?.[0]?._reserved_?.tensor?.shape;
 ```fortran
 type(tensogram_value) :: v, cls
 integer(c_int64_t) :: lvl
+character(len=:), allocatable :: str
+integer :: i
 logical :: ok
 
 if (tensogram_metadata_has(meta, "mars.class")) then
