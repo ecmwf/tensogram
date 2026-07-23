@@ -1,6 +1,6 @@
 # Metadata Access Parity — Design
 
-> **Status: IMPLEMENTED (PR #161).** This document is the design for making
+> **Status: IMPLEMENTED.** This document is the design for making
 > CBOR-metadata access **symmetric across every binding** (Rust, C, C++,
 > Python, TypeScript/WASM, Fortran), with **Python as the capability
 > benchmark**. The JSON exporters (`*_to_json`) are **not** an access path —
