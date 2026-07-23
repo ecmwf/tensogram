@@ -799,8 +799,11 @@ const tgm_value_t *tgm_metadata_reserved(const tgm_metadata_t *meta);
 /**
  * The kind of a value handle (`TGM_VALUE_TYPE_*`).
  *
- * Returns `TGM_VALUE_TYPE_NULL` for a NULL handle (as well as for a genuine
- * CBOR null — use the typed extractors to disambiguate if needed).
+ * Returns `TGM_VALUE_TYPE_NULL` both for a NULL handle and for a present CBOR
+ * null. To tell them apart, test the handle pointer itself: a NULL pointer is
+ * an absent value, whereas a non-NULL handle of type `TGM_VALUE_TYPE_NULL` is
+ * a present CBOR null (the typed extractors return `false` for both, so they
+ * cannot make this distinction).
  */
 tgm_value_type tgm_value_get_type(const tgm_value_t *v);
 
