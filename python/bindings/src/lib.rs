@@ -30,14 +30,16 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 #[cfg(feature = "async")]
 use std::sync::Arc;
 
+#[cfg(feature = "async")]
+use tensogram_lib::AsyncStreamingEncoder;
 use tensogram_lib::validate::{
     ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
 };
 use tensogram_lib::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    RESERVED_KEY, RemoteScanOptions, StreamingEncoder, TensogramError, TensogramFile, decode,
-    decode_descriptors, decode_metadata, decode_object, decode_range, encode, encode_pre_encoded,
-    parse_hash_name, scan,
+    RESERVED_KEY, RemoteScanOptions, StreamingEncoder, TensogramError, TensogramFile,
+    compute_common, data_object_inline_hashes, decode, decode_descriptors, decode_metadata,
+    decode_object, decode_range, encode, encode_pre_encoded, parse_hash_name, scan,
 };
 
 type PyObject = Py<PyAny>;
@@ -325,11 +327,22 @@ impl PyDataObjectDescriptor {
         extra_to_py(py, &self.inner.params)
     }
 
-    /// **Deprecated in v3.**  The per-object hash moved from the
-    /// CBOR descriptor to the frame footer's inline slot (see
-    /// `plans/WIRE_FORMAT.md` §2.4).  This getter returns `None`
-    /// unconditionally; use `Message.object_inline_hashes()` or
-    /// `Message.object_hash(i)` to read the inline slot.
+    /// **Deprecated in v3 — always returns ``None``.**
+    ///
+    /// The per-object hash moved from the CBOR descriptor to the data
+    /// object frame's inline footer slot (see `plans/WIRE_FORMAT.md`
+    /// §2.4), so it is no longer carried by the descriptor.  The
+    /// descriptor alone cannot reach the slot — it does not retain the
+    /// surrounding wire bytes.
+    ///
+    /// To read the real inline digests, walk the message bytes with the
+    /// module-level :func:`tensogram.object_inline_hashes` function,
+    /// which mirrors the Rust core ``data_object_inline_hashes`` walker::
+    ///
+    ///     msg = tensogram.encode(meta, [(desc, data)])   # hashing on
+    ///     digests = tensogram.object_inline_hashes(msg)
+    ///     # digests[i] is the 16-char xxh3-64 hex string for object i,
+    ///     # or None when that frame was written without a hash.
     #[getter]
     fn hash(&self, py: Python<'_>) -> PyResult<PyObject> {
         Ok(py.None())
@@ -1448,6 +1461,128 @@ fn py_scan(py: Python<'_>, buf: PyBackedBytes) -> Vec<(usize, usize)> {
     py.detach(|| scan(&buf))
 }
 
+/// Read the per-object inline hash slots from a wire-format message.
+///
+/// Mirrors the Rust core :func:`tensogram::data_object_inline_hashes`
+/// walker (and the C FFI ``tgm_object_hash_value`` accessor): it walks
+/// the frame chain of a **single** message and collects the inline hash
+/// slot of every data-object frame, in emission order.
+///
+/// This is the working accessor for the per-object integrity digests
+/// that :attr:`DataObjectDescriptor.hash` cannot reach — in v3 the hash
+/// lives in the frame footer, not the CBOR descriptor
+/// (``plans/WIRE_FORMAT.md`` §2.4).
+///
+/// Args:
+///     buf: Wire-format message bytes (a single message, not a file).
+///
+/// Returns:
+///     ``list[str | None]`` with one entry per data object, in order:
+///       - a 16-character lowercase xxh3-64 hex string (identical in
+///         form to :func:`compute_hash`) when the frame carries a
+///         non-zero digest — the common case with hashing enabled;
+///       - ``None`` when the slot is empty, i.e. the message was
+///         encoded with ``hash=None`` (the ``HASHES_PRESENT`` flag is
+///         clear) or that specific frame opted out of hashing.
+///
+/// Raises:
+///     ValueError: If *buf* is not a structurally valid message
+///         (truncated, bad frame header, length overflow).
+///
+/// Example::
+///
+///     >>> msg = tensogram.encode({"base": [{}]}, [(desc, data)])
+///     >>> tensogram.object_inline_hashes(msg)
+///     ['1f3d9c0a4b7e5620']
+///     >>> off = tensogram.encode({"base": [{}]}, [(desc, data)], hash=None)
+///     >>> tensogram.object_inline_hashes(off)
+///     [None]
+#[pyfunction]
+#[pyo3(name = "object_inline_hashes")]
+fn py_object_inline_hashes(py: Python<'_>, buf: PyBackedBytes) -> PyResult<PyObject> {
+    let hashes = py.detach(|| data_object_inline_hashes(&buf).map_err(to_py_err))?;
+    let mut items: Vec<PyObject> = Vec::with_capacity(hashes.len());
+    for h in hashes {
+        match h {
+            // Match `hash::format_xxh3_digest` / the FFI `tgm_object_hash_value`
+            // 16-char zero-padded lowercase hex so the digest string is
+            // byte-for-byte comparable across every binding.
+            Some(digest) => items.push(
+                format!("{digest:016x}")
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            ),
+            None => items.push(py.None()),
+        }
+    }
+    Ok(PyList::new(py, items)?.into_any().unbind())
+}
+
+/// Extract keys common to every ``base[i]`` metadata entry.
+///
+/// Direct binding of the Rust core :func:`tensogram::compute_common`.
+/// **Commonalities are never encoded on the wire** — this is a
+/// post-decode software convenience (e.g. for display or merge
+/// operations) that inspects the per-object metadata already returned
+/// by :func:`decode` / :func:`decode_metadata`.
+///
+/// A key is *common* only when it appears at the **top level** of every
+/// entry with an identical CBOR value (nested maps are compared as
+/// whole values — two ``mars`` sub-maps that differ in any field are
+/// *not* common).  The library-managed ``_reserved_`` namespace is
+/// always excluded.
+///
+/// Args:
+///     base: The per-object metadata entries to compare.  Accepts either
+///         a :class:`Metadata` object (its ``base`` list is used) or a
+///         ``list[dict]`` such as ``meta.base``.
+///
+/// Returns:
+///     ``(common, remaining)`` where *common* is a ``dict`` of the shared
+///     keys/values and *remaining* is a ``list[dict]`` — one entry per
+///     object holding only that object's non-common keys (``_reserved_``
+///     stripped).  Mirrors the Rust tuple return exactly.
+///
+/// Example::
+///
+///     >>> meta = tensogram.decode_metadata(multi_object_msg)
+///     >>> common, remaining = tensogram.compute_common(meta.base)
+///     >>> common
+///     {'class': 'od', 'stream': 'oper'}
+#[pyfunction]
+#[pyo3(name = "compute_common")]
+fn py_compute_common(py: Python<'_>, base: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    // Accept either a `Metadata` object (use its `base`) or a raw list of
+    // per-object metadata dicts (e.g. `meta.base`).  Anything else is a
+    // clear caller error surfaced up front.
+    let entries: Vec<BTreeMap<String, ciborium::Value>> =
+        if let Ok(meta) = base.extract::<PyMetadata>() {
+            meta.inner.base
+        } else if let Ok(list) = base.cast::<PyList>() {
+            let mut out = Vec::with_capacity(list.len());
+            for item in list.iter() {
+                out.push(py_dict_to_btree(&item)?);
+            }
+            out
+        } else {
+            return Err(PyValueError::new_err(
+                "compute_common expects a Metadata object or a list of per-object \
+                 metadata dicts (e.g. meta.base)",
+            ));
+        };
+
+    let (common, remaining) = compute_common(&entries);
+    let common_py = extra_to_py(py, &common)?;
+    let remaining_items: Vec<PyObject> = remaining
+        .iter()
+        .map(|m| extra_to_py(py, m))
+        .collect::<PyResult<Vec<_>>>()?;
+    let remaining_py = PyList::new(py, remaining_items)?.into_any().unbind();
+    let tuple = pyo3::types::PyTuple::new(py, [common_py, remaining_py])?;
+    Ok(tuple.into_any().unbind())
+}
+
 /// Iterate over messages in a byte buffer.
 ///
 /// Scans for message boundaries, then decodes each message on demand.
@@ -1774,6 +1909,34 @@ impl PyStreamingEncoder {
         Ok(Self { inner: Some(inner) })
     }
 
+    /// Write a ``PrecederMetadata`` frame for the next data object.
+    ///
+    /// The *metadata* dict becomes ``base[0]`` of a metadata frame written
+    /// immediately *ahead* of the following object, so a progressive reader
+    /// learns that object's shape/dtype/annotations before its payload
+    /// bytes arrive.  Must be followed by exactly one :meth:`write_object`
+    /// or :meth:`write_object_pre_encoded` call before the next
+    /// :meth:`write_preceder` or :meth:`finish`.
+    ///
+    /// Mirrors the Rust ``StreamingEncoder::write_preceder``.
+    ///
+    /// Args:
+    ///     metadata: dict of per-object metadata.  Must not contain the
+    ///         library-managed ``_reserved_`` key.
+    ///
+    /// Raises:
+    ///     ValueError: if ``_reserved_`` is present, or a preceder is
+    ///         already pending (two ``write_preceder`` calls in a row).
+    ///     RuntimeError: if the encoder has already been finished.
+    fn write_preceder(&mut self, metadata: &Bound<'_, PyDict>) -> PyResult<()> {
+        let map = py_dict_to_btree(metadata.as_any())?;
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        inner.write_preceder(map).map_err(to_py_err)
+    }
+
     /// Encode and write a single data object frame.
     ///
     /// Args:
@@ -1911,6 +2074,34 @@ impl PyStreamingEncoder {
             .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
         let bytes = inner.finish_and_reset_with_backfill().map_err(to_py_err)?;
         Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Number of data object frames written so far.
+    ///
+    /// Mirrors the Rust ``StreamingEncoder::object_count``.  Raises
+    /// ``RuntimeError`` once the encoder has been consumed by
+    /// :meth:`finish` / :meth:`finish_backfilled` (its counters are
+    /// moved into the footer at that point and no longer readable).
+    fn object_count(&self) -> PyResult<usize> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        Ok(inner.object_count())
+    }
+
+    /// Total bytes written to the in-memory buffer so far (including the
+    /// preamble and header frame, excluding the not-yet-written footer +
+    /// postamble).
+    ///
+    /// Mirrors the Rust ``StreamingEncoder::bytes_written``.  Raises
+    /// ``RuntimeError`` once the encoder has been finished.
+    fn bytes_written(&self) -> PyResult<u64> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        Ok(inner.bytes_written())
     }
 }
 
@@ -2570,6 +2761,292 @@ impl PyAsyncTensogramFileIter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PyAsyncStreamingEncoder — async wrapper around AsyncStreamingEncoder
+// ---------------------------------------------------------------------------
+
+/// Asynchronous, frame-at-a-time streaming encoder for Python ``asyncio``.
+///
+/// The async sibling of :class:`StreamingEncoder` (and the read-side
+/// :class:`AsyncTensogramFile`).  It wraps the Rust
+/// ``AsyncStreamingEncoder`` over an in-memory buffer, so every method
+/// returns a coroutine and :meth:`finish` yields the complete
+/// wire-format ``bytes`` — byte-identical to what the synchronous
+/// :class:`StreamingEncoder` would produce for the same sequence of
+/// writes.
+///
+/// Construct it with the async :meth:`create` factory (the preamble and
+/// header frame are written before the coroutine resolves), then
+/// ``await`` each write::
+///
+///     enc = await tensogram.AsyncStreamingEncoder.create({"base": [{}]})
+///     await enc.write_object(
+///         {"type": "ntensor", "shape": [4], "dtype": "float32"},
+///         np.ones(4, dtype=np.float32),
+///     )
+///     msg = await enc.finish()              # streaming-mode (total_length=0)
+///     # or
+///     msg = await enc.finish_backfilled()   # full backward locatability
+///
+/// The encoder is **single-task-owned**: it serialises concurrent calls
+/// behind an async mutex (the underlying ``AsyncWrite`` is inherently
+/// serial), so drive it from one task at a time.
+///
+/// `Option` so `finish`/`finish_backfilled` can move the encoder out
+/// (they consume `self` in the core); `tokio::sync::Mutex` so the guard
+/// can be held across `.await`, matching the C FFI wrapper.  The sink is
+/// an in-memory `std::io::Cursor<Vec<u8>>` (tokio implements AsyncWrite +
+/// AsyncSeek for it) so `finish` can return the wire bytes like the sync
+/// `StreamingEncoder`.
+#[cfg(feature = "async")]
+type AsyncStreamingEncoderCell =
+    Arc<tokio::sync::Mutex<Option<AsyncStreamingEncoder<std::io::Cursor<Vec<u8>>>>>>;
+
+#[cfg(feature = "async")]
+#[pyclass(name = "AsyncStreamingEncoder")]
+struct PyAsyncStreamingEncoder {
+    inner: AsyncStreamingEncoderCell,
+}
+
+#[cfg(feature = "async")]
+#[pymethods]
+impl PyAsyncStreamingEncoder {
+    /// Begin a new streaming message (async factory).
+    ///
+    /// Writes the preamble + header metadata frame to the in-memory sink
+    /// before the returned coroutine resolves.  Accepts the same kwargs
+    /// as :class:`StreamingEncoder`.  ``aggregate_hash="header"`` /
+    /// ``"both"`` are rejected in streaming mode (the header is written
+    /// before any data object).
+    ///
+    /// Returns a coroutine; use ``await``::
+    ///
+    ///     enc = await AsyncStreamingEncoder.create({"base": [{}]})
+    #[staticmethod]
+    #[pyo3(
+        signature = (
+            global_meta_dict,
+            hash=Some("xxh3"),
+            threads=0,
+            allow_nan=false,
+            allow_inf=false,
+            nan_mask_method=None,
+            pos_inf_mask_method=None,
+            neg_inf_mask_method=None,
+            small_mask_threshold_bytes=None,
+            aggregate_hash=None,
+        )
+    )]
+    #[allow(clippy::too_many_arguments)]
+    fn create<'py>(
+        py: Python<'py>,
+        global_meta_dict: &Bound<'_, PyDict>,
+        hash: Option<&str>,
+        threads: u32,
+        allow_nan: bool,
+        allow_inf: bool,
+        nan_mask_method: Option<&str>,
+        pos_inf_mask_method: Option<&str>,
+        neg_inf_mask_method: Option<&str>,
+        small_mask_threshold_bytes: Option<usize>,
+        aggregate_hash: Option<&str>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        // Convert the caller's metadata + options while the GIL is held,
+        // yielding owned `Send + 'static` values to move into the future.
+        let global_meta = dict_to_global_metadata(global_meta_dict)?;
+        let options = make_encode_options_full(
+            hash,
+            threads,
+            allow_nan,
+            allow_inf,
+            nan_mask_method,
+            pos_inf_mask_method,
+            neg_inf_mask_method,
+            small_mask_threshold_bytes,
+            aggregate_hash,
+        )?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let enc = AsyncStreamingEncoder::new(
+                std::io::Cursor::new(Vec::new()),
+                &global_meta,
+                &options,
+            )
+            .await
+            .map_err(to_py_err)?;
+            let wrapped = PyAsyncStreamingEncoder {
+                inner: Arc::new(tokio::sync::Mutex::new(Some(enc))),
+            };
+            Python::attach(|py| Ok(wrapped.into_pyobject(py)?.into_any().unbind()))
+        })
+    }
+
+    /// Encode and write a single data object frame (async).
+    ///
+    /// Mirrors :meth:`StreamingEncoder.write_object`.
+    fn write_object<'py>(
+        &self,
+        py: Python<'py>,
+        descriptor: &Bound<'_, PyDict>,
+        data: &Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let desc = dict_to_data_object_descriptor(descriptor)?;
+        let bytes = extract_single_data_item(data)?;
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = inner.lock().await;
+            let enc = guard
+                .as_mut()
+                .ok_or_else(|| PyRuntimeError::new_err("AsyncStreamingEncoder already finished"))?;
+            enc.write_object(&desc, &bytes).await.map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+
+    /// Write a pre-encoded data object frame directly, no pipeline (async).
+    ///
+    /// Mirrors :meth:`StreamingEncoder.write_object_pre_encoded`.  ``data``
+    /// must be a ``bytes``-like object already carrying the encoded payload.
+    fn write_object_pre_encoded<'py>(
+        &self,
+        py: Python<'py>,
+        descriptor: &Bound<'_, PyDict>,
+        data: &Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let desc = dict_to_data_object_descriptor(descriptor)?;
+        // Pre-encoded payloads are already in final wire form — accept only
+        // bytes-like input (rejecting numpy arrays), matching the sync path.
+        let bytes = data.extract::<Vec<u8>>().map_err(|_| {
+            let type_name = data
+                .get_type()
+                .name()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "<unknown>".to_string());
+            PyValueError::new_err(format!(
+                "write_object_pre_encoded requires bytes data (got {type_name}) — \
+                 the payload must already be in its final wire form",
+            ))
+        })?;
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = inner.lock().await;
+            let enc = guard
+                .as_mut()
+                .ok_or_else(|| PyRuntimeError::new_err("AsyncStreamingEncoder already finished"))?;
+            enc.write_object_pre_encoded(&desc, &bytes)
+                .await
+                .map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+
+    /// Write a ``PrecederMetadata`` frame for the next object (async).
+    ///
+    /// Mirrors :meth:`StreamingEncoder.write_preceder`.  Must be followed
+    /// by exactly one ``write_object`` / ``write_object_pre_encoded``.
+    fn write_preceder<'py>(
+        &self,
+        py: Python<'py>,
+        metadata: &Bound<'_, PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let map = py_dict_to_btree(metadata.as_any())?;
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = inner.lock().await;
+            let enc = guard
+                .as_mut()
+                .ok_or_else(|| PyRuntimeError::new_err("AsyncStreamingEncoder already finished"))?;
+            enc.write_preceder(map).await.map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+
+    /// Finalise the stream and return the complete wire-format ``bytes`` (async).
+    ///
+    /// Streaming mode: ``total_length = 0`` in both the preamble and
+    /// postamble (readers forward-scan).  See :meth:`finish_backfilled`
+    /// for the backward-locatable alternative.  Subsequent calls raise
+    /// ``RuntimeError``.
+    fn finish<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = inner.lock().await;
+            let enc = guard
+                .take()
+                .ok_or_else(|| PyRuntimeError::new_err("AsyncStreamingEncoder already finished"))?;
+            let cursor = enc.finish().await.map_err(to_py_err)?;
+            let bytes = cursor.into_inner();
+            Python::attach(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
+        })
+    }
+
+    /// Finalise the stream, back-filling ``total_length`` in the preamble
+    /// and postamble, and return the complete wire-format ``bytes`` (async).
+    ///
+    /// Equivalent to :meth:`finish` but the produced message satisfies the
+    /// backward-locatability invariant (wire-format §7) — readers can O(1)
+    /// seek to ``end - 16`` for the mirrored length.  Subsequent calls
+    /// raise ``RuntimeError``.
+    fn finish_backfilled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = inner.lock().await;
+            let enc = guard
+                .take()
+                .ok_or_else(|| PyRuntimeError::new_err("AsyncStreamingEncoder already finished"))?;
+            let cursor = enc.finish_with_backfill().await.map_err(to_py_err)?;
+            let bytes = cursor.into_inner();
+            Python::attach(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
+        })
+    }
+
+    /// Number of data object frames written so far.
+    ///
+    /// Synchronous (no I/O): a best-effort ``try_lock`` read of the live
+    /// counter.  Raises ``RuntimeError`` if a concurrent async operation
+    /// currently holds the encoder, or if it has already been finished.
+    fn object_count(&self) -> PyResult<usize> {
+        let guard = self.inner.try_lock().map_err(|_| {
+            PyRuntimeError::new_err(
+                "AsyncStreamingEncoder is busy: a concurrent async operation holds the encoder",
+            )
+        })?;
+        let enc = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("AsyncStreamingEncoder already finished"))?;
+        Ok(enc.object_count())
+    }
+
+    /// Total bytes written to the in-memory buffer so far.
+    ///
+    /// Synchronous best-effort read; see :meth:`object_count` for the
+    /// ``try_lock`` / finished-state semantics.
+    fn bytes_written(&self) -> PyResult<u64> {
+        let guard = self.inner.try_lock().map_err(|_| {
+            PyRuntimeError::new_err(
+                "AsyncStreamingEncoder is busy: a concurrent async operation holds the encoder",
+            )
+        })?;
+        let enc = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("AsyncStreamingEncoder already finished"))?;
+        Ok(enc.bytes_written())
+    }
+
+    fn __repr__(&self) -> String {
+        match self.inner.try_lock() {
+            Ok(guard) => match guard.as_ref() {
+                Some(enc) => format!(
+                    "AsyncStreamingEncoder(objects={}, bytes_written={})",
+                    enc.object_count(),
+                    enc.bytes_written()
+                ),
+                None => "AsyncStreamingEncoder(finished)".to_string(),
+            },
+            Err(_) => "AsyncStreamingEncoder(busy)".to_string(),
+        }
+    }
+}
+
 /// Check whether a source string looks like a remote URL.
 ///
 /// Returns ``True`` for sources starting with ``http://``, ``https://``,
@@ -3203,6 +3680,8 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_decode_object, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_range, m)?)?;
     m.add_function(wrap_pyfunction!(py_scan, m)?)?;
+    m.add_function(wrap_pyfunction!(py_object_inline_hashes, m)?)?;
+    m.add_function(wrap_pyfunction!(py_compute_common, m)?)?;
     m.add_function(wrap_pyfunction!(py_iter_messages, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate_file, m)?)?;
@@ -3224,6 +3703,8 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAsyncTensogramFile>()?;
     #[cfg(feature = "async")]
     m.add_class::<PyAsyncTensogramFileIter>()?;
+    #[cfg(feature = "async")]
+    m.add_class::<PyAsyncStreamingEncoder>()?;
 
     // Feature-flag probes for Python consumers. Useful for tests and for
     // branching behaviour in notebooks / examples so they can skip cleanly
