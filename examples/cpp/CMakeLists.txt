@@ -14,6 +14,7 @@ set(EXAMPLES
     11_encode_pre_encoded
     13_validate
     16_multi_threaded_pipeline
+    17_masks_scan_validate
 )
 
 # Async examples on the callback / std::future frontends (C++17, header-only).

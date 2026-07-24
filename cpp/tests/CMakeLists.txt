@@ -20,8 +20,13 @@ set(TENSOGRAM_TEST_SOURCES
     test_multi_dtype.cpp
     test_encode_pre_encoded.cpp
     test_validate.cpp
+    test_validate_buffer.cpp
     test_allow_nan_inf.cpp
     test_decode_verify_hash.cpp
+    test_decode_with_masks.cpp
+    test_compute_common.cpp
+    test_canonical_cbor.cpp
+    test_scan_family.cpp
     test_doctor.cpp
 )
 

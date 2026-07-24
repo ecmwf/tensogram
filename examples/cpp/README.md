@@ -21,6 +21,7 @@ C++17 interface over the C FFI.
 | `10_doctor.cpp` | Environment diagnostics via `doctor()` (build / features / self-test JSON report) |
 | `13_validate.cpp` | Structural, integrity, and fidelity validation at four levels |
 | `16_multi_threaded_pipeline.cpp` | Caller-controlled `threads=N` encode/decode with determinism invariants |
+| `17_masks_scan_validate.cpp` | Mask-aware `decode_with_masks()` (`has_masks()`/`mask()`), whole-buffer `validate_buffer()`, inline hashes, and `scan_file()` |
 | `19_async_decode_remote.cpp` | Async remote decode over an object store / `file://` (coroutine frontend) |
 | `20_async_producer.cpp` | Async streaming producer: stream forecast steps into a `.tgm` (coroutine frontend) |
 | `21_async_consumer.cpp` | Async streaming consumer: walk messages with `async_for_each` (coroutine frontend) |
