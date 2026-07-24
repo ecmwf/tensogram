@@ -168,3 +168,87 @@ and C-ABI-bound; Fortran smallest (mostly [O] omissions).**
 The **[L]** language limits enumerated in `plans/DESIGN.md` § *Documented
 exceptions* are the only sanctioned asymmetries. Adding a new one requires
 documenting it there with a concrete reason.
+
+## 8. Action plan
+
+### 8.1 Dependency model
+
+Two structural constraints drive scheduling:
+
+- **Disjoint by binding.** Each binding lives in its own tree (`cpp/`,
+  `python/`, `typescript/` + `rust/tensogram-wasm/`, `fortran/`), so binding
+  tasks for *different* languages never touch the same files and can run fully
+  in parallel.
+- **The C ABI is a shared, single-file chokepoint.** All C-ABI work lands in
+  `rust/tensogram-ffi/src/lib.rs` (+ regenerated `tensogram.h`), so C-ABI tasks
+  are **FFI-serial** (one owner at a time). C++ and Fortran *build* the C ABI, so
+  their agents must not run while the FFI source is mid-change, and the two of
+  them can contend on the cargo-c install prefix — **run C++ and Fortran build
+  phases sequentially, not concurrently.** Python (maturin → `python/bindings/
+  target`) and TypeScript (wasm-pack → wasm crate target) build in isolated
+  target dirs and are safe to parallelize with everything.
+
+Rule of thumb: **Python & TypeScript bind the Rust core directly**, so their
+gaps are almost always **[O]** — fixable immediately, in parallel. **C++ &
+Fortran are gated on the C ABI** — a **[B]** capability must be lowered into the
+FFI first (Wave B) before they can wrap it (Wave C).
+
+### 8.2 Task list
+
+Group = concurrency lane (tasks in different lanes run in parallel; tasks in the
+same lane serialize). Lanes: **FFI** (serial, chokepoint), **CPP**, **PY**,
+**TS**, **FTN**.
+
+| ID | Scope | Files | Backend change | Depends on | Lane |
+|----|-------|-------|----------------|------------|------|
+| **Wave A — bugs + cheap [O] (parallel across bindings)** |
+| BUG-FFI | Implement `tgm_last_error_object_index()` (thread-local object index for MissingHash/HashMismatch) + regen header | `tensogram-ffi` | +1 fn | — | FFI |
+| BUG-PY | Fix inline-hash dead-end: real per-object inline-hash accessor + fix `descriptor.hash` docstring | `python/` | no | — | PY |
+| BUG-TS | `TensogramFile.append` forwards all `AppendOptions` (masks) to `encode` | `typescript/` | no | — | TS |
+| O-CPP-1 | `doctor()` + wrap unwrapped-existing C fns (`simple_packing_compute_params`, async `decode_object`/`decode_range` + `join_multi_bytes`/`multi_bytes_free`, async `path()`, `task_cancel`/`is_ready`) + examples + tests | `cpp/` | no | BUG-FFI (ordering only) | CPP |
+| O-PY-1 | `AsyncStreamingEncoder`; streaming introspection (`object_count`/`bytes_written`/`write_preceder`); lazy `objects`/`objects_metadata`; `compute_common`; missing option kwargs | `python/` | no | — | PY |
+| O-TS-1 | Lazy `objects()`/`objects_metadata()`; `TensogramFile.create`; export `DecodeStreamOptions`; `native_byte_order` decode option | `typescript/` (+wasm) | maybe | — | TS |
+| O-FTN-1 | Batch: version consts+getters, `encode_pre_encoded`, decode variants, object accessors, scan, `compute_hash`+inline, iterators, validate, doctor, masks `*_with_options`, `threads` arg, file `path`/`append_raw`, streaming `write_preceder`/`write_pre_encoded` + examples + tests | `fortran/` | no | — | FTN |
+| **Wave B — C ABI widening [B] (FFI-serial; unblocks C++/Fortran)** |
+| W-DECODE | `decode_descriptors`, `decode_with_masks` (+ mask-set out-structs), `decode_range_from_payload` | `tensogram-ffi` | yes | — | FFI |
+| W-SCAN | `scan_file`, `scan_with_options`, `ScanOptions`, `data_object_inline_hashes` | `tensogram-ffi` | yes | — | FFI |
+| W-VALIDATE | `validate_buffer` | `tensogram-ffi` | yes | — | FFI |
+| W-META | `compute_common`, `verify_canonical_cbor` | `tensogram-ffi` | yes | — | FFI |
+| W-ENUMS | typed `Dtype`/`ByteOrder`/`AggregateHashPolicy`/`CompressionBackend` + `EncodeOptions` knobs (`aggregate_hash`, `compression_backend`, `parallel_threshold`) | `tensogram-ffi` | yes | — | FFI |
+| W-WIRE | typed `FrameType`/`MessageFlags`/`MessageLayout` | `tensogram-ffi` | yes | — | FFI |
+| W-REMOTE | sync remote + `is_remote_url` + `RemoteScanOptions` (larger) | `tensogram-ffi` | yes | — | FFI |
+| **Wave C — wrap the widened ABI (parallel by binding, after its W-*)** |
+| C-CPP-{DECODE,SCAN,VALIDATE,META,ENUMS,WIRE,REMOTE} | C++ wrappers + tests + examples | `cpp/` | no | matching W-* | CPP |
+| C-FTN-{DECODE,SCAN,VALIDATE,META,WIRE,REMOTE} | Fortran wrappers (skip [L]) + tests + examples | `fortran/` | no | matching W-* | FTN |
+| **Wave D — reach the core directly (parallel, isolated)** |
+| D-TS-MASKS | TS `decode_with_masks` via a wasm-crate widen (binds core) | `typescript/`+wasm | wasm | — | TS |
+| D-PY-2 | Python `scan_file`/`scan_with_options`, `validate_buffer`, `message_layouts`/`open_mmap` | `python/` | no | — | PY |
+| **Wave E — convert lowering (big [B])** |
+| E-FFI-CONVERT | Lower GRIB/NetCDF convert into the C ABI (ecCodes/netcdf linkage, feature-gated) | `tensogram-ffi` + grib/netcdf | yes | — | FFI |
+| E-CPP-CONVERT / E-FTN-CONVERT | wrap | `cpp/`/`fortran/` | no | E-FFI-CONVERT | CPP/FTN |
+| **Wave F — example/test coverage (per binding, ongoing)** |
+| F-{CPP,PY,TS,RS}-COVER | Add examples exercising the precise metadata cursor, exotic dtypes, masks, doctor where missing | per lang | no | features exist | each |
+
+### 8.3 Dispatch order (concurrency)
+
+1. **Now — Wave A:** land **BUG-FFI** first (settles the C ABI), then dispatch
+   **{O-CPP-1, O-PY-1+BUG-PY, O-TS-1+BUG-TS, O-FTN-1}** in parallel. Constraint:
+   O-CPP-1 and O-FTN-1 both build the C API — run their *build/test* phases
+   sequentially (PY/TS are isolated and fully concurrent). D-PY-2 / D-TS-MASKS
+   can also run in this wave (isolated).
+2. **Wave B (FFI-serial):** one owner lands W-DECODE → W-SCAN → W-VALIDATE →
+   W-META → W-ENUMS → W-WIRE → W-REMOTE, one at a time, while **no** C-family
+   agent is building. Each W is independently shippable.
+3. **Wave C:** after each W lands, dispatch its C++ and Fortran wrappers
+   (sequentially between CPP and FTN; parallel with PY/TS work).
+4. **Wave E** last (largest; needs native ecCodes/netcdf in the FFI build).
+5. **Wave F** interleaved — every feature landed must gain an example in each
+   language that supports it (symmetry contract).
+
+### 8.4 Done criteria
+
+- The DESIGN.md matrix cell moves to ● (or documented [L]/—) for the touched
+  capability in every applicable binding, with a test and an example.
+- The accepted-exceptions list in DESIGN.md is the only place a non-● cell is
+  allowed to remain.
+- Re-audit the full matrix at the next release.
