@@ -49,6 +49,8 @@ uv pip install -e python/tensogram-zarr/
 | `15_async_operations.py` | Async open, decode, and `asyncio.gather` with `AsyncTensogramFile` |
 | `16_multi_threaded_pipeline.py` | Caller-controlled `threads=N` encode/decode with determinism invariants |
 | `17_convert_grib.py` | Convert GRIB → Tensogram via `tensogram.convert_grib` (file) and `tensogram.convert_grib_buffer` (in-memory) |
+| `19_async_streaming_and_common.py` | Async streaming encode with `AsyncStreamingEncoder`, cross-object `compute_common`, and per-object `object_inline_hashes` |
+| `20_scan_validate_layouts.py` | Reader-side symmetry: `scan_file`/`scan_with_options`/`ScanOptions`, `validate_buffer`, `message_layouts`, lazy `objects`/`objects_metadata`, and `open_mmap` |
 
 For **narrative walk-throughs** with live plots and prose explanations,
 see the companion notebooks under `../jupyter/`.
@@ -62,16 +64,29 @@ tensogram
 ├── decode_metadata(buf) -> Metadata
 ├── decode_object(buf, index, verify_hash=False) -> (Metadata, DataObjectDescriptor, ndarray)
 ├── decode_range(buf, object_index, ranges, join=False, verify_hash=False) -> list[ndarray] | ndarray
+├── decode_range_from_payload(descriptor, payload, ranges, join=False) -> list[ndarray] | ndarray
 ├── scan(buf) -> list[tuple[int, int]]
+├── scan_with_options(buf, ScanOptions(...)) -> list[tuple[int, int]]
+├── scan_file(path) -> list[tuple[int, int]]                # streaming I/O
+├── scan_file_with_options(path, ScanOptions(...)) -> list[tuple[int, int]]
+├── objects(buf, ...) -> ObjectIter                         # lazy (descriptor, ndarray)
+├── objects_metadata(buf) -> ObjectMetadataIter             # lazy descriptors only
+├── object_inline_hashes(buf) -> list[str | None]   # per-object xxh3-64 hex, or None
 ├── iter_messages(buf, verify_hash=False) -> MessageIter
 ├── compute_packing_params(values, bits_per_value, decimal_scale_factor) -> dict
-├── validate(buf, level="default", check_canonical=False) -> dict
+├── compute_common(base) -> tuple[dict, list[dict]]  # (common, remaining); base is meta.base or Metadata
+├── validate(buf, level="default", check_canonical=False) -> dict           # single message
+├── validate_buffer(buf, level="default", check_canonical=False) -> dict    # multi-message buffer
 ├── validate_file(path, level="default", check_canonical=False) -> dict
+├── StreamingEncoder(metadata, hash="xxh3")           # + write_preceder / object_count() / bytes_written()
+├── AsyncStreamingEncoder.create(metadata, hash="xxh3") -> awaitable  # async write_object / finish
 └── TensogramFile
     ├── open(path) -> TensogramFile
+    ├── open_mmap(path) -> TensogramFile   # zero-copy memory-mapped reads (mmap feature)
     ├── create(path) -> TensogramFile
     ├── append(metadata, descriptors_and_data, hash="xxh3")
     ├── message_count() -> int
+    ├── message_layouts() -> list[MessageLayout]   # per-message (offset, length)
     ├── read_message(index) -> bytes
     ├── decode_message(index, verify_hash=False) -> Message
     ├── for msg in file: ...         # iteration
@@ -96,7 +111,7 @@ tensogram.DataObjectDescriptor
     .obj_type, .ndim, .shape, .strides, .dtype
     .byte_order, .encoding, .filter, .compression
     .params -> dict               # encoding parameters (e.g. reference_value, bits_per_value)
-    .hash   -> dict | None
+    .hash   -> None               # deprecated in v3; use tensogram.object_inline_hashes(buf)
 ```
 
 ## NumPy Integration

@@ -20,14 +20,22 @@ set(TENSOGRAM_TEST_SOURCES
     test_multi_dtype.cpp
     test_encode_pre_encoded.cpp
     test_validate.cpp
+    test_validate_buffer.cpp
     test_allow_nan_inf.cpp
     test_decode_verify_hash.cpp
+    test_decode_with_masks.cpp
+    test_compute_common.cpp
+    test_canonical_cbor.cpp
+    test_scan_family.cpp
+    test_doctor.cpp
 )
 
 if(TENSOGRAM_ASYNC)
     list(APPEND TENSOGRAM_TEST_SOURCES test_async_callback.cpp)
     list(APPEND TENSOGRAM_TEST_SOURCES test_async_stdfuture.cpp)
     list(APPEND TENSOGRAM_TEST_SOURCES test_async_producer_consumer.cpp)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_decode_object_range.cpp)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_task_control.cpp)
 endif()
 
 # Test executable

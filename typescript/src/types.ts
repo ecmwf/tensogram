@@ -218,6 +218,61 @@ export interface DecodedMessage {
 }
 
 /**
+ * Raw per-kind NaN / Inf bitmasks for one object, as returned by
+ * {@link decodeWithMasks}.
+ *
+ * Each mask is a `Uint8Array` of length `n_elements` (the descriptor's
+ * shape product), **one byte per tensor element**: `1` marks a position
+ * that held the corresponding non-finite value at encode time, `0` marks
+ * a finite position.  A kind the frame did not carry is `null`.
+ *
+ * The three kinds never overlap at the same index — the encoder assigns
+ * each element to at most one kind (the complex priority rule, see
+ * `plans/WIRE_FORMAT.md` §6.5.2).  Mask arrays are JS-heap copies and are
+ * safe to retain after the owning {@link DecodedMaskedMessage} is closed.
+ *
+ * Mirrors the Rust core `DecodedMaskSet { nan, pos_inf, neg_inf }`
+ * (each `Option<Vec<bool>>`).
+ */
+export interface DecodedMaskSet {
+  /** Positions that held NaN at encode time, or `null`. */
+  readonly nan: Uint8Array | null;
+  /** Positions that held `+Inf`, or `null`. */
+  readonly posInf: Uint8Array | null;
+  /** Positions that held `-Inf`, or `null`. */
+  readonly negInf: Uint8Array | null;
+}
+
+/**
+ * A single object decoded by {@link decodeWithMasks}: a normal
+ * {@link DecodedObject} whose `data()` / `dataView()` expose the
+ * `0.0`-substituted payload, plus the raw {@link DecodedMaskSet} for the
+ * three non-finite kinds.
+ */
+export interface DecodedMaskedObject extends DecodedObject {
+  /** Raw decompressed NaN / +Inf / -Inf masks for this object. */
+  readonly masks: DecodedMaskSet;
+}
+
+/**
+ * Result of {@link decodeWithMasks}.
+ *
+ * Like {@link DecodedMessage} but every object additionally carries a
+ * {@link DecodedMaskSet}.  The payloads are always `0.0`-substituted
+ * (restoration is intentionally not applied — that is the whole point of
+ * this advanced API); use the masks to reconstruct or reinterpret the
+ * missing positions.
+ */
+export interface DecodedMaskedMessage {
+  /** Global metadata parsed from the message's header metadata frame. */
+  readonly metadata: GlobalMetadata;
+  /** One entry per data-object frame in the message, in wire order. */
+  readonly objects: readonly DecodedMaskedObject[];
+  /** Release the underlying WASM memory. Idempotent. */
+  close(): void;
+}
+
+/**
  * A single decoded object frame from a streaming decoder.
  *
  * Similar to {@link DecodedObject} but additionally carries the
@@ -329,6 +384,29 @@ export interface MessagePosition {
 }
 
 /**
+ * Options for {@link scanWithOptions}.
+ *
+ * Mirrors the Rust core `framing::ScanOptions`.
+ */
+export interface ScanOptions {
+  /**
+   * Enable the meet-in-the-middle walker pair (default `true`).  When
+   * `false`, the scanner walks forward from offset 0 only — still
+   * correct, just without the hop-count halving on multi-message
+   * buffers.
+   */
+  bidirectional?: boolean;
+  /**
+   * Upper bound (in bytes) on the `total_length` a postamble may
+   * advertise.  Anything larger is treated as corruption and the
+   * backward walker yields to the forward walker.  Default `4 GiB`
+   * (`4 * 1024 ** 3`).  Lower this for producers that guarantee
+   * smaller messages to tighten corruption detection.
+   */
+  maxMessageSize?: number;
+}
+
+/**
  * Mask compression methods recognised by the NaN / Inf companion
  * bitmask frame (wire type 9 `NTensorFrame`, see
  * `plans/WIRE_FORMAT.md` §6.5.1).
@@ -378,6 +456,23 @@ export interface EncodeOptions {
 
 /** Options for `decode()` / `decodeObject()`. */
 export interface DecodeOptions {
+  /**
+   * When `true` (the default), decoded payloads are converted to the
+   * host's native byte order regardless of the wire byte order
+   * declared in the object descriptor.  Set to `false` to receive the
+   * bytes in the message's declared wire `byte_order` — useful for
+   * zero-copy forwarding to another consumer that expects the wire
+   * order.
+   *
+   * Note the {@link TypedArray} views returned by `.data()` /
+   * `.dataView()` always interpret bytes in the **host's** native
+   * order, so a non-native payload read back through a typed view
+   * appears byte-swapped; use the raw byte length / an explicit
+   * `DataView` when forwarding in wire order.
+   *
+   * Mirrors the Rust core `DecodeOptions.native_byte_order`.
+   */
+  nativeByteOrder?: boolean;
   /**
    * When `true` (the default), decode writes canonical NaN / ±Inf
    * bit patterns at positions recorded in the frame's mask companion.

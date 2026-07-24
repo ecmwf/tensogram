@@ -14,8 +14,13 @@
  *
  * - {@link init} — one-time WASM initialisation
  * - {@link encode} — encode a `GlobalMetadata` + objects into wire bytes
- * - {@link decode}, {@link decodeMetadata}, {@link decodeObject}, {@link scan} —
- *   whole-buffer decoding with dtype-aware payload views
+ * - {@link decode}, {@link decodeMetadata}, {@link decodeObject}, {@link scan},
+ *   {@link scanWithOptions} — whole-buffer decoding with dtype-aware payload views
+ * - {@link decodeWithMasks} — advanced decode returning raw NaN / Inf masks
+ *   alongside the `0.0`-substituted payloads
+ * - {@link objects}, {@link objectsMetadata} — lazy per-object iterators over
+ *   one message (decode on demand / descriptors without payload decode)
+ * - {@link dataObjectInlineHashes} — read per-object inline integrity digests
  * - {@link decodeStream} — progressive decode over a `ReadableStream<Uint8Array>`
  * - {@link TensogramFile} — random-access file / URL / in-memory reader
  * - {@link getMetaKey}, {@link hasMetaKey}, {@link getMetaKeyAt},
@@ -44,7 +49,9 @@ export type { InitOptions } from './init.js';
 export const WIRE_VERSION = 3;
 
 export { encode } from './encode.js';
-export { decode, decodeMetadata, decodeObject, scan } from './decode.js';
+export { decode, decodeMetadata, decodeObject, scan, scanWithOptions } from './decode.js';
+export { decodeWithMasks } from './decodeMasks.js';
+export { objects, objectsMetadata } from './iter.js';
 export { decodeStream } from './streaming.js';
 export { TensogramFile } from './file.js';
 export {
@@ -73,7 +80,7 @@ export type { AwsSigV4FetchOptions } from './auth/awsSigV4Fetch.js';
 
 // ── Scope C.1 — API parity ────────────────────────────────────────────────
 export { decodeRange } from './range.js';
-export { computeHash } from './hash.js';
+export { computeHash, dataObjectInlineHashes } from './hash.js';
 export type { HashAlgorithm } from './hash.js';
 export { simplePackingComputeParams } from './simplePacking.js';
 export { validate, validateBuffer, validateFile } from './validate.js';
@@ -136,11 +143,15 @@ export type {
   Compression,
   DataObjectDescriptor,
   DecodedFrame,
+  DecodedMaskSet,
+  DecodedMaskedMessage,
+  DecodedMaskedObject,
   DecodedMessage,
   DecodedObject,
   DecodeOptions,
   DecodeRangeOptions,
   DecodeRangeResult,
+  DecodeStreamOptions,
   Dtype,
   EncodeInput,
   EncodeOptions,
@@ -160,6 +171,7 @@ export type {
   OpenFileOptions,
   PreEncodedInput,
   RangePair,
+  ScanOptions,
   SimplePackingParams,
   StreamDecodeError,
   StreamingEncoderOptions,

@@ -266,3 +266,145 @@ describe('Scope C.1 — TensogramFile#append', () => {
     }
   });
 });
+
+/**
+ * BUG-TS regression — `TensogramFile#append` previously forwarded ONLY
+ * `options.hash` to `encode()`, silently dropping every other
+ * `AppendOptions` field (`allowNan`, `allowInf`, `*MaskMethod`,
+ * `smallMaskThresholdBytes`).  These tests prove the full option
+ * surface now reaches `encode()`.
+ *
+ * See `plans/INTERFACE_SYMMETRY.md` §5.4 / §6 (BUG-TS).
+ */
+describe('BUG-TS — TensogramFile#append forwards all AppendOptions (masks)', () => {
+  initOnce();
+
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'tensogram-ts-append-masks-'));
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('a plain append (no mask options) rejects a NaN payload — the precondition', async () => {
+    const path = join(tmp, 'nan-reject.tgm');
+    writeFileSync(path, new Uint8Array(0));
+    const file = await TensogramFile.open(path);
+    try {
+      await expect(
+        file.append(defaultMeta(), [
+          { descriptor: makeDescriptor([3], 'float64'), data: new Float64Array([1, NaN, 3]) },
+        ]),
+      ).rejects.toThrow(/NaN/);
+      // encode() throws before any bytes hit disk.
+      expect(file.messageCount).toBe(0);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('append forwards allowNan — round-trips a NaN a plain append rejects', async () => {
+    const path = join(tmp, 'nan-allow.tgm');
+    writeFileSync(path, new Uint8Array(0));
+    const file = await TensogramFile.open(path);
+    try {
+      await file.append(
+        defaultMeta(),
+        [{ descriptor: makeDescriptor([5], 'float64'), data: new Float64Array([1, NaN, 3, NaN, 5]) }],
+        { allowNan: true, smallMaskThresholdBytes: 0 },
+      );
+      expect(file.messageCount).toBe(1);
+      const m = await file.message(0);
+      const out = m.objects[0].data() as Float64Array;
+      expect(out[0]).toBe(1);
+      expect(Number.isNaN(out[1])).toBe(true);
+      expect(out[2]).toBe(3);
+      expect(Number.isNaN(out[3])).toBe(true);
+      expect(out[4]).toBe(5);
+      m.close();
+    } finally {
+      file.close();
+    }
+  });
+
+  it('append forwards allowInf — restores +Inf and -Inf across a reopen', async () => {
+    const path = join(tmp, 'inf-allow.tgm');
+    writeFileSync(path, new Uint8Array(0));
+    const writer = await TensogramFile.open(path);
+    try {
+      await writer.append(
+        defaultMeta(),
+        [{ descriptor: makeDescriptor([4], 'float32'), data: new Float32Array([1, Infinity, -Infinity, 2]) }],
+        { allowInf: true, smallMaskThresholdBytes: 0 },
+      );
+    } finally {
+      writer.close();
+    }
+
+    const reader = await TensogramFile.open(path);
+    try {
+      const m = await reader.message(0);
+      const out = m.objects[0].data() as Float32Array;
+      expect(out[0]).toBe(1);
+      expect(out[1]).toBe(Infinity);
+      expect(out[2]).toBe(-Infinity);
+      expect(out[3]).toBe(2);
+      m.close();
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('append forwards nanMaskMethod — an unsupported method (zstd) surfaces the encode error', async () => {
+    // This is the sharpest proof the option is forwarded: with the BUG
+    // (only `hash` forwarded) `nanMaskMethod` was dropped and the
+    // append silently succeeded with the default 'roaring' method.
+    // The fix forwards it, so the WASM feature-gate rejects zstd —
+    // meaning the option genuinely reached encode().
+    const path = join(tmp, 'nan-zstd.tgm');
+    writeFileSync(path, new Uint8Array(0));
+    const file = await TensogramFile.open(path);
+    try {
+      await expect(
+        file.append(
+          defaultMeta(),
+          [{ descriptor: makeDescriptor([3], 'float64'), data: new Float64Array([NaN, 1, 2]) }],
+          { allowNan: true, nanMaskMethod: 'zstd', smallMaskThresholdBytes: 0 },
+        ),
+      ).rejects.toThrow(/zstd/i);
+      expect(file.messageCount).toBe(0);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('append honours a supported nanMaskMethod (lz4) end-to-end', async () => {
+    const path = join(tmp, 'nan-lz4.tgm');
+    writeFileSync(path, new Uint8Array(0));
+    const file = await TensogramFile.open(path);
+    try {
+      const values = new Float64Array(128);
+      for (let i = 0; i < 128; i++) values[i] = i;
+      values[10] = NaN;
+      values[50] = NaN;
+      values[100] = NaN;
+      await file.append(
+        defaultMeta(),
+        [{ descriptor: makeDescriptor([128], 'float64'), data: values }],
+        { allowNan: true, nanMaskMethod: 'lz4', smallMaskThresholdBytes: 0 },
+      );
+      expect(file.messageCount).toBe(1);
+      const m = await file.message(0);
+      const out = m.objects[0].data() as Float64Array;
+      expect(Number.isNaN(out[10])).toBe(true);
+      expect(Number.isNaN(out[50])).toBe(true);
+      expect(Number.isNaN(out[100])).toBe(true);
+      expect(out[11]).toBe(11);
+      expect(out[99]).toBe(99);
+      m.close();
+    } finally {
+      file.close();
+    }
+  });
+});

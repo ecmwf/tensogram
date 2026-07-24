@@ -22,6 +22,7 @@ import type {
   DecodeOptions,
   GlobalMetadata,
   MessagePosition,
+  ScanOptions,
 } from './types.js';
 
 /**
@@ -46,6 +47,7 @@ export function decode(buf: Uint8Array, opts?: DecodeOptions): DecodedMessage {
       buf,
       opts?.restoreNonFinite ?? true,
       opts?.verifyHash ?? false,
+      opts?.nativeByteOrder ?? true,
     ) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);
@@ -80,6 +82,7 @@ export function decodeObject(
       index,
       opts?.restoreNonFinite ?? true,
       opts?.verifyHash ?? false,
+      opts?.nativeByteOrder ?? true,
     ) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);
@@ -97,6 +100,43 @@ export function scan(buf: Uint8Array): MessagePosition[] {
   const wbg = getWbg();
   // wbg.scan returns a JS array of [offset, length] pairs.
   const raw = rethrowTyped(() => wbg.scan(buf) as Array<[number, number]>);
+  return raw.map(([offset, length]) => ({ offset, length }));
+}
+
+/**
+ * Scan a buffer for concatenated Tensogram messages with explicit
+ * options.
+ *
+ * Mirrors the Rust core `tensogram::scan_with_options`.  {@link scan} is
+ * exactly this with the default options (`bidirectional: true`).  Set
+ * `bidirectional: false` to force a forward-only walk, or lower
+ * `maxMessageSize` to tighten corruption detection for producers that
+ * guarantee smaller messages.
+ *
+ * @param buf  - Buffer potentially containing multiple .tgm messages.
+ * @param opts - See {@link ScanOptions}.
+ * @throws {InvalidArgumentError} if `buf` is not a `Uint8Array` or
+ *   `opts.maxMessageSize` is negative / non-finite.
+ */
+export function scanWithOptions(buf: Uint8Array, opts?: ScanOptions): MessagePosition[] {
+  assertUint8Array(buf, 'buf');
+  if (
+    opts?.maxMessageSize !== undefined &&
+    (!Number.isFinite(opts.maxMessageSize) || opts.maxMessageSize < 0)
+  ) {
+    throw new InvalidArgumentError(
+      `maxMessageSize must be a non-negative finite number, got ${String(opts.maxMessageSize)}`,
+    );
+  }
+  const wbg = getWbg();
+  const raw = rethrowTyped(
+    () =>
+      wbg.scan_with_options(
+        buf,
+        opts?.bidirectional,
+        opts?.maxMessageSize,
+      ) as Array<[number, number]>,
+  );
   return raw.map(([offset, length]) => ({ offset, length }));
 }
 

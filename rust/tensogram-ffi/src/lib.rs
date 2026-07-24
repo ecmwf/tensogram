@@ -52,12 +52,15 @@ pub mod async_streaming;
 
 use tensogram::encode::MaskMethod;
 use tensogram::validate::{
-    ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
+    ValidateOptions, ValidationLevel, validate_buffer, validate_file as core_validate_file,
+    validate_message,
 };
 use tensogram::{
-    DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, MetaType, MetaValue,
-    RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode, decode_metadata,
-    decode_object, decode_range, encode, encode_pre_encoded, parse_hash_name, scan,
+    DataObjectDescriptor, DecodeOptions, DecodedMaskSet, EncodeOptions, GlobalMetadata, MetaType,
+    MetaValue, RESERVED_KEY, ScanOptions, StreamingEncoder, TensogramError, TensogramFile,
+    compute_common, decode, decode_metadata, decode_object, decode_range, decode_with_masks,
+    encode, encode_pre_encoded, parse_hash_name, scan, scan_file, scan_file_with_options,
+    scan_with_options, verify_canonical_cbor,
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +122,9 @@ pub enum TgmError {
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
+    // Record the offending object index (if any) alongside the code, so
+    // `tgm_last_error_object_index` can report it for the current last error.
+    LAST_ERROR_OBJECT_INDEX.with(|c| c.set(error_object_index(e)));
     match e {
         TensogramError::Framing(_) => TgmError::Framing,
         TensogramError::Metadata(_) => TgmError::Metadata,
@@ -140,15 +146,32 @@ fn to_error_code(e: &TensogramError) -> TgmError {
     }
 }
 
-// Thread-local storage for the last error message.
+// Thread-local storage for the last error message and the object index it
+// refers to (e.g. the object whose inline hash was missing or mismatched), or
+// -1 when the last error carries no object index.
 thread_local! {
     static LAST_ERROR: std::cell::RefCell<Option<CString>> = const { std::cell::RefCell::new(None) };
+    static LAST_ERROR_OBJECT_INDEX: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) };
+}
+
+/// The 0-based object index carried by an error, or -1 if the variant has none
+/// (or the index is unknown / out of `i64` range).
+fn error_object_index(e: &TensogramError) -> i64 {
+    let idx: Option<usize> = match e {
+        TensogramError::HashMismatch { object_index, .. } => *object_index,
+        TensogramError::MissingHash { object_index, .. } => Some(*object_index),
+        _ => None,
+    };
+    idx.and_then(|i| i64::try_from(i).ok()).unwrap_or(-1)
 }
 
 fn set_last_error(msg: &str) {
     LAST_ERROR.with(|cell| {
         *cell.borrow_mut() = CString::new(msg).ok();
     });
+    // A plain-string error carries no object index; clear it. Typed-error sites
+    // call `to_error_code` immediately after, which records the real index.
+    LAST_ERROR_OBJECT_INDEX.with(|c| c.set(-1));
 }
 
 /// Returns a pointer to the last error message, or NULL if no error.
@@ -161,6 +184,15 @@ pub extern "C" fn tgm_last_error() -> *const c_char {
             .map(|s| s.as_ptr())
             .unwrap_or(ptr::null())
     })
+}
+
+/// Returns the 0-based object index the last error refers to — e.g. the object
+/// whose inline hash was missing (`TGM_ERROR_MISSING_HASH`) or mismatched
+/// (`TGM_ERROR_HASH_MISMATCH`) — or `-1` if there is no last error or it carries
+/// no object index. Valid until the next FFI call on the same thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_last_error_object_index() -> i64 {
+    LAST_ERROR_OBJECT_INDEX.with(std::cell::Cell::get)
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +347,13 @@ pub struct TgmMessage {
     hash_type_strings: Vec<Option<CString>>,
     /// Cached CStrings for hash value accessor returns (None when no hash).
     hash_value_strings: Vec<Option<CString>>,
+    /// Per-object NaN / ±Inf bitmasks, populated only by
+    /// [`tgm_decode_with_masks`].  Empty (`Vec::new()`) for every other
+    /// decode entry point — the ordinary decode paths apply
+    /// restoration in-place and never surface the raw masks.  When
+    /// present, parallel to `objects`; each entry's three kinds are
+    /// exposed through [`tgm_object_mask`] / [`tgm_object_has_masks`].
+    object_masks: Vec<DecodedMaskSet>,
 }
 
 /// Metadata-only handle (no decoded payloads).
@@ -360,6 +399,43 @@ pub struct TgmScanEntry {
 /// Opaque handle for scan results.
 pub struct TgmScanResult {
     entries: Vec<TgmScanEntry>,
+}
+
+/// Options controlling [`tgm_scan_with_options`] and
+/// [`tgm_scan_file_with_options`].  Mirrors [`tensogram::ScanOptions`]
+/// as a flat, C-visible POD so callers can build it on the stack.
+///
+/// Pass a `NULL` `TgmScanOptions*` to any `*_with_options` scanner to
+/// use the library defaults (`bidirectional = true`,
+/// `max_message_size = 4 GiB`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TgmScanOptions {
+    /// Enable the meet-in-the-middle (bidirectional) walk.  `false`
+    /// forces the pure forward scan (still correct, no hop halving).
+    pub bidirectional: bool,
+    /// Upper bound on the `total_length` a postamble may advertise;
+    /// anything larger is treated as corruption and the backward
+    /// walker yields to the forward walker.  `0` selects the library
+    /// default (4 GiB).
+    pub max_message_size: u64,
+}
+
+/// Which non-finite bitmask kind to fetch from a mask-aware decode.
+///
+/// Passed to [`tgm_object_mask`].  Mirrors the three slots of
+/// [`tensogram::DecodedMaskSet`] (`nan` / `pos_inf` / `neg_inf`).
+/// Any out-of-range integer value is rejected with
+/// [`TgmError::InvalidArg`] by the accessor.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmMaskKind {
+    /// Positions that held `NaN` at encode time.
+    Nan = 0,
+    /// Positions that held `+∞` at encode time.
+    PosInf = 1,
+    /// Positions that held `−∞` at encode time.
+    NegInf = 2,
 }
 
 // ---------------------------------------------------------------------------
@@ -999,6 +1075,7 @@ pub extern "C" fn tgm_decode_with_options(
                 encoding_strings: caches.encoding_strings,
                 hash_type_strings: caches.hash_type_strings,
                 hash_value_strings: caches.hash_value_strings,
+                object_masks: Vec::new(),
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -1311,6 +1388,88 @@ pub extern "C" fn tgm_decode(
                 encoding_strings: caches.encoding_strings,
                 hash_type_strings: caches.hash_type_strings,
                 hash_value_strings: caches.hash_value_strings,
+                object_masks: Vec::new(),
+            });
+            unsafe {
+                *out = Box::into_raw(msg);
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Decode a message AND retain the raw per-object NaN / ±Inf bitmasks.
+///
+/// Binds [`tensogram::decode_with_masks`].  Behaves like [`tgm_decode`]
+/// for every existing accessor (`tgm_object_data`, `tgm_object_shape`,
+/// metadata, …) with one deliberate difference: restoration is **not**
+/// applied, so each object's payload holds the canonical `0.0` at every
+/// position that was non-finite at encode time.  The original NaN /
+/// `+∞` / `−∞` positions are recoverable through the companion
+/// accessors:
+///
+/// - [`tgm_object_has_masks`] — `true` when the object carried at least
+///   one mask kind.
+/// - [`tgm_object_mask`] — fetch one kind's boolean mask as a
+///   `tgm_bytes_t` (see that function for the byte layout).
+///
+/// This is the advanced entry point for callers that want to map
+/// missing values to their own sentinel, aggregate missing-count
+/// statistics, or apply the masks lazily.  Callers that just want the
+/// canonical NaN / Inf bytes restored in place should use
+/// [`tgm_decode`] (or [`tgm_decode_with_options`]).
+///
+/// On success, fills `out` with a `TgmMessage` handle — free it with
+/// `tgm_message_free`.  See `docs/src/guide/nan-inf-handling.md` and
+/// `plans/WIRE_FORMAT.md` §6.5.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_decode_with_masks(
+    buf: *const u8,
+    buf_len: usize,
+    native_byte_order: i32,
+    threads: u32,
+    verify_hash: i32,
+    out: *mut *mut TgmMessage,
+) -> TgmError {
+    if buf.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let data = unsafe { slice::from_raw_parts(buf, buf_len) };
+    let options = DecodeOptions {
+        native_byte_order: native_byte_order != 0,
+        threads,
+        verify_hash: verify_hash != 0,
+        ..Default::default()
+    };
+
+    match decode_with_masks(data, &options) {
+        Ok((global_metadata, decoded)) => {
+            let mut objects = Vec::with_capacity(decoded.len());
+            let mut object_masks = Vec::with_capacity(decoded.len());
+            for obj in decoded {
+                objects.push((obj.descriptor, obj.payload));
+                object_masks.push(obj.masks);
+            }
+            let inline_hashes = extract_inline_hashes(data);
+            let caches = build_message_caches(&objects, &inline_hashes);
+            let msg = Box::new(TgmMessage {
+                global_metadata,
+                objects,
+                dtype_strings: caches.dtype_strings,
+                type_strings: caches.type_strings,
+                byte_order_strings: caches.byte_order_strings,
+                filter_strings: caches.filter_strings,
+                compression_strings: caches.compression_strings,
+                encoding_strings: caches.encoding_strings,
+                hash_type_strings: caches.hash_type_strings,
+                hash_value_strings: caches.hash_value_strings,
+                object_masks,
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -1400,6 +1559,7 @@ pub extern "C" fn tgm_decode_object(
                 encoding_strings: caches.encoding_strings,
                 hash_type_strings: caches.hash_type_strings,
                 hash_value_strings: caches.hash_value_strings,
+                object_masks: Vec::new(),
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -1599,6 +1759,214 @@ pub extern "C" fn tgm_scan_free(result: *mut TgmScanResult) {
     if !result.is_null() {
         unsafe {
             drop(Box::from_raw(result));
+        }
+    }
+}
+
+/// Box a `TgmScanResult` from raw `(offset, length)` pairs and hand
+/// ownership to `out`.  Shared by every buffer / file scanner.
+///
+/// # Safety
+///
+/// `out` must be a valid, non-null `*mut *mut TgmScanResult`.
+unsafe fn emit_scan_result(offsets: Vec<(usize, usize)>, out: *mut *mut TgmScanResult) {
+    let entries: Vec<TgmScanEntry> = offsets
+        .into_iter()
+        .map(|(offset, length)| TgmScanEntry { offset, length })
+        .collect();
+    let result = Box::new(TgmScanResult { entries });
+    unsafe {
+        *out = Box::into_raw(result);
+    }
+}
+
+/// Resolve a nullable [`TgmScanOptions`] pointer into a core
+/// [`ScanOptions`].  NULL selects the library defaults; a
+/// `max_message_size` of 0 also falls back to the default cap (4 GiB).
+///
+/// # Safety
+///
+/// `opts` must be NULL or point to a valid `TgmScanOptions`.
+unsafe fn scan_options_from_ptr(opts: *const TgmScanOptions) -> ScanOptions {
+    let default = ScanOptions::default();
+    if opts.is_null() {
+        return default;
+    }
+    let opts = unsafe { &*opts };
+    ScanOptions {
+        bidirectional: opts.bidirectional,
+        max_message_size: if opts.max_message_size == 0 {
+            default.max_message_size
+        } else {
+            opts.max_message_size
+        },
+    }
+}
+
+/// Open a file path for the scanners, checking for null / non-UTF-8
+/// and mapping I/O failure to the right FFI error + last-error string.
+fn open_scan_file(path: *const c_char) -> Result<std::fs::File, TgmError> {
+    if path.is_null() {
+        set_last_error("null argument");
+        return Err(TgmError::InvalidArg);
+    }
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in path: {e}"));
+            return Err(TgmError::InvalidArg);
+        }
+    };
+    std::fs::File::open(path_str).map_err(|e| {
+        set_last_error(&format!("failed to open {path_str}: {e}"));
+        TgmError::Io
+    })
+}
+
+/// Scan a buffer for message boundaries with explicit options.
+///
+/// Like [`tgm_scan`] but takes a nullable [`TgmScanOptions`] pointer
+/// (`NULL` = library defaults: bidirectional walk, 4 GiB cap).
+/// Returns a `TgmScanResult` handle — free it with `tgm_scan_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_scan_with_options(
+    buf: *const u8,
+    buf_len: usize,
+    opts: *const TgmScanOptions,
+    out: *mut *mut TgmScanResult,
+) -> TgmError {
+    if buf.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let data = unsafe { slice::from_raw_parts(buf, buf_len) };
+    let options = unsafe { scan_options_from_ptr(opts) };
+    unsafe { emit_scan_result(scan_with_options(data, &options), out) };
+    TgmError::Ok
+}
+
+/// Scan a `.tgm` file for message boundaries using streaming
+/// seek-and-read I/O — the whole file is never loaded into memory.
+///
+/// `path`: null-terminated UTF-8 path to the file.
+/// `out`: receives a `TgmScanResult` handle; free with `tgm_scan_free`.
+///
+/// Returns `TGM_ERROR_IO` if the file cannot be opened, seeked, or
+/// read; `TGM_ERROR_INVALID_ARG` for null pointers or a non-UTF-8 path;
+/// or the mapped framing error on a structurally impossible file size.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_scan_file(path: *const c_char, out: *mut *mut TgmScanResult) -> TgmError {
+    if out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let mut file = match open_scan_file(path) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    match scan_file(&mut file) {
+        Ok(offsets) => {
+            unsafe { emit_scan_result(offsets, out) };
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Scan a `.tgm` file for message boundaries with explicit options.
+///
+/// Like [`tgm_scan_file`] but takes a nullable [`TgmScanOptions`]
+/// pointer (`NULL` = library defaults).
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_scan_file_with_options(
+    path: *const c_char,
+    opts: *const TgmScanOptions,
+    out: *mut *mut TgmScanResult,
+) -> TgmError {
+    if out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let mut file = match open_scan_file(path) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let options = unsafe { scan_options_from_ptr(opts) };
+    match scan_file_with_options(&mut file, &options) {
+        Ok(offsets) => {
+            unsafe { emit_scan_result(offsets, out) };
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Extract every data-object frame's inline hash slot from a single
+/// wire message, without a full CBOR decode.
+///
+/// Binds [`tensogram::data_object_inline_hashes`].  `buf` must hold a
+/// **single** message; for a multi-message buffer, locate boundaries
+/// with [`tgm_scan`] first and pass each message slice.
+///
+/// `out` receives UTF-8 **JSON array** bytes, one element per data
+/// object in frame-emission order: a 16-char lowercase-hex string for
+/// a populated slot (the xxh3-64 digest, big-endian), or JSON `null`
+/// when the slot is zero (message-wide `HASHES_PRESENT = 0`, or the
+/// frame was not hashed).  Example: `["1122334455667788",null]`.
+/// Not NUL-terminated — use `out->len` for the byte count.  Free with
+/// `tgm_bytes_free`.
+///
+/// Returns `TGM_ERROR_INVALID_ARG` for null pointers, the mapped
+/// framing error if `buf` is not a parseable message, or
+/// `TGM_ERROR_ENCODING` if JSON serialization fails.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_data_object_inline_hashes(
+    buf: *const u8,
+    buf_len: usize,
+    out: *mut TgmBytes,
+) -> TgmError {
+    if buf.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let data = unsafe { slice::from_raw_parts(buf, buf_len) };
+    let hashes = match tensogram::framing::data_object_inline_hashes(data) {
+        Ok(h) => h,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return to_error_code(&e);
+        }
+    };
+    let json: Vec<serde_json::Value> = hashes
+        .iter()
+        .map(|slot| match slot {
+            Some(digest) => serde_json::Value::String(format!("{digest:016x}")),
+            None => serde_json::Value::Null,
+        })
+        .collect();
+
+    match serde_json::to_vec(&json) {
+        Ok(json_bytes) => {
+            let mut json_bytes = json_bytes.into_boxed_slice().into_vec();
+            let result = TgmBytes {
+                data: json_bytes.as_mut_ptr(),
+                len: json_bytes.len(),
+            };
+            std::mem::forget(json_bytes);
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&format!("JSON serialization failed: {e}"));
+            TgmError::Encoding
         }
     }
 }
@@ -1843,6 +2211,95 @@ pub extern "C" fn tgm_object_hash_value(msg: *const TgmMessage, index: usize) ->
             .map(|s| s.as_ptr())
             .unwrap_or(ptr::null())
     }
+}
+
+/// Returns `true` when the object at `obj_index` carries at least one
+/// non-finite bitmask (NaN, `+∞`, or `−∞`).
+///
+/// Only ever `true` for a handle produced by [`tgm_decode_with_masks`];
+/// every other decode path applies restoration in place and retains no
+/// masks, so this returns `false` for their handles.  Returns `false`
+/// for a null handle or an out-of-range `obj_index`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_object_has_masks(msg: *const TgmMessage, obj_index: usize) -> bool {
+    unsafe {
+        as_msg(msg)
+            .and_then(|m| m.object_masks.get(obj_index))
+            .is_some_and(|set| !set.is_empty())
+    }
+}
+
+/// Fetch one non-finite bitmask kind for a mask-aware decoded object.
+///
+/// Returns the mask as an owned `tgm_bytes_t` with **one byte per
+/// tensor element** in row-major (descriptor-shape) order: `0x01` where
+/// the element held the requested non-finite kind at encode time,
+/// `0x00` otherwise.  `out->len` equals the element count (the shape
+/// product).  For complex dtypes a single byte covers BOTH the real and
+/// imaginary components (see `plans/WIRE_FORMAT.md` §6.5.2).  Free the
+/// returned buffer with `tgm_bytes_free`.
+///
+/// Returns an **empty** buffer (`{ data = NULL, len = 0 }`) — which
+/// `tgm_bytes_free` accepts as a no-op — in two non-error situations:
+/// the object carried no mask of that `kind`, or the handle was not
+/// produced by [`tgm_decode_with_masks`].  Distinguish "absent" from an
+/// argument error via [`tgm_last_error`]: a null handle, out-of-range
+/// `obj_index`, or an unknown `kind` set the last error and also return
+/// an empty buffer; a genuinely absent mask does not touch it.
+///
+/// `kind` is a [`TgmMaskKind`] (`TGM_MASK_KIND_NAN` / `_POS_INF` /
+/// `_NEG_INF`).
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_object_mask(
+    msg: *const TgmMessage,
+    obj_index: usize,
+    kind: TgmMaskKind,
+) -> TgmBytes {
+    let empty = TgmBytes {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+
+    let Some(m) = (unsafe { as_msg(msg) }) else {
+        set_last_error("null message handle");
+        return empty;
+    };
+    let Some(set) = m.object_masks.get(obj_index) else {
+        set_last_error(&format!(
+            "object index {} out of range (num_objects={})",
+            obj_index,
+            m.objects.len()
+        ));
+        return empty;
+    };
+
+    let slot = match kind {
+        TgmMaskKind::Nan => &set.nan,
+        TgmMaskKind::PosInf => &set.pos_inf,
+        TgmMaskKind::NegInf => &set.neg_inf,
+    };
+
+    // Absent kind → clean empty buffer (not an error; do not touch the
+    // last-error slot so callers can tell it apart from a bad argument).
+    let Some(bits) = slot else {
+        return empty;
+    };
+
+    // `into_boxed_slice().into_vec()` guarantees capacity == len so the
+    // matching `tgm_bytes_free` (`Vec::from_raw_parts(_, len, len)`) is
+    // sound even if `collect` over-allocated.
+    let mut bytes: Vec<u8> = bits
+        .iter()
+        .map(|&b| u8::from(b))
+        .collect::<Vec<u8>>()
+        .into_boxed_slice()
+        .into_vec();
+    let result = TgmBytes {
+        data: bytes.as_mut_ptr(),
+        len: bytes.len(),
+    };
+    std::mem::forget(bytes);
+    result
 }
 
 /// Free a decoded message handle.
@@ -2787,6 +3244,7 @@ pub extern "C" fn tgm_file_decode_message(
                 encoding_strings: caches.encoding_strings,
                 hash_type_strings: caches.hash_type_strings,
                 hash_value_strings: caches.hash_value_strings,
+                object_masks: Vec::new(),
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -3173,6 +3631,102 @@ pub extern "C" fn tgm_simple_packing_compute_params(
 }
 
 // ---------------------------------------------------------------------------
+// Metadata utilities: common-key extraction + canonical CBOR check
+// ---------------------------------------------------------------------------
+
+/// Extract the metadata keys common to every object of a message.
+///
+/// Binds [`tensogram::compute_common`].  The input is a **metadata
+/// handle** (`tgm_metadata_t*`, as returned by [`tgm_decode_metadata`]
+/// or [`tgm_message_metadata`]) — chosen over a raw wire buffer because
+/// `compute_common` operates purely on the already-parsed per-object
+/// `base` metadata array, so a handle avoids a redundant re-decode and
+/// lets callers reuse a metadata handle they already hold.
+///
+/// `out` receives UTF-8 **JSON object** bytes of the form:
+///
+/// ```json
+/// { "common": { …keys identical across ALL objects… },
+///   "remaining": [ { …object 0's varying keys… }, … ] }
+/// ```
+///
+/// `common` holds every key present with an identical value in all
+/// objects; `remaining[i]` holds object `i`'s keys that are not common.
+/// The library-managed `_reserved_` key is excluded from both (it
+/// varies per object).  With zero objects both are empty.  Not
+/// NUL-terminated — use `out->len`.  Free with `tgm_bytes_free`.
+///
+/// Returns `TGM_ERROR_INVALID_ARG` for null pointers, or
+/// `TGM_ERROR_ENCODING` if JSON serialization fails.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_compute_common(meta: *const TgmMetadata, out: *mut TgmBytes) -> TgmError {
+    if meta.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let m = unsafe { &*meta };
+    let (common, remaining) = compute_common(&m.global_metadata.base);
+
+    let report = serde_json::json!({
+        "common": cbor_map_to_json(&common),
+        "remaining": remaining
+            .iter()
+            .map(cbor_map_to_json)
+            .collect::<Vec<serde_json::Value>>(),
+    });
+
+    match serde_json::to_vec(&report) {
+        Ok(json_bytes) => {
+            let mut json_bytes = json_bytes.into_boxed_slice().into_vec();
+            let result = TgmBytes {
+                data: json_bytes.as_mut_ptr(),
+                len: json_bytes.len(),
+            };
+            std::mem::forget(json_bytes);
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&format!("JSON serialization failed: {e}"));
+            TgmError::Encoding
+        }
+    }
+}
+
+/// Verify that a CBOR byte string is in RFC 8949 §4.2.1 canonical form
+/// (all map keys sorted length-first, then lexicographically by their
+/// encoded bytes).
+///
+/// Binds [`tensogram::verify_canonical_cbor`].  Returns `true` when the
+/// bytes parse AND are canonical.  Returns `false` — and records the
+/// reason in [`tgm_last_error`] — when the bytes are non-canonical,
+/// fail to parse as CBOR, or when `cbor` is NULL with a non-zero
+/// `cbor_len`.  An empty input (`cbor_len == 0`) is not valid CBOR and
+/// therefore returns `false`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_verify_canonical_cbor(cbor: *const u8, cbor_len: usize) -> bool {
+    if cbor.is_null() && cbor_len > 0 {
+        set_last_error("null cbor with non-zero cbor_len");
+        return false;
+    }
+    let data = if cbor.is_null() {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(cbor, cbor_len) }
+    };
+    match verify_canonical_cbor(data) {
+        Ok(()) => true,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            false
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Iterator API
 // ---------------------------------------------------------------------------
 
@@ -3434,6 +3988,7 @@ pub extern "C" fn tgm_object_iter_next(
                 encoding_strings: caches.encoding_strings,
                 hash_type_strings: caches.hash_type_strings,
                 hash_value_strings: caches.hash_value_strings,
+                object_masks: Vec::new(),
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -4465,6 +5020,555 @@ mod tests {
     }
 
     // =====================================================================
+    // Wave B — C ABI widening: validate_buffer, compute_common,
+    // verify_canonical_cbor, scan family, decode_with_masks + masks.
+    // =====================================================================
+
+    /// Read a `TgmBytes` produced by an FFI call into an owned `Vec<u8>`
+    /// and free it.  Panics if the buffer is null / empty.
+    fn take_bytes(out: super::TgmBytes) -> Vec<u8> {
+        assert!(!out.data.is_null(), "expected non-null bytes");
+        assert!(out.len > 0, "expected non-empty bytes");
+        let v = unsafe { slice::from_raw_parts(out.data, out.len) }.to_vec();
+        super::tgm_bytes_free(out);
+        v
+    }
+
+    fn zeroed_bytes() -> super::TgmBytes {
+        super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        }
+    }
+
+    // ── tgm_validate_buffer ──────────────────────────────────────────
+
+    #[test]
+    fn tgm_validate_buffer_single_message() {
+        let msg = encode_test_message();
+        let mut out = zeroed_bytes();
+        let err = super::tgm_validate_buffer(msg.as_ptr(), msg.len(), ptr::null(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json: serde_json::Value = serde_json::from_slice(&take_bytes(out)).unwrap();
+        assert_eq!(json["file_issues"].as_array().unwrap().len(), 0);
+        assert_eq!(json["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(json["messages"][0]["object_count"], 1);
+    }
+
+    #[test]
+    fn tgm_validate_buffer_multi_message() {
+        let msg1 = encode_test_message();
+        let msg2 = encode_test_message();
+        let mut concat = msg1.clone();
+        concat.extend_from_slice(&msg2);
+
+        let mut out = zeroed_bytes();
+        let err =
+            super::tgm_validate_buffer(concat.as_ptr(), concat.len(), ptr::null(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json: serde_json::Value = serde_json::from_slice(&take_bytes(out)).unwrap();
+        assert_eq!(json["file_issues"].as_array().unwrap().len(), 0);
+        assert_eq!(json["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tgm_validate_buffer_trailing_junk_flagged() {
+        let mut buf = encode_test_message();
+        buf.extend_from_slice(b"trailing garbage bytes");
+        let mut out = zeroed_bytes();
+        let err = super::tgm_validate_buffer(buf.as_ptr(), buf.len(), ptr::null(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json: serde_json::Value = serde_json::from_slice(&take_bytes(out)).unwrap();
+        // The message is still valid, but the trailing bytes are a
+        // file-level issue.
+        assert_eq!(json["messages"].as_array().unwrap().len(), 1);
+        assert!(!json["file_issues"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tgm_validate_buffer_empty() {
+        let mut out = zeroed_bytes();
+        let err = super::tgm_validate_buffer(ptr::null(), 0, ptr::null(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json: serde_json::Value = serde_json::from_slice(&take_bytes(out)).unwrap();
+        assert_eq!(json["messages"].as_array().unwrap().len(), 0);
+        assert_eq!(json["file_issues"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn tgm_validate_buffer_null_out() {
+        let msg = encode_test_message();
+        let err =
+            super::tgm_validate_buffer(msg.as_ptr(), msg.len(), ptr::null(), 0, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn tgm_validate_buffer_null_buf_nonzero_len() {
+        let mut out = zeroed_bytes();
+        let err = super::tgm_validate_buffer(ptr::null(), 42, ptr::null(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn tgm_validate_buffer_invalid_level() {
+        let msg = encode_test_message();
+        let level = CString::new("bogus").unwrap();
+        let mut out = zeroed_bytes();
+        let err = super::tgm_validate_buffer(msg.as_ptr(), msg.len(), level.as_ptr(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── tgm_compute_common / tgm_verify_canonical_cbor ───────────────
+
+    fn text_entry(pairs: &[(&str, &str)]) -> BTreeMap<String, ciborium::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), ciborium::Value::Text((*v).to_string())))
+            .collect()
+    }
+
+    fn meta_handle(base: Vec<BTreeMap<String, ciborium::Value>>) -> *mut super::TgmMetadata {
+        Box::into_raw(Box::new(super::TgmMetadata {
+            global_metadata: make_meta(base, BTreeMap::new()),
+            cache: std::cell::RefCell::new(BTreeMap::new()),
+            value_arena: std::cell::RefCell::new(Vec::new()),
+        }))
+    }
+
+    #[test]
+    fn tgm_compute_common_roundtrip() {
+        // Two objects sharing "centre" but differing on "param".
+        let base = vec![
+            text_entry(&[("centre", "ecmwf"), ("param", "2t")]),
+            text_entry(&[("centre", "ecmwf"), ("param", "10u")]),
+        ];
+        let handle = meta_handle(base);
+        let mut out = zeroed_bytes();
+        let err = super::tgm_compute_common(handle, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json: serde_json::Value = serde_json::from_slice(&take_bytes(out)).unwrap();
+
+        assert_eq!(json["common"]["centre"], "ecmwf");
+        assert!(json["common"].get("param").is_none());
+        let remaining = json["remaining"].as_array().unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0]["param"], "2t");
+        assert_eq!(remaining[1]["param"], "10u");
+        assert!(remaining[0].get("centre").is_none());
+
+        super::tgm_metadata_free(handle);
+    }
+
+    #[test]
+    fn tgm_compute_common_empty_base() {
+        let handle = meta_handle(vec![]);
+        let mut out = zeroed_bytes();
+        let err = super::tgm_compute_common(handle, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json: serde_json::Value = serde_json::from_slice(&take_bytes(out)).unwrap();
+        assert_eq!(json["common"].as_object().unwrap().len(), 0);
+        assert_eq!(json["remaining"].as_array().unwrap().len(), 0);
+        super::tgm_metadata_free(handle);
+    }
+
+    #[test]
+    fn tgm_compute_common_null_args() {
+        let mut out = zeroed_bytes();
+        assert!(matches!(
+            super::tgm_compute_common(ptr::null(), &mut out),
+            super::TgmError::InvalidArg
+        ));
+        let handle = meta_handle(vec![]);
+        assert!(matches!(
+            super::tgm_compute_common(handle, ptr::null_mut()),
+            super::TgmError::InvalidArg
+        ));
+        super::tgm_metadata_free(handle);
+    }
+
+    fn cbor_bytes(value: &ciborium::Value) -> Vec<u8> {
+        let mut buf = Vec::new();
+        ciborium::into_writer(value, &mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn tgm_verify_canonical_cbor_scalar_true() {
+        let bytes = cbor_bytes(&ciborium::Value::Integer(42.into()));
+        assert!(super::tgm_verify_canonical_cbor(
+            bytes.as_ptr(),
+            bytes.len()
+        ));
+    }
+
+    #[test]
+    fn tgm_verify_canonical_cbor_sorted_map_true() {
+        // Keys "a" (len 1) then "bb" (len 2): canonical is length-first.
+        let map = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("a".into()),
+                ciborium::Value::Integer(1.into()),
+            ),
+            (
+                ciborium::Value::Text("bb".into()),
+                ciborium::Value::Integer(2.into()),
+            ),
+        ]);
+        let bytes = cbor_bytes(&map);
+        assert!(super::tgm_verify_canonical_cbor(
+            bytes.as_ptr(),
+            bytes.len()
+        ));
+    }
+
+    #[test]
+    fn tgm_verify_canonical_cbor_unsorted_map_false() {
+        // Longer key first violates length-first canonical ordering.
+        let map = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("bb".into()),
+                ciborium::Value::Integer(2.into()),
+            ),
+            (
+                ciborium::Value::Text("a".into()),
+                ciborium::Value::Integer(1.into()),
+            ),
+        ]);
+        let bytes = cbor_bytes(&map);
+        assert!(!super::tgm_verify_canonical_cbor(
+            bytes.as_ptr(),
+            bytes.len()
+        ));
+        assert!(!super::tgm_last_error().is_null());
+    }
+
+    #[test]
+    fn tgm_verify_canonical_cbor_garbage_false() {
+        let garbage = [0xffu8, 0xfe, 0xfd, 0xfc];
+        assert!(!super::tgm_verify_canonical_cbor(
+            garbage.as_ptr(),
+            garbage.len()
+        ));
+    }
+
+    #[test]
+    fn tgm_verify_canonical_cbor_null_and_empty_false() {
+        // Null with non-zero len is an arg error → false.
+        assert!(!super::tgm_verify_canonical_cbor(ptr::null(), 8));
+        // Empty is not valid CBOR → false.
+        assert!(!super::tgm_verify_canonical_cbor(ptr::null(), 0));
+    }
+
+    // ── tgm_scan_with_options / scan_file family ─────────────────────
+
+    #[test]
+    fn tgm_scan_with_options_null_opts_matches_scan() {
+        let msg1 = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let msg2 = ffi_encode_single_f32_tensor(&[2.0f32], "");
+        let mut concat = msg1.clone();
+        concat.extend_from_slice(&msg2);
+
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        let err =
+            super::tgm_scan_with_options(concat.as_ptr(), concat.len(), ptr::null(), &mut result);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(super::tgm_scan_count(result), 2);
+        assert_eq!(super::tgm_scan_entry(result, 0).offset, 0);
+        assert_eq!(super::tgm_scan_entry(result, 1).offset, msg1.len());
+        super::tgm_scan_free(result);
+    }
+
+    #[test]
+    fn tgm_scan_with_options_forward_only() {
+        let msg1 = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let msg2 = ffi_encode_single_f32_tensor(&[2.0f32], "");
+        let mut concat = msg1.clone();
+        concat.extend_from_slice(&msg2);
+
+        let opts = super::TgmScanOptions {
+            bidirectional: false,
+            max_message_size: 0, // 0 → library default cap
+        };
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        let err = super::tgm_scan_with_options(concat.as_ptr(), concat.len(), &opts, &mut result);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(super::tgm_scan_count(result), 2);
+        super::tgm_scan_free(result);
+    }
+
+    #[test]
+    fn tgm_scan_with_options_null_args() {
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_scan_with_options(ptr::null(), 0, ptr::null(), &mut result),
+            super::TgmError::InvalidArg
+        ));
+        let data = [0u8; 4];
+        assert!(matches!(
+            super::tgm_scan_with_options(data.as_ptr(), data.len(), ptr::null(), ptr::null_mut()),
+            super::TgmError::InvalidArg
+        ));
+    }
+
+    #[test]
+    fn tgm_scan_file_roundtrip() {
+        let msg1 = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let msg2 = ffi_encode_single_f32_tensor(&[2.0f32], "");
+        let mut concat = msg1.clone();
+        concat.extend_from_slice(&msg2);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_wave_b_scan_file.tgm");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, &concat).unwrap();
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        // scan_file
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        let err = super::tgm_scan_file(c_path.as_ptr(), &mut result);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(super::tgm_scan_count(result), 2);
+        assert_eq!(super::tgm_scan_entry(result, 1).offset, msg1.len());
+        super::tgm_scan_free(result);
+
+        // scan_file_with_options (forward-only)
+        let opts = super::TgmScanOptions {
+            bidirectional: false,
+            max_message_size: 1024 * 1024,
+        };
+        let mut result2: *mut super::TgmScanResult = ptr::null_mut();
+        let err = super::tgm_scan_file_with_options(c_path.as_ptr(), &opts, &mut result2);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(super::tgm_scan_count(result2), 2);
+        super::tgm_scan_free(result2);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tgm_scan_file_nonexistent() {
+        let path = CString::new("/nonexistent/path/wave_b.tgm").unwrap();
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        let err = super::tgm_scan_file(path.as_ptr(), &mut result);
+        assert!(matches!(err, super::TgmError::Io));
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn tgm_scan_file_null_args() {
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_scan_file(ptr::null(), &mut result),
+            super::TgmError::InvalidArg
+        ));
+        let path = CString::new("/tmp/whatever.tgm").unwrap();
+        assert!(matches!(
+            super::tgm_scan_file(path.as_ptr(), ptr::null_mut()),
+            super::TgmError::InvalidArg
+        ));
+        assert!(matches!(
+            super::tgm_scan_file_with_options(ptr::null(), ptr::null(), &mut result),
+            super::TgmError::InvalidArg
+        ));
+    }
+
+    // ── tgm_data_object_inline_hashes ────────────────────────────────
+
+    #[test]
+    fn tgm_data_object_inline_hashes_with_hash() {
+        let msg = ffi_encode_with_hash(&[1.0f32, 2.0, 3.0]);
+        let mut out = zeroed_bytes();
+        let err = super::tgm_data_object_inline_hashes(msg.as_ptr(), msg.len(), &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json: serde_json::Value = serde_json::from_slice(&take_bytes(out)).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        let hex = arr[0]
+            .as_str()
+            .expect("expected hex string for hashed object");
+        assert_eq!(hex.len(), 16);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn tgm_data_object_inline_hashes_no_hash() {
+        let msg = ffi_encode_single_f32_tensor(&[1.0f32, 2.0], "");
+        let mut out = zeroed_bytes();
+        let err = super::tgm_data_object_inline_hashes(msg.as_ptr(), msg.len(), &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json: serde_json::Value = serde_json::from_slice(&take_bytes(out)).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert!(arr[0].is_null());
+    }
+
+    #[test]
+    fn tgm_data_object_inline_hashes_null_and_garbage() {
+        let mut out = zeroed_bytes();
+        assert!(matches!(
+            super::tgm_data_object_inline_hashes(ptr::null(), 0, &mut out),
+            super::TgmError::InvalidArg
+        ));
+        let msg = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        assert!(matches!(
+            super::tgm_data_object_inline_hashes(msg.as_ptr(), msg.len(), ptr::null_mut()),
+            super::TgmError::InvalidArg
+        ));
+        // Not a parseable message → framing error (non-Ok).
+        let garbage = [0u8; 20];
+        let err = super::tgm_data_object_inline_hashes(garbage.as_ptr(), garbage.len(), &mut out);
+        assert!(!matches!(err, super::TgmError::Ok));
+    }
+
+    // ── tgm_decode_with_masks + tgm_object_mask / has_masks ──────────
+
+    /// Encode one 1-D float32 tensor, opting into NaN / ±Inf masking.
+    fn encode_masked_f32(values: &[f32], allow_nan: bool, allow_inf: bool) -> Vec<u8> {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![values.len() as u64],
+            strides: vec![1],
+            dtype: tensogram::Dtype::Float32,
+            byte_order: tensogram::ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let opts = EncodeOptions {
+            allow_nan,
+            allow_inf,
+            ..Default::default()
+        };
+        tensogram::encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap()
+    }
+
+    fn mask_bytes(msg: *const super::TgmMessage, idx: usize, kind: super::TgmMaskKind) -> Vec<u8> {
+        let bytes = super::tgm_object_mask(msg, idx, kind);
+        if bytes.data.is_null() {
+            return Vec::new();
+        }
+        let v = unsafe { slice::from_raw_parts(bytes.data, bytes.len) }.to_vec();
+        super::tgm_bytes_free(bytes);
+        v
+    }
+
+    #[test]
+    fn tgm_decode_with_masks_roundtrip() {
+        // [finite, NaN, +Inf, -Inf, finite]
+        let msg = encode_masked_f32(
+            &[1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2.0],
+            true,
+            true,
+        );
+        let mut out: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_with_masks(msg.as_ptr(), msg.len(), 0, 0, 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.is_null());
+        assert_eq!(super::tgm_message_num_objects(out), 1);
+        assert!(super::tgm_object_has_masks(out, 0));
+
+        assert_eq!(mask_bytes(out, 0, super::TgmMaskKind::Nan), [0, 1, 0, 0, 0]);
+        assert_eq!(
+            mask_bytes(out, 0, super::TgmMaskKind::PosInf),
+            [0, 0, 1, 0, 0]
+        );
+        assert_eq!(
+            mask_bytes(out, 0, super::TgmMaskKind::NegInf),
+            [0, 0, 0, 1, 0]
+        );
+
+        super::tgm_message_free(out);
+    }
+
+    #[test]
+    fn tgm_decode_with_masks_nan_only() {
+        let msg = encode_masked_f32(&[1.0, f32::NAN, 2.0], true, false);
+        let mut out: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_with_masks(msg.as_ptr(), msg.len(), 0, 0, 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(super::tgm_object_has_masks(out, 0));
+        assert_eq!(mask_bytes(out, 0, super::TgmMaskKind::Nan), [0, 1, 0]);
+        // +Inf / -Inf kinds are absent → empty buffer, no error recorded.
+        assert!(mask_bytes(out, 0, super::TgmMaskKind::PosInf).is_empty());
+        assert!(mask_bytes(out, 0, super::TgmMaskKind::NegInf).is_empty());
+        super::tgm_message_free(out);
+    }
+
+    #[test]
+    fn tgm_decode_with_masks_no_masks() {
+        // Plain finite data → decode_with_masks yields no mask sets.
+        let msg = encode_masked_f32(&[1.0, 2.0, 3.0], false, false);
+        let mut out: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_with_masks(msg.as_ptr(), msg.len(), 0, 0, 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!super::tgm_object_has_masks(out, 0));
+        assert!(mask_bytes(out, 0, super::TgmMaskKind::Nan).is_empty());
+        super::tgm_message_free(out);
+    }
+
+    #[test]
+    fn tgm_decode_with_masks_null_args() {
+        let mut out: *mut super::TgmMessage = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_decode_with_masks(ptr::null(), 0, 0, 0, 0, &mut out),
+            super::TgmError::InvalidArg
+        ));
+        let msg = encode_masked_f32(&[1.0, 2.0], false, false);
+        assert!(matches!(
+            super::tgm_decode_with_masks(msg.as_ptr(), msg.len(), 0, 0, 0, ptr::null_mut()),
+            super::TgmError::InvalidArg
+        ));
+    }
+
+    #[test]
+    fn tgm_object_mask_null_and_oob() {
+        // Null handle → empty + error recorded.
+        let b = super::tgm_object_mask(ptr::null(), 0, super::TgmMaskKind::Nan);
+        assert!(b.data.is_null());
+        assert!(!super::tgm_last_error().is_null());
+
+        // Out-of-range index → empty + error recorded.
+        let msg = encode_masked_f32(&[1.0, f32::NAN], true, false);
+        let mut out: *mut super::TgmMessage = ptr::null_mut();
+        super::tgm_decode_with_masks(msg.as_ptr(), msg.len(), 0, 0, 0, &mut out);
+        let b = super::tgm_object_mask(out, 99, super::TgmMaskKind::Nan);
+        assert!(b.data.is_null());
+        let err = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(err.contains("out of range"), "got: {err}");
+        super::tgm_message_free(out);
+    }
+
+    #[test]
+    fn tgm_object_has_masks_null_handle() {
+        assert!(!super::tgm_object_has_masks(ptr::null(), 0));
+    }
+
+    #[test]
+    fn tgm_decode_plain_handle_has_no_masks() {
+        // A handle from the ordinary decode path reports no masks
+        // (purely-additive invariant for the new accessors).
+        let msg = encode_test_message();
+        let mut out: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(msg.as_ptr(), msg.len(), 0, 0, 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!super::tgm_object_has_masks(out, 0));
+        assert!(
+            super::tgm_object_mask(out, 0, super::TgmMaskKind::Nan)
+                .data
+                .is_null()
+        );
+        super::tgm_message_free(out);
+    }
+
+    // =====================================================================
     // FFI round-trip tests — exercise #[no_mangle] extern "C" functions
     // =====================================================================
 
@@ -4738,6 +5842,21 @@ mod tests {
         assert!(
             last.contains("object 0"),
             "last error should name the offending object: {last}"
+        );
+        // The offending object index is now reachable from C (was documented
+        // but unimplemented before).
+        assert_eq!(
+            super::tgm_last_error_object_index(),
+            0,
+            "tgm_last_error_object_index should report the MissingHash object"
+        );
+        // A subsequent error without an object index clears it back to -1.
+        let mut ignored: *mut super::TgmMessage = ptr::null_mut();
+        let _ = super::tgm_decode(ptr::null(), 0, 0, 0, 0, &mut ignored);
+        assert_eq!(
+            super::tgm_last_error_object_index(),
+            -1,
+            "a non-object error should reset the index"
         );
         // No message handle was returned — nothing to free.
     }
@@ -8423,6 +9542,84 @@ pub extern "C" fn tgm_validate(
         unsafe { slice::from_raw_parts(buf, buf_len) }
     };
     let report = validate_message(data, &options);
+
+    match serde_json::to_vec(&report) {
+        Ok(json_bytes) => {
+            let mut json_bytes = json_bytes.into_boxed_slice().into_vec();
+            let result = TgmBytes {
+                data: json_bytes.as_mut_ptr(),
+                len: json_bytes.len(),
+            };
+            std::mem::forget(json_bytes);
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&format!("JSON serialization failed: {e}"));
+            TgmError::Encoding
+        }
+    }
+}
+
+/// Validate every message in a multi-message wire buffer.
+///
+/// The in-memory companion to [`tgm_validate_file`]: where
+/// [`tgm_validate`] validates a *single* message, this scans `buf`
+/// for message boundaries (via the core [`scan`]) and validates each
+/// message, additionally reporting file-level anomalies — gaps
+/// between messages, trailing junk, or a buffer with no parseable
+/// messages.
+///
+/// `buf` / `buf_len`: the wire-format bytes, which may hold zero or
+///   more concatenated messages.  `buf` may be NULL when `buf_len` is
+///   0 (empty-buffer validation).
+/// `level`: validation depth — same string vocabulary as
+///   [`tgm_validate`] (`"quick"` / `"default"` / `"checksum"` /
+///   `"full"`).  NULL defaults to `"default"`.
+/// `check_canonical`: non-zero to check RFC 8949 CBOR key ordering.
+/// `out`: receives UTF-8 JSON bytes for a `FileValidationReport`
+///   (`{"file_issues":[…],"messages":[…]}`).  Not NUL-terminated —
+///   use `out->len` for the byte count.  Free with `tgm_bytes_free`.
+///
+/// Returns `TGM_ERROR_OK` on success (issues — including file-level
+/// ones — are carried in the JSON report). Returns
+/// `TGM_ERROR_INVALID_ARG` for argument validation failures (null
+/// `out`, null `buf` with non-zero `buf_len`, invalid level string),
+/// or `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_validate_buffer(
+    buf: *const u8,
+    buf_len: usize,
+    level: *const c_char,
+    check_canonical: i32,
+    out: *mut TgmBytes,
+) -> TgmError {
+    if out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    // Allow buf=NULL when buf_len=0 (empty-buffer validation).
+    if buf.is_null() && buf_len > 0 {
+        set_last_error("null buf with non-zero buf_len");
+        return TgmError::InvalidArg;
+    }
+
+    let options = match parse_validate_options(level, check_canonical) {
+        Ok(o) => o,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+
+    let data = if buf.is_null() {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(buf, buf_len) }
+    };
+    let report = validate_buffer(data, &options);
 
     match serde_json::to_vec(&report) {
         Ok(json_bytes) => {

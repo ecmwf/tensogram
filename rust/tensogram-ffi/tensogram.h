@@ -75,6 +75,29 @@ typedef enum {
 } tgm_error;
 
 /**
+ * Which non-finite bitmask kind to fetch from a mask-aware decode.
+ *
+ * Passed to [`tgm_object_mask`].  Mirrors the three slots of
+ * [`tensogram::DecodedMaskSet`] (`nan` / `pos_inf` / `neg_inf`).
+ * Any out-of-range integer value is rejected with
+ * [`TgmError::InvalidArg`] by the accessor.
+ */
+typedef enum {
+  /**
+   * Positions that held `NaN` at encode time.
+   */
+  TGM_MASK_KIND_NAN = 0,
+  /**
+   * Positions that held `+∞` at encode time.
+   */
+  TGM_MASK_KIND_POS_INF = 1,
+  /**
+   * Positions that held `−∞` at encode time.
+   */
+  TGM_MASK_KIND_NEG_INF = 2,
+} tgm_mask_kind;
+
+/**
  * The kind of a metadata value (cbindgen: `tgm_value_type`, variants
  * `TGM_VALUE_TYPE_*`).
  *
@@ -254,10 +277,42 @@ typedef struct {
 } tgm_scan_entry_t;
 
 /**
+ * Options controlling [`tgm_scan_with_options`] and
+ * [`tgm_scan_file_with_options`].  Mirrors [`tensogram::ScanOptions`]
+ * as a flat, C-visible POD so callers can build it on the stack.
+ *
+ * Pass a `NULL` `TgmScanOptions*` to any `*_with_options` scanner to
+ * use the library defaults (`bidirectional = true`,
+ * `max_message_size = 4 GiB`).
+ */
+typedef struct {
+  /**
+   * Enable the meet-in-the-middle (bidirectional) walk.  `false`
+   * forces the pure forward scan (still correct, no hop halving).
+   */
+  bool bidirectional;
+  /**
+   * Upper bound on the `total_length` a postamble may advertise;
+   * anything larger is treated as corruption and the backward
+   * walker yields to the forward walker.  `0` selects the library
+   * default (4 GiB).
+   */
+  uint64_t max_message_size;
+} TgmScanOptions;
+
+/**
  * Returns a pointer to the last error message, or NULL if no error.
  * The pointer is valid until the next FFI call on the same thread.
  */
 const char *tgm_last_error(void);
+
+/**
+ * Returns the 0-based object index the last error refers to — e.g. the object
+ * whose inline hash was missing (`TGM_ERROR_MISSING_HASH`) or mismatched
+ * (`TGM_ERROR_HASH_MISMATCH`) — or `-1` if there is no last error or it carries
+ * no object index. Valid until the next FFI call on the same thread.
+ */
+int64_t tgm_last_error_object_index(void);
 
 /**
  * Free a byte buffer returned by `tgm_encode`.
@@ -412,6 +467,39 @@ tgm_error tgm_decode(const uint8_t *buf,
                      tgm_message_t **out);
 
 /**
+ * Decode a message AND retain the raw per-object NaN / ±Inf bitmasks.
+ *
+ * Binds [`tensogram::decode_with_masks`].  Behaves like [`tgm_decode`]
+ * for every existing accessor (`tgm_object_data`, `tgm_object_shape`,
+ * metadata, …) with one deliberate difference: restoration is **not**
+ * applied, so each object's payload holds the canonical `0.0` at every
+ * position that was non-finite at encode time.  The original NaN /
+ * `+∞` / `−∞` positions are recoverable through the companion
+ * accessors:
+ *
+ * - [`tgm_object_has_masks`] — `true` when the object carried at least
+ *   one mask kind.
+ * - [`tgm_object_mask`] — fetch one kind's boolean mask as a
+ *   `tgm_bytes_t` (see that function for the byte layout).
+ *
+ * This is the advanced entry point for callers that want to map
+ * missing values to their own sentinel, aggregate missing-count
+ * statistics, or apply the masks lazily.  Callers that just want the
+ * canonical NaN / Inf bytes restored in place should use
+ * [`tgm_decode`] (or [`tgm_decode_with_options`]).
+ *
+ * On success, fills `out` with a `TgmMessage` handle — free it with
+ * `tgm_message_free`.  See `docs/src/guide/nan-inf-handling.md` and
+ * `plans/WIRE_FORMAT.md` §6.5.
+ */
+tgm_error tgm_decode_with_masks(const uint8_t *buf,
+                                size_t buf_len,
+                                int32_t native_byte_order,
+                                uint32_t threads,
+                                int32_t verify_hash,
+                                tgm_message_t **out);
+
+/**
  * Decode only the global metadata (no payload bytes are read).
  */
 tgm_error tgm_decode_metadata(const uint8_t *buf, size_t buf_len, tgm_metadata_t **out);
@@ -475,6 +563,63 @@ tgm_scan_entry_t tgm_scan_entry(const tgm_scan_result_t *result, size_t index);
  * Free a scan result handle.
  */
 void tgm_scan_free(tgm_scan_result_t *result);
+
+/**
+ * Scan a buffer for message boundaries with explicit options.
+ *
+ * Like [`tgm_scan`] but takes a nullable [`TgmScanOptions`] pointer
+ * (`NULL` = library defaults: bidirectional walk, 4 GiB cap).
+ * Returns a `TgmScanResult` handle — free it with `tgm_scan_free`.
+ */
+tgm_error tgm_scan_with_options(const uint8_t *buf,
+                                size_t buf_len,
+                                const TgmScanOptions *opts,
+                                tgm_scan_result_t **out);
+
+/**
+ * Scan a `.tgm` file for message boundaries using streaming
+ * seek-and-read I/O — the whole file is never loaded into memory.
+ *
+ * `path`: null-terminated UTF-8 path to the file.
+ * `out`: receives a `TgmScanResult` handle; free with `tgm_scan_free`.
+ *
+ * Returns `TGM_ERROR_IO` if the file cannot be opened, seeked, or
+ * read; `TGM_ERROR_INVALID_ARG` for null pointers or a non-UTF-8 path;
+ * or the mapped framing error on a structurally impossible file size.
+ */
+tgm_error tgm_scan_file(const char *path, tgm_scan_result_t **out);
+
+/**
+ * Scan a `.tgm` file for message boundaries with explicit options.
+ *
+ * Like [`tgm_scan_file`] but takes a nullable [`TgmScanOptions`]
+ * pointer (`NULL` = library defaults).
+ */
+tgm_error tgm_scan_file_with_options(const char *path,
+                                     const TgmScanOptions *opts,
+                                     tgm_scan_result_t **out);
+
+/**
+ * Extract every data-object frame's inline hash slot from a single
+ * wire message, without a full CBOR decode.
+ *
+ * Binds [`tensogram::data_object_inline_hashes`].  `buf` must hold a
+ * **single** message; for a multi-message buffer, locate boundaries
+ * with [`tgm_scan`] first and pass each message slice.
+ *
+ * `out` receives UTF-8 **JSON array** bytes, one element per data
+ * object in frame-emission order: a 16-char lowercase-hex string for
+ * a populated slot (the xxh3-64 digest, big-endian), or JSON `null`
+ * when the slot is zero (message-wide `HASHES_PRESENT = 0`, or the
+ * frame was not hashed).  Example: `["1122334455667788",null]`.
+ * Not NUL-terminated — use `out->len` for the byte count.  Free with
+ * `tgm_bytes_free`.
+ *
+ * Returns `TGM_ERROR_INVALID_ARG` for null pointers, the mapped
+ * framing error if `buf` is not a parseable message, or
+ * `TGM_ERROR_ENCODING` if JSON serialization fails.
+ */
+tgm_error tgm_data_object_inline_hashes(const uint8_t *buf, size_t buf_len, tgm_bytes_t *out);
 
 /**
  * Returns the wire format version the decoder read from the preamble.
@@ -595,6 +740,41 @@ const char *tgm_object_hash_type(const tgm_message_t *msg, size_t index);
  * Returns the hash value hex string or NULL if no hash. Valid until message freed.
  */
 const char *tgm_object_hash_value(const tgm_message_t *msg, size_t index);
+
+/**
+ * Returns `true` when the object at `obj_index` carries at least one
+ * non-finite bitmask (NaN, `+∞`, or `−∞`).
+ *
+ * Only ever `true` for a handle produced by [`tgm_decode_with_masks`];
+ * every other decode path applies restoration in place and retains no
+ * masks, so this returns `false` for their handles.  Returns `false`
+ * for a null handle or an out-of-range `obj_index`.
+ */
+bool tgm_object_has_masks(const tgm_message_t *msg, size_t obj_index);
+
+/**
+ * Fetch one non-finite bitmask kind for a mask-aware decoded object.
+ *
+ * Returns the mask as an owned `tgm_bytes_t` with **one byte per
+ * tensor element** in row-major (descriptor-shape) order: `0x01` where
+ * the element held the requested non-finite kind at encode time,
+ * `0x00` otherwise.  `out->len` equals the element count (the shape
+ * product).  For complex dtypes a single byte covers BOTH the real and
+ * imaginary components (see `plans/WIRE_FORMAT.md` §6.5.2).  Free the
+ * returned buffer with `tgm_bytes_free`.
+ *
+ * Returns an **empty** buffer (`{ data = NULL, len = 0 }`) — which
+ * `tgm_bytes_free` accepts as a no-op — in two non-error situations:
+ * the object carried no mask of that `kind`, or the handle was not
+ * produced by [`tgm_decode_with_masks`].  Distinguish "absent" from an
+ * argument error via [`tgm_last_error`]: a null handle, out-of-range
+ * `obj_index`, or an unknown `kind` set the last error and also return
+ * an empty buffer; a genuinely absent mask does not touch it.
+ *
+ * `kind` is a [`TgmMaskKind`] (`TGM_MASK_KIND_NAN` / `_POS_INF` /
+ * `_NEG_INF`).
+ */
+tgm_bytes_t tgm_object_mask(const tgm_message_t *msg, size_t obj_index, tgm_mask_kind kind);
 
 /**
  * Free a decoded message handle.
@@ -1005,6 +1185,48 @@ tgm_error tgm_simple_packing_compute_params(const double *values,
                                             int32_t *out_binary_scale_factor);
 
 /**
+ * Extract the metadata keys common to every object of a message.
+ *
+ * Binds [`tensogram::compute_common`].  The input is a **metadata
+ * handle** (`tgm_metadata_t*`, as returned by [`tgm_decode_metadata`]
+ * or [`tgm_message_metadata`]) — chosen over a raw wire buffer because
+ * `compute_common` operates purely on the already-parsed per-object
+ * `base` metadata array, so a handle avoids a redundant re-decode and
+ * lets callers reuse a metadata handle they already hold.
+ *
+ * `out` receives UTF-8 **JSON object** bytes of the form:
+ *
+ * ```json
+ * { "common": { …keys identical across ALL objects… },
+ *   "remaining": [ { …object 0's varying keys… }, … ] }
+ * ```
+ *
+ * `common` holds every key present with an identical value in all
+ * objects; `remaining[i]` holds object `i`'s keys that are not common.
+ * The library-managed `_reserved_` key is excluded from both (it
+ * varies per object).  With zero objects both are empty.  Not
+ * NUL-terminated — use `out->len`.  Free with `tgm_bytes_free`.
+ *
+ * Returns `TGM_ERROR_INVALID_ARG` for null pointers, or
+ * `TGM_ERROR_ENCODING` if JSON serialization fails.
+ */
+tgm_error tgm_compute_common(const tgm_metadata_t *meta, tgm_bytes_t *out);
+
+/**
+ * Verify that a CBOR byte string is in RFC 8949 §4.2.1 canonical form
+ * (all map keys sorted length-first, then lexicographically by their
+ * encoded bytes).
+ *
+ * Binds [`tensogram::verify_canonical_cbor`].  Returns `true` when the
+ * bytes parse AND are canonical.  Returns `false` — and records the
+ * reason in [`tgm_last_error`] — when the bytes are non-canonical,
+ * fail to parse as CBOR, or when `cbor` is NULL with a non-zero
+ * `cbor_len`.  An empty input (`cbor_len == 0`) is not valid CBOR and
+ * therefore returns `false`.
+ */
+bool tgm_verify_canonical_cbor(const uint8_t *cbor, size_t cbor_len);
+
+/**
  * Create a buffer message iterator.
  *
  * Scans `buf` once and stores message boundaries. The buffer must remain
@@ -1249,6 +1471,39 @@ tgm_error tgm_validate(const uint8_t *buf,
                        const char *level,
                        int32_t check_canonical,
                        tgm_bytes_t *out);
+
+/**
+ * Validate every message in a multi-message wire buffer.
+ *
+ * The in-memory companion to [`tgm_validate_file`]: where
+ * [`tgm_validate`] validates a *single* message, this scans `buf`
+ * for message boundaries (via the core [`scan`]) and validates each
+ * message, additionally reporting file-level anomalies — gaps
+ * between messages, trailing junk, or a buffer with no parseable
+ * messages.
+ *
+ * `buf` / `buf_len`: the wire-format bytes, which may hold zero or
+ *   more concatenated messages.  `buf` may be NULL when `buf_len` is
+ *   0 (empty-buffer validation).
+ * `level`: validation depth — same string vocabulary as
+ *   [`tgm_validate`] (`"quick"` / `"default"` / `"checksum"` /
+ *   `"full"`).  NULL defaults to `"default"`.
+ * `check_canonical`: non-zero to check RFC 8949 CBOR key ordering.
+ * `out`: receives UTF-8 JSON bytes for a `FileValidationReport`
+ *   (`{"file_issues":[…],"messages":[…]}`).  Not NUL-terminated —
+ *   use `out->len` for the byte count.  Free with `tgm_bytes_free`.
+ *
+ * Returns `TGM_ERROR_OK` on success (issues — including file-level
+ * ones — are carried in the JSON report). Returns
+ * `TGM_ERROR_INVALID_ARG` for argument validation failures (null
+ * `out`, null `buf` with non-zero `buf_len`, invalid level string),
+ * or `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
+ */
+tgm_error tgm_validate_buffer(const uint8_t *buf,
+                              size_t buf_len,
+                              const char *level,
+                              int32_t check_canonical,
+                              tgm_bytes_t *out);
 
 /**
  * Validate all messages in a `.tgm` file.

@@ -10,9 +10,11 @@ set(EXAMPLES
     07_scan_buffer
     08_decode_variants
     09_streaming_consumer
+    10_doctor
     11_encode_pre_encoded
     13_validate
     16_multi_threaded_pipeline
+    17_masks_scan_validate
 )
 
 # Async examples on the callback / std::future frontends (C++17, header-only).
@@ -22,6 +24,7 @@ if(TENSOGRAM_ASYNC)
         22_async_callback
         23_async_stdfuture
         24_async_cancellation
+        25_async_decode_object_range
     )
 endif()
 

@@ -50,6 +50,28 @@ std::filesystem::path make_test_file() {
     return path;
 }
 
+/// A one-message file with a single uint8[64] object (byte i == i) so
+/// decode_object / decode_range have deterministic, byte-addressable data.
+std::filesystem::path make_uint8_file() {
+    auto path = make_temp_path(".tgm");
+    const std::string meta = R"json({
+        "base":[{}],
+        "descriptors":[{
+            "type":"ntensor","ndim":1,"shape":[64],"strides":[1],
+            "dtype":"uint8","byte_order":"little","encoding":"none",
+            "filter":"none","compression":"none"
+        }]
+    })json";
+    std::vector<std::uint8_t> u(64);
+    for (std::size_t i = 0; i < u.size(); ++i) u[i] = static_cast<std::uint8_t>(i);
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objs = {{u.data(), u.size()}};
+    auto bytes = tensogram::encode(meta, objs);
+    auto* fp = std::fopen(path.c_str(), "wb");
+    std::fwrite(bytes.data(), 1, bytes.size(), fp);
+    std::fclose(fp);
+    return path;
+}
+
 }  // namespace
 
 TEST(AsyncCoro, OpenAndMessageCount) {
@@ -151,4 +173,62 @@ TEST(AsyncCoro, OpenRemoteSurfacesError) {
         co_return 0;
     };
     EXPECT_THROW(tco::block_on(run()), tensogram::error);
+}
+
+TEST(AsyncCoro, DecodeObject) {
+    auto path = make_uint8_file();
+    auto run = [&path]() -> tco::task<std::size_t> {
+        auto file = co_await tco::async_file::open(path.string());
+        auto msg = co_await file.decode_object(0, 0);
+        co_return msg.object(0).data_size();
+    };
+    auto sz = tco::block_on(run());
+    EXPECT_EQ(sz, 64u);
+    std::filesystem::remove(path);
+}
+
+TEST(AsyncCoro, DecodeRange) {
+    auto path = make_uint8_file();
+    auto run = [&path]() -> tco::task<std::vector<std::vector<std::uint8_t>>> {
+        auto file = co_await tco::async_file::open(path.string());
+        // Build the ranges vector before the co_await (temporary-in-co_await
+        // ICE workaround, matching OpenRemoteSurfacesError above).
+        const std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges = {{8, 4}};
+        co_return co_await file.decode_range(0, 0, ranges);
+    };
+    auto parts = tco::block_on(run());
+    ASSERT_EQ(parts.size(), 1u);
+    ASSERT_EQ(parts[0].size(), 4u);
+    EXPECT_EQ(parts[0][0], 8u);
+    std::filesystem::remove(path);
+}
+
+TEST(AsyncCoro, FilePathAccessor) {
+    auto path = make_uint8_file();
+    auto run = [&path]() -> tco::task<std::string> {
+        auto file = co_await tco::async_file::open(path.string());
+        co_return file.path();
+    };
+    auto reported = tco::block_on(run());
+    EXPECT_NE(reported.find(path.filename().string()), std::string::npos);
+    std::filesystem::remove(path);
+}
+
+TEST(AsyncCoro, DecodeObjectTaskPollAndJoin) {
+    // The pull-model handle (tac::task<T>) is reachable from the coro
+    // frontend too, for callers that want manual poll / cancel / join
+    // instead of co_await.  Open via block_on (the coroutine parameter is
+    // by-value so its frame owns the path), then drive the task off the
+    // coroutine on this thread.
+    auto path = make_uint8_file();
+    auto open_coro = [](std::string p) -> tco::task<tco::async_file> {
+        co_return co_await tco::async_file::open(p);
+    };
+    auto file = tco::block_on(open_coro(path.string()));
+    auto task = file.decode_object_task(0, 0);
+    (void)task.ready();  // non-blocking poll is callable pre-join
+    auto r = task.join();
+    ASSERT_TRUE(r.ok()) << r.message();
+    EXPECT_EQ(r.value().object(0).data_size(), 64u);
+    std::filesystem::remove(path);
 }

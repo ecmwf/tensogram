@@ -128,9 +128,27 @@ public:
 /// Catch this base when you want to handle either kind
 /// uniformly; catch the subclasses to discriminate.  See
 /// `plans/DESIGN.md` §"Integrity Hashing".
+///
+/// Carries the 0-based index of the offending data object (the frame
+/// whose inline hash was missing or mismatched) via object_index(),
+/// mirroring the C ABI's `tgm_last_error_object_index()`.
 class integrity_error : public error {
 public:
-    integrity_error(tgm_error code, const std::string& msg) : error(code, msg) {}
+    integrity_error(tgm_error code, const std::string& msg,
+                    std::int64_t object_index = -1)
+        : error(code, msg), object_index_(object_index) {}
+
+    /// The 0-based index of the data object this integrity failure
+    /// refers to, or `-1` when the error carries no object index.
+    ///
+    /// Sourced from the C ABI's `tgm_last_error_object_index()` at the
+    /// throw site.  For `hash_mismatch_error` / `missing_hash_error`
+    /// this pinpoints the frame that failed decode-time verification,
+    /// so callers can react per-object without parsing `what()`.
+    [[nodiscard]] std::int64_t object_index() const noexcept { return object_index_; }
+
+private:
+    std::int64_t object_index_;
 };
 
 /// Thrown when decode-time hash verification was requested,
@@ -146,8 +164,9 @@ public:
 /// structured fields.  See `plans/WIRE_FORMAT.md` §2.5.
 class hash_mismatch_error : public integrity_error {
 public:
-    hash_mismatch_error(tgm_error code, const std::string& msg)
-        : integrity_error(code, msg) {}
+    hash_mismatch_error(tgm_error code, const std::string& msg,
+                        std::int64_t object_index = -1)
+        : integrity_error(code, msg, object_index) {}
 };
 
 /// Thrown when decode-time hash verification was requested but
@@ -157,8 +176,9 @@ public:
 /// against.  See `plans/WIRE_FORMAT.md` §2.5.
 class missing_hash_error : public integrity_error {
 public:
-    missing_hash_error(tgm_error code, const std::string& msg)
-        : integrity_error(code, msg) {}
+    missing_hash_error(tgm_error code, const std::string& msg,
+                       std::int64_t object_index = -1)
+        : integrity_error(code, msg, object_index) {}
 };
 
 /// Thrown when an invalid argument is passed to a Tensogram function.
@@ -204,7 +224,13 @@ namespace detail {
 /// thread-local last-error string) and by the async frontends (which
 /// capture the message inside completion handlers, before any other FFI
 /// call on the thread can clobber the last-error slot).
-[[noreturn]] inline void throw_for_code(tgm_error err, const std::string& message) {
+///
+/// `object_index` is the 0-based data-object index the error refers to
+/// (from `tgm_last_error_object_index()`), or `-1` when none.  It is
+/// carried only by the integrity subclasses; every other exception
+/// ignores it.
+[[noreturn]] inline void throw_for_code(tgm_error err, const std::string& message,
+                                        std::int64_t object_index = -1) {
     switch (err) {
         case TGM_ERROR_FRAMING:       throw framing_error(err, message);
         case TGM_ERROR_METADATA:      throw metadata_error(err, message);
@@ -212,8 +238,8 @@ namespace detail {
         case TGM_ERROR_COMPRESSION:   throw compression_error(err, message);
         case TGM_ERROR_OBJECT:        throw object_error(err, message);
         case TGM_ERROR_IO:            throw io_error(err, message);
-        case TGM_ERROR_HASH_MISMATCH: throw hash_mismatch_error(err, message);
-        case TGM_ERROR_MISSING_HASH:  throw missing_hash_error(err, message);
+        case TGM_ERROR_HASH_MISMATCH: throw hash_mismatch_error(err, message, object_index);
+        case TGM_ERROR_MISSING_HASH:  throw missing_hash_error(err, message, object_index);
         case TGM_ERROR_INVALID_ARG:   throw invalid_arg_error(err, message);
         case TGM_ERROR_REMOTE:        throw remote_error(err, message);
         case TGM_ERROR_TIMEOUT:       throw timeout_error(err, message);
@@ -227,8 +253,13 @@ namespace detail {
 inline void check(tgm_error err) {
     if (err == TGM_ERROR_OK) return;
     const char* msg = tgm_last_error();
+    // Snapshot the object index immediately after the message pointer,
+    // before any other FFI call on this thread can clobber the shared
+    // thread-local error slot.  `tgm_error_string` (below) is a pure
+    // lookup and does not touch the slot, so this ordering is safe.
+    const std::int64_t object_index = tgm_last_error_object_index();
     std::string message = msg ? msg : tgm_error_string(err);
-    throw_for_code(err, message);
+    throw_for_code(err, message, object_index);
 }
 
 /// Adapter that splits a vector of (pointer, length) pairs into parallel
@@ -266,6 +297,68 @@ struct scatter_gather {
 struct scan_entry {
     std::size_t offset;  ///< Byte offset of the message start.
     std::size_t length;  ///< Byte length of the message.
+};
+
+/// Which non-finite bitmask kind to fetch from a mask-aware decode.
+///
+/// Mirrors the C `tgm_mask_kind` enum and the three slots of the Rust
+/// `DecodedMaskSet` (`nan` / `pos_inf` / `neg_inf`).  Passed to
+/// decoded_object::mask() on an object produced by decode_with_masks().
+enum class mask_kind {
+    nan,      ///< Positions that held `NaN` at encode time.
+    pos_inf,  ///< Positions that held `+∞` at encode time.
+    neg_inf,  ///< Positions that held `−∞` at encode time.
+};
+
+namespace detail {
+
+/// Map the C++ mask_kind to the C `tgm_mask_kind` discriminant.
+[[nodiscard]] inline tgm_mask_kind mask_kind_to_c(mask_kind k) noexcept {
+    switch (k) {
+        case mask_kind::nan:     return TGM_MASK_KIND_NAN;
+        case mask_kind::pos_inf: return TGM_MASK_KIND_POS_INF;
+        case mask_kind::neg_inf: return TGM_MASK_KIND_NEG_INF;
+    }
+    // Defensive: an unknown enumerator decays to the NaN slot.
+    return TGM_MASK_KIND_NAN;
+}
+
+}  // namespace detail
+
+/// Options controlling scan_with_options() and scan_file_with_options().
+///
+/// Mirrors the C `TgmScanOptions` POD and `tensogram::ScanOptions`.  A
+/// default-constructed scan_options requests the library defaults
+/// (bidirectional meet-in-the-middle walk, 4 GiB message-size cap).
+struct scan_options {
+    /// Enable the meet-in-the-middle (bidirectional) walk.  `false`
+    /// forces the pure forward scan (still correct, no hop halving).
+    bool bidirectional = true;
+    /// Upper bound on the `total_length` a postamble may advertise;
+    /// anything larger is treated as corruption and the backward walker
+    /// yields to the forward walker.  `0` selects the library default
+    /// (4 GiB).
+    std::uint64_t max_message_size = 0;
+};
+
+/// simple_packing (GRIB-style lossy quantisation) parameters computed
+/// from a set of sample values by compute_simple_packing_params().
+///
+/// These are the three scale parameters a `simple_packing` descriptor
+/// needs (`sp_reference_value`, `sp_binary_scale_factor`,
+/// `sp_decimal_scale_factor`); pass them straight into the descriptor
+/// JSON instead of hand-rolling the C out-params.
+struct simple_packing_params {
+    /// Reference (minimum) value subtracted from every sample before
+    /// packing — the descriptor's `sp_reference_value`.
+    double reference_value = 0.0;
+    /// Base-2 scale exponent chosen to fit the value range into
+    /// `bits_per_value` bits — the descriptor's `sp_binary_scale_factor`.
+    std::int32_t binary_scale_factor = 0;
+    /// Base-10 scale exponent, echoed back from the request so callers
+    /// have all three params in one place — the descriptor's
+    /// `sp_decimal_scale_factor`.
+    std::int32_t decimal_scale_factor = 0;
 };
 
 /// Options controlling message encoding.
@@ -399,6 +492,8 @@ namespace detail {
 // Free functions (forward-declared for friend access)
 [[nodiscard]] inline message decode(const std::uint8_t* buf, std::size_t len,
                       const decode_options& opts = {});
+[[nodiscard]] inline message decode_with_masks(const std::uint8_t* buf, std::size_t len,
+                             const decode_options& opts = {});
 [[nodiscard]] inline message decode_object(const std::uint8_t* buf, std::size_t len,
                              std::size_t index, const decode_options& opts = {});
 [[nodiscard]] inline metadata decode_metadata(const std::uint8_t* buf, std::size_t len);
@@ -517,6 +612,38 @@ public:
         return data_size() / sizeof(T);
     }
 
+    /// True if this object retained at least one non-finite bitmask
+    /// (NaN, `+∞`, or `−∞`).
+    ///
+    /// Only ever true for an object belonging to a message produced by
+    /// decode_with_masks(); every other decode path applies restoration
+    /// in place and keeps no masks, so this returns false for them.
+    [[nodiscard]] bool has_masks() const {
+        return tgm_object_has_masks(msg_, index_);
+    }
+
+    /// Fetch one non-finite bitmask kind as a boolean byte-mask.
+    ///
+    /// Returns one byte per tensor element in row-major (descriptor-shape)
+    /// order: `0x01` where the element held the requested non-finite kind
+    /// at encode time, `0x00` otherwise.  The vector length equals the
+    /// element count (the shape product).  For complex dtypes a single
+    /// byte covers BOTH the real and imaginary components.
+    ///
+    /// Returns an **empty** vector when the object carried no mask of that
+    /// kind (or the parent message was not produced by
+    /// decode_with_masks()) — pair with has_masks() to distinguish "no
+    /// masks at all" from "this kind absent".
+    ///
+    /// @warning Unlike the borrowing data() accessors this returns an
+    ///          owned copy, so it may safely outlive the parent message.
+    [[nodiscard]] std::vector<std::uint8_t> mask(mask_kind kind) const {
+        tgm_bytes_t bytes = tgm_object_mask(msg_, index_, detail::mask_kind_to_c(kind));
+        std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
+        tgm_bytes_free(bytes);
+        return result;
+    }
+
 private:
     friend class message;
     decoded_object(const tgm_message_t* msg, std::size_t index)
@@ -591,6 +718,8 @@ private:
     // Only construction sites that receive a raw C handle may build a message.
     friend message tensogram::decode(const std::uint8_t*, std::size_t,
                                      const decode_options&);
+    friend message tensogram::decode_with_masks(const std::uint8_t*, std::size_t,
+                                                const decode_options&);
     friend message tensogram::decode_object(const std::uint8_t*, std::size_t,
                                             std::size_t, const decode_options&);
     friend class file;
@@ -991,6 +1120,36 @@ public:
     [[nodiscard]] std::string to_json() const {
         const char* s = tgm_metadata_to_json(handle_.get());
         return s ? s : "";
+    }
+
+    /// Split this metadata's per-object `base` entries into the keys
+    /// common to every object and each object's remaining keys.
+    ///
+    /// Wraps `tgm_compute_common`, mirroring `tensogram::compute_common`.
+    /// Returns UTF-8 JSON of the shape:
+    ///
+    /// ```json
+    /// { "common": { …keys identical across ALL objects… },
+    ///   "remaining": [ { …object 0's varying keys… }, … ] }
+    /// ```
+    ///
+    /// `common` holds every key present with an identical value in all
+    /// objects; `remaining[i]` holds object `i`'s keys that are not
+    /// common.  The library-managed `_reserved_` key is excluded from
+    /// both (it varies per object).  With zero objects both are empty.
+    ///
+    /// @note Serialization helper — the result is intended for a JSON
+    ///       reader (`nlohmann::json::parse` or equivalent).  For
+    ///       programmatic access to individual keys prefer get() and the
+    ///       section views.
+    /// @return JSON string with the `{common, remaining}` split.
+    /// @throws tensogram::encoding_error If JSON serialization fails.
+    [[nodiscard]] std::string compute_common() const {
+        tgm_bytes_t bytes{};
+        detail::check(tgm_compute_common(handle_.get(), &bytes));
+        std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
+        tgm_bytes_free(bytes);
+        return result;
     }
 
     // -- precise cursor API (message-level) -------------------
@@ -1630,6 +1789,36 @@ private:
     return metadata(raw);
 }
 
+/// Decode a complete message AND retain the raw per-object NaN / ±Inf
+/// bitmasks (advanced entry point).
+///
+/// Wraps `tgm_decode_with_masks`, binding `tensogram::decode_with_masks`.
+/// Behaves like decode() for every existing accessor with one deliberate
+/// difference: restoration is **not** applied, so each object's payload
+/// holds the canonical `0.0` at every position that was non-finite at
+/// encode time.  The original NaN / `+∞` / `−∞` positions are recoverable
+/// through decoded_object::has_masks() and decoded_object::mask().
+///
+/// Use this when you want to map missing values to your own sentinel,
+/// aggregate missing-count statistics, or apply the masks lazily.
+/// Callers that just want the canonical NaN / Inf bytes restored in place
+/// should use decode() (or decode() with `decode_options`).
+///
+/// @note `decode_options::restore_non_finite` is ignored here — this
+///       entry point always retains masks without restoring in place.
+///       `native_byte_order`, `threads`, and `verify_hash` are honoured.
+[[nodiscard]] inline message decode_with_masks(const std::uint8_t* buf, std::size_t len,
+                             const decode_options& opts)
+{
+    tgm_message_t* raw = nullptr;
+    detail::check(tgm_decode_with_masks(buf, len,
+                                        opts.native_byte_order ? 1 : 0,
+                                        opts.threads,
+                                        opts.verify_hash ? 1 : 0,
+                                        &raw));
+    return message(raw);
+}
+
 /// Decode a single object by index.
 [[nodiscard]] inline message decode_object(const std::uint8_t* buf, std::size_t len,
                              std::size_t index, const decode_options& opts)
@@ -1711,10 +1900,12 @@ private:
     return result;
 }
 
-/// Scan a buffer for message boundaries.
-[[nodiscard]] inline std::vector<scan_entry> scan(const std::uint8_t* buf, std::size_t len) {
-    tgm_scan_result_t* raw = nullptr;
-    detail::check(tgm_scan(buf, len, &raw));
+namespace detail {
+
+/// Drain a `tgm_scan_result_t` into a vector of scan_entry and free the
+/// handle.  Shared by the scan_file / *_with_options scanners so each
+/// entry point only has to build its options and pick the C call.
+[[nodiscard]] inline std::vector<scan_entry> collect_scan_result(tgm_scan_result_t* raw) {
     const std::size_t n = tgm_scan_count(raw);
     std::vector<scan_entry> result;
     result.reserve(n);
@@ -1726,6 +1917,159 @@ private:
     return result;
 }
 
+/// Convert a C++ scan_options into the C `TgmScanOptions` POD.
+[[nodiscard]] inline TgmScanOptions to_c_scan_options(const scan_options& opts) noexcept {
+    TgmScanOptions c_opts{};
+    c_opts.bidirectional = opts.bidirectional;
+    c_opts.max_message_size = opts.max_message_size;
+    return c_opts;
+}
+
+}  // namespace detail
+
+/// Scan a buffer for message boundaries.
+[[nodiscard]] inline std::vector<scan_entry> scan(const std::uint8_t* buf, std::size_t len) {
+    tgm_scan_result_t* raw = nullptr;
+    detail::check(tgm_scan(buf, len, &raw));
+    return detail::collect_scan_result(raw);
+}
+
+/// Scan a buffer for message boundaries with explicit options.
+///
+/// Wraps `tgm_scan_with_options`.  Like scan() but takes a scan_options
+/// controlling the bidirectional walk and the message-size cap.
+[[nodiscard]] inline std::vector<scan_entry> scan_with_options(
+    const std::uint8_t* buf, std::size_t len, const scan_options& opts)
+{
+    const TgmScanOptions c_opts = detail::to_c_scan_options(opts);
+    tgm_scan_result_t* raw = nullptr;
+    detail::check(tgm_scan_with_options(buf, len, &c_opts, &raw));
+    return detail::collect_scan_result(raw);
+}
+
+/// Scan a `.tgm` file for message boundaries using streaming seek-and-read
+/// I/O — the whole file is never loaded into memory.
+///
+/// Wraps `tgm_scan_file`.  The file-based counterpart to scan().
+///
+/// @param path  Path to the `.tgm` file.
+/// @return The `(offset, length)` of every message found.
+/// @throws tensogram::io_error If the file cannot be opened, seeked, or read.
+/// @throws tensogram::invalid_arg_error For a non-UTF-8 path.
+[[nodiscard]] inline std::vector<scan_entry> scan_file(std::string_view path) {
+    const std::string path_str(path);
+    tgm_scan_result_t* raw = nullptr;
+    detail::check(tgm_scan_file(path_str.c_str(), &raw));
+    return detail::collect_scan_result(raw);
+}
+
+/// Scan a `.tgm` file for message boundaries with explicit options.
+///
+/// Wraps `tgm_scan_file_with_options`.  Like scan_file() but takes a
+/// scan_options.
+///
+/// @param path  Path to the `.tgm` file.
+/// @param opts  Scan options (bidirectional walk, message-size cap).
+/// @throws tensogram::io_error If the file cannot be opened, seeked, or read.
+/// @throws tensogram::invalid_arg_error For a non-UTF-8 path.
+[[nodiscard]] inline std::vector<scan_entry> scan_file_with_options(
+    std::string_view path, const scan_options& opts)
+{
+    const std::string path_str(path);
+    const TgmScanOptions c_opts = detail::to_c_scan_options(opts);
+    tgm_scan_result_t* raw = nullptr;
+    detail::check(tgm_scan_file_with_options(path_str.c_str(), &c_opts, &raw));
+    return detail::collect_scan_result(raw);
+}
+
+namespace detail {
+
+/// Parse the constrained JSON array emitted by
+/// `tgm_data_object_inline_hashes` into one std::optional per element.
+///
+/// The array is flat and its elements are either a JSON string (a
+/// 16-char lowercase-hex xxh3-64 digest) or JSON `null` (a zero / unhashed
+/// slot).  The digests never contain escapes or structural characters, so
+/// a minimal scanner is sufficient and deliberately avoids pulling in a
+/// full JSON dependency — the binding stays header-only and dependency
+/// free.  On any malformed input the scan stops early and returns what it
+/// parsed so far (the C producer only ever emits the well-formed shape).
+[[nodiscard]] inline std::vector<std::optional<std::string>>
+parse_inline_hashes_json(std::string_view json) {
+    std::vector<std::optional<std::string>> out;
+    std::size_t i = 0;
+    const std::size_t n = json.size();
+    const auto skip_ws = [&] {
+        while (i < n && (json[i] == ' ' || json[i] == '\t' ||
+                         json[i] == '\n' || json[i] == '\r')) {
+            ++i;
+        }
+    };
+    skip_ws();
+    if (i >= n || json[i] != '[') return out;  // not an array
+    ++i;                                        // consume '['
+    skip_ws();
+    if (i < n && json[i] == ']') return out;    // empty array
+    while (i < n) {
+        skip_ws();
+        if (i >= n) break;
+        if (json[i] == '"') {
+            ++i;  // opening quote
+            std::string digest;
+            while (i < n && json[i] != '"') {
+                digest.push_back(json[i]);
+                ++i;
+            }
+            if (i < n) ++i;  // closing quote
+            out.emplace_back(std::move(digest));
+        } else if (json.compare(i, 4, "null") == 0) {
+            i += 4;
+            out.emplace_back(std::nullopt);
+        } else {
+            break;  // malformed — stop defensively
+        }
+        skip_ws();
+        if (i < n && json[i] == ',') { ++i; continue; }
+        break;  // ']' or end of input
+    }
+    return out;
+}
+
+}  // namespace detail
+
+/// Extract every data-object frame's inline hash slot from a single wire
+/// message, without a full CBOR decode.
+///
+/// Wraps `tgm_data_object_inline_hashes`, binding
+/// `tensogram::data_object_inline_hashes`.  `buf` must hold a **single**
+/// message; for a multi-message buffer, locate boundaries with scan()
+/// first and pass each message slice.
+///
+/// Returns one entry per data object in frame-emission order: the
+/// populated slot's 16-char lowercase-hex xxh3-64 digest, or std::nullopt
+/// when the slot is zero (message-wide `HASHES_PRESENT = 0`, or the frame
+/// was not hashed).  This is the parsed form of the JSON array the C ABI
+/// returns (e.g. `["1122334455667788",null]`), chosen over the raw JSON
+/// so callers can consume the digests directly without a JSON reader —
+/// mirroring Python's `object_inline_hashes` and the TS
+/// `dataObjectInlineHashes`.
+///
+/// @param buf  Wire-format bytes of a single message.
+/// @param len  Length of @p buf.
+/// @throws tensogram::framing_error If @p buf is not a parseable message.
+/// @throws tensogram::invalid_arg_error For null pointers.
+/// @throws tensogram::encoding_error If the C JSON serialization fails.
+[[nodiscard]] inline std::vector<std::optional<std::string>> data_object_inline_hashes(
+    const std::uint8_t* buf, std::size_t len)
+{
+    tgm_bytes_t bytes{};
+    detail::check(tgm_data_object_inline_hashes(buf, len, &bytes));
+    const std::string_view json(reinterpret_cast<const char*>(bytes.data), bytes.len);
+    auto result = detail::parse_inline_hashes_json(json);
+    tgm_bytes_free(bytes);
+    return result;
+}
+
 /// Compute a hash of the given data. Returns hex-encoded string.
 [[nodiscard]] inline std::string compute_hash(const std::uint8_t* data, std::size_t len,
                                 const std::string& algo = "xxh3") {
@@ -1734,6 +2078,46 @@ private:
     std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
     tgm_bytes_free(bytes);
     return result;
+}
+
+/// Compute simple_packing (lossy quantisation) parameters for a set of
+/// f64 sample values.
+///
+/// Wraps `tgm_simple_packing_compute_params`: given the samples, the
+/// target `bits_per_value`, and a `decimal_scale_factor`, it returns the
+/// `reference_value` + `binary_scale_factor` the packer will use (plus
+/// the decimal scale echoed back).  Feed the returned
+/// simple_packing_params into a `simple_packing` descriptor so callers
+/// do not have to touch the C out-params.
+///
+/// @param values               Pointer to the f64 samples.
+/// @param num_values           Number of samples.
+/// @param bits_per_value       Target bit width per packed value.
+/// @param decimal_scale_factor Base-10 pre-scale (usually 0).
+/// @return The computed simple_packing_params.
+/// @throws tensogram::encoding_error If the samples contain NaN.
+[[nodiscard]] inline simple_packing_params compute_simple_packing_params(
+    const double* values, std::size_t num_values,
+    int bits_per_value, int decimal_scale_factor = 0) {
+    simple_packing_params params{};
+    params.decimal_scale_factor = static_cast<std::int32_t>(decimal_scale_factor);
+    detail::check(tgm_simple_packing_compute_params(
+        values, num_values,
+        static_cast<std::uint32_t>(bits_per_value),
+        static_cast<std::int32_t>(decimal_scale_factor),
+        &params.reference_value, &params.binary_scale_factor));
+    return params;
+}
+
+/// Compute simple_packing parameters for a vector of f64 sample values.
+///
+/// Convenience overload of compute_simple_packing_params() taking a
+/// std::vector; see that overload for semantics and throwing behaviour.
+[[nodiscard]] inline simple_packing_params compute_simple_packing_params(
+    const std::vector<double>& values,
+    int bits_per_value, int decimal_scale_factor = 0) {
+    return compute_simple_packing_params(values.data(), values.size(),
+                                         bits_per_value, decimal_scale_factor);
 }
 
 /// Validate a single Tensogram message buffer.
@@ -1782,6 +2166,84 @@ private:
                                                bool check_canonical = false) {
     tgm_bytes_t bytes{};
     detail::check(tgm_validate_file(path, level, check_canonical ? 1 : 0, &bytes));
+    std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
+    tgm_bytes_free(bytes);
+    return result;
+}
+
+/// Validate every message in a multi-message wire buffer.
+///
+/// The in-memory companion to validate_file(): where validate() checks a
+/// *single* message, this wraps `tgm_validate_buffer` to scan @p buf for
+/// message boundaries and validate each message, additionally reporting
+/// file-level anomalies — gaps between messages, trailing junk, or a
+/// buffer with no parseable messages.
+///
+/// Returns a JSON `FileValidationReport` string shaped
+/// `{"file_issues":[…],"messages":[…]}`.  Validation findings — including
+/// file-level ones — are carried in the JSON; only API/operational
+/// failures throw.
+///
+/// @param buf               Wire-format bytes holding zero or more
+///                          concatenated messages (nullptr with len=0 is
+///                          valid for empty-buffer validation).
+/// @param len               Length of @p buf.
+/// @param level             "quick", "default", "checksum", or "full"
+///                          (default: "default").
+/// @param check_canonical   Check RFC 8949 CBOR key ordering.
+/// @return JSON string with the file validation report.
+/// @throws tensogram::invalid_arg_error If @p level is unrecognized or
+///         @p buf is null with a non-zero @p len.
+/// @throws tensogram::encoding_error If JSON serialization fails.
+[[nodiscard]] inline std::string validate_buffer(const std::uint8_t* buf, std::size_t len,
+                                                 std::string_view level = "default",
+                                                 bool check_canonical = false) {
+    const std::string level_str(level);
+    tgm_bytes_t bytes{};
+    detail::check(tgm_validate_buffer(buf, len, level_str.c_str(),
+                                      check_canonical ? 1 : 0, &bytes));
+    std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
+    tgm_bytes_free(bytes);
+    return result;
+}
+
+/// Verify that a CBOR byte string is in RFC 8949 §4.2.1 canonical form.
+///
+/// Wraps `tgm_verify_canonical_cbor`, binding
+/// `tensogram::verify_canonical_cbor`.  Canonical form requires every map
+/// key sorted length-first, then lexicographically by their encoded bytes.
+///
+/// @param cbor  Pointer to the CBOR bytes (nullptr is only valid with
+///              len=0, which is not valid CBOR and returns false).
+/// @param len   Length of @p cbor.
+/// @return true when the bytes parse AND are canonical; false when they
+///         are non-canonical, fail to parse as CBOR, or are empty.  This
+///         predicate never throws — a false result reports "not canonical"
+///         rather than an error condition.
+[[nodiscard]] inline bool verify_canonical_cbor(const std::uint8_t* cbor, std::size_t len) {
+    return tgm_verify_canonical_cbor(cbor, len);
+}
+
+/// Run environment diagnostics and return the report as a JSON string.
+///
+/// Wraps `tgm_doctor_to_json`, mirroring `tensogram::doctor::run_diagnostics()`
+/// and the `tensogram doctor` CLI subcommand.  The same JSON shape is
+/// produced by Python's `tensogram.doctor()` and the WASM `doctor()`
+/// export (see `docs/src/cli/doctor.md` for the schema).  The report
+/// covers the library version, build/runtime environment, the codecs
+/// compiled into this build, and a `self_test` array for the core
+/// encode/decode pipeline; the C FFI build does not run the CLI-only
+/// GRIB / NetCDF converter self-tests.
+///
+/// The returned `tgm_bytes_t` is managed with the same RAII /
+/// `tgm_bytes_free` pattern as validate() and metadata::to_json().
+///
+/// @return JSON diagnostics report (UTF-8) ready for
+///         `nlohmann::json::parse` or any JSON reader.
+/// @throws tensogram::encoding_error If serialising the report fails.
+[[nodiscard]] inline std::string doctor() {
+    tgm_bytes_t bytes{};
+    detail::check(tgm_doctor_to_json(&bytes));
     std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
     tgm_bytes_free(bytes);
     return result;
