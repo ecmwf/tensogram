@@ -260,6 +260,14 @@ typedef struct {
 const char *tgm_last_error(void);
 
 /**
+ * Returns the 0-based object index the last error refers to — e.g. the object
+ * whose inline hash was missing (`TGM_ERROR_MISSING_HASH`) or mismatched
+ * (`TGM_ERROR_HASH_MISMATCH`) — or `-1` if there is no last error or it carries
+ * no object index. Valid until the next FFI call on the same thread.
+ */
+int64_t tgm_last_error_object_index(void);
+
+/**
  * Free a byte buffer returned by `tgm_encode`.
  */
 void tgm_bytes_free(tgm_bytes_t buf);

@@ -119,6 +119,9 @@ pub enum TgmError {
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
+    // Record the offending object index (if any) alongside the code, so
+    // `tgm_last_error_object_index` can report it for the current last error.
+    LAST_ERROR_OBJECT_INDEX.with(|c| c.set(error_object_index(e)));
     match e {
         TensogramError::Framing(_) => TgmError::Framing,
         TensogramError::Metadata(_) => TgmError::Metadata,
@@ -140,15 +143,32 @@ fn to_error_code(e: &TensogramError) -> TgmError {
     }
 }
 
-// Thread-local storage for the last error message.
+// Thread-local storage for the last error message and the object index it
+// refers to (e.g. the object whose inline hash was missing or mismatched), or
+// -1 when the last error carries no object index.
 thread_local! {
     static LAST_ERROR: std::cell::RefCell<Option<CString>> = const { std::cell::RefCell::new(None) };
+    static LAST_ERROR_OBJECT_INDEX: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) };
+}
+
+/// The 0-based object index carried by an error, or -1 if the variant has none
+/// (or the index is unknown / out of `i64` range).
+fn error_object_index(e: &TensogramError) -> i64 {
+    let idx: Option<usize> = match e {
+        TensogramError::HashMismatch { object_index, .. } => *object_index,
+        TensogramError::MissingHash { object_index, .. } => Some(*object_index),
+        _ => None,
+    };
+    idx.and_then(|i| i64::try_from(i).ok()).unwrap_or(-1)
 }
 
 fn set_last_error(msg: &str) {
     LAST_ERROR.with(|cell| {
         *cell.borrow_mut() = CString::new(msg).ok();
     });
+    // A plain-string error carries no object index; clear it. Typed-error sites
+    // call `to_error_code` immediately after, which records the real index.
+    LAST_ERROR_OBJECT_INDEX.with(|c| c.set(-1));
 }
 
 /// Returns a pointer to the last error message, or NULL if no error.
@@ -161,6 +181,15 @@ pub extern "C" fn tgm_last_error() -> *const c_char {
             .map(|s| s.as_ptr())
             .unwrap_or(ptr::null())
     })
+}
+
+/// Returns the 0-based object index the last error refers to — e.g. the object
+/// whose inline hash was missing (`TGM_ERROR_MISSING_HASH`) or mismatched
+/// (`TGM_ERROR_HASH_MISMATCH`) — or `-1` if there is no last error or it carries
+/// no object index. Valid until the next FFI call on the same thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_last_error_object_index() -> i64 {
+    LAST_ERROR_OBJECT_INDEX.with(std::cell::Cell::get)
 }
 
 // ---------------------------------------------------------------------------
@@ -4738,6 +4767,21 @@ mod tests {
         assert!(
             last.contains("object 0"),
             "last error should name the offending object: {last}"
+        );
+        // The offending object index is now reachable from C (was documented
+        // but unimplemented before).
+        assert_eq!(
+            super::tgm_last_error_object_index(),
+            0,
+            "tgm_last_error_object_index should report the MissingHash object"
+        );
+        // A subsequent error without an object index clears it back to -1.
+        let mut ignored: *mut super::TgmMessage = ptr::null_mut();
+        let _ = super::tgm_decode(ptr::null(), 0, 0, 0, 0, &mut ignored);
+        assert_eq!(
+            super::tgm_last_error_object_index(),
+            -1,
+            "a non-object error should reset the index"
         );
         // No message handle was returned — nothing to free.
     }
