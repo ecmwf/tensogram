@@ -110,6 +110,29 @@ and refer to it by that name.
 
 Follow plans/DESIGN.md principles and the Code Style section of CONTRIBUTING.md in all code.
 
+## Cross-language interface symmetry (required)
+
+Every language binding (Rust, C, C++, Python, TypeScript, Fortran) MUST expose
+the **same user-facing capabilities**, differing only in idiom. **The Rust core
+(`rust/tensogram/src/lib.rs`) is the single reference** for names and semantics.
+See `plans/DESIGN.md` § *Cross-Language Interface Symmetry* for the authoritative
+feature × language matrix, the gap taxonomy, and the list of accepted
+exceptions.
+
+- When you **add or change a user-facing feature, mirror it across all bindings
+  in the same change** — or open a tracked gap classified as **[O]** omission
+  (the backend has it, the binding doesn't — fix in the binding), **[B]** backend
+  gap (the C ABI / core lacks it — widen upstream first), or **[L]** language
+  limit (cannot be expressed idiomatically — must be listed in DESIGN.md).
+- C, C++, and Fortran bind the **C ABI** (`rust/tensogram-ffi`), so they can only
+  be as complete as it is. Prefer **widening the C ABI** for any missing
+  capability — it unblocks all three C-family bindings at once.
+- Silent asymmetry is a bug. The ONLY sanctioned gaps are the [L] exceptions
+  documented in DESIGN.md; adding a new one requires documenting it there with a
+  concrete reason (not "not implemented yet").
+- Do **not** trust docstrings/READMEs for parity claims — verify against the
+  interface code AND the backend it binds.
+
 # Build / lint / test (required before marking done)
 
 This project contains Rust, Python, C, C++, Fortran and TypeScript code. The
@@ -329,8 +352,16 @@ Create and maintain documentation under docs/.
 
 # Examples
 
-Create and maintain a sub-dir examples/<lang> 
-- 1 sub-dir per supported language of the caller Rust, C++, Python
-- Populate with examples of caller code showing how to use interfaces
-- examplify the most common cases
-- show how to use all API functions
+Maintain `examples/<lang>/` for every supported caller language: **Rust, C++,
+Python, TypeScript, Fortran** (plus `examples/jupyter/` notebooks).
+- Populate with caller code showing how to use the interfaces.
+- Exemplify the most common cases first.
+- **Cover the full public surface**: every capability a binding exposes should
+  be exercised by at least one example in that language. This is part of the
+  cross-language symmetry contract (see `plans/DESIGN.md` § *Cross-Language
+  Interface Symmetry*) — an example gap in one language while another has it is a
+  symptom of surface drift. The 0.24.0 audit found large holes (e.g. the precise
+  metadata cursor, exotic dtypes, masks, doctor are exercised by no example in
+  several languages); new work must not widen them.
+- When a feature is added/mirrored across bindings, add/extend the matching
+  example in each language that supports it, in the same change.

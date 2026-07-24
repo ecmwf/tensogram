@@ -114,6 +114,166 @@ Common options:
 `tensogram::pipeline::apply_pipeline`, so both converters produce
 byte-identical descriptors for the same options.
 
+## Cross-Language Interface Symmetry
+
+**Goal: every language binding exposes the same user-facing capabilities, with
+the Rust core (`rust/tensogram/src/lib.rs`) as the single reference.** A user
+should be able to reach for tensogram in Rust, C, C++, Python, TypeScript, or
+Fortran and find the *same* feature set, differing only in idiom (e.g. Python
+`Mapping`, TS `Promise`, C out-params). Where a capability genuinely cannot be
+expressed in a language, the omission must be **explicit and documented here** —
+not an accident.
+
+Symmetry is a first-class requirement, not a nice-to-have: divergence is how the
+surface rots. Bindings grew organically around their primary consumers (Python
+for data science, TS for web/remote got the deepest investment; C/C++ a broad
+sync+async core; Fortran a minimal sync core), and without an enforced contract
+each binding covered only what its author needed. The 0.24.0 metadata-access
+parity work fixed *one* feature area across all six languages; this section
+extends that discipline to the *whole* surface.
+
+### The C ABI is the symmetry bottleneck for the C-family
+
+Python and TypeScript bind the Rust **core** directly (PyO3 / wasm-bindgen), so
+they can expose anything the core has. C, C++, and Fortran go through the C ABI
+(`rust/tensogram-ffi`): **C++ and Fortran can only be as complete as the C
+ABI.** Consequently many C/C++/Fortran gaps are not binding bugs — they are
+capabilities that were never lowered into the FFI. Closing C-family gaps usually
+means *first* widening the C ABI, then wrapping it.
+
+### Gap taxonomy
+
+Every missing cell is classified as one of:
+
+- **[O] Omission** — the backend it binds (Rust core for Py/TS; the C ABI for
+  C++/Fortran) already provides it; the binding just never exposed it. **Fixable
+  in the binding.** This is the default and the largest bucket.
+- **[B] Backend gap** — the layer it binds does not provide it either (e.g. the
+  C ABI has no `scan_file`, no typed validation model, no convert, no sync
+  remote). **Fix upstream first** (usually the FFI), then wrap.
+- **[L] Language limit** — cannot be expressed idiomatically in that language.
+  **Accepted; must be listed under "Documented exceptions" below.**
+
+### Feature × language matrix (audited 0.24.0)
+
+Legend: ● full · ◐ partial · ○ absent · — not in the core crate (sibling-crate
+or CLI-only). Feature-gated capabilities (async, remote, mmap) are still `●`
+where the reference provides them; gating is noted in prose. Reference = Rust
+core.
+
+| # | Capability | Rust | C | C++ | Python | TS | Fortran |
+|---|------------|:----:|:-:|:---:|:------:|:--:|:-------:|
+| 1 | Encode (buffer) | ● | ● | ● | ● | ● | ● |
+| 2 | Encode pre-encoded | ● | ● | ● | ● | ● | ○ |
+| 3 | Encode options (backend/threads/agg-hash/byte-order/SP-bits) | ● | ◐ | ◐ | ● | ◐ | ◐ |
+| 4 | Decode (full) | ● | ● | ● | ● | ● | ● |
+| 5 | Decode variants (object/range/descriptors/with-masks/metadata) | ● | ◐ | ◐ | ● | ◐ | ○ |
+| 6 | Metadata read (cursor + dot-path) | ● | ● | ● | ● | ● | ● |
+| 7 | Metadata build/write | ● | ● | ● | ● | ● | ◐ |
+| 8 | Object access (shape/dtype/strides/byte-order/hash) | ● | ● | ● | ● | ● | ◐ |
+| 9 | Dtype incl. exotic (f16/bf16/complex) | ● | ● | ◐ | ● | ● | ◐ |
+| 10 | File API | ● | ◐ | ● | ● | ● | ● |
+| 11 | Streaming encoder | ● | ● | ● | ● | ● | ◐ |
+| 12 | Streaming decode/consumer | ● | ◐ | ◐ | ● | ● | ◐ |
+| 13 | Async streaming (feat) | ● | ● | ◐ | ◐ | ● | ○ |
+| 14 | Iterators (messages/objects/objects_metadata) | ● | ◐ | ◐ | ◐ | ◐ | ○ |
+| 15 | Scan (buffer/file/options/inline-hashes) | ● | ◐ | ◐ | ◐ | ◐ | ○ |
+| 16 | Hash (compute + inline-hash read) | ● | ● | ◐ | ◐ | ◐ | ◐ |
+| 17 | Validate (message/file/buffer, typed report) | ● | ◐ | ◐ | ● | ● | ○ |
+| 18 | Doctor (diagnostics) | ● | ● | ○ | ● | ● | ○ |
+| 19 | Remote access (feat) | ● | ◐ | ◐ | ● | ● | ○ |
+| 20 | Convert GRIB/NetCDF | — | ○ | ○ | ● | ○ | ○ |
+| 21 | Masks (encode + `decode_with_masks` introspection) | ● | ◐ | ◐ | ● | ◐ | ○ |
+| 22 | Version (wire + package) | ● | ◐ | ◐ | ● | ● | ○ |
+| 23 | Error handling (typed) | ● | ◐ | ● | ● | ● | ● |
+| 24 | Wire/framing introspection (frame type/flags/layout) | ● | ◐ | ◐ | ◐ | ◐ | ○ |
+
+Where the bindings stand today: **Python** and **TypeScript** are the most
+complete (Python uniquely ships GRIB/NetCDF convert and `decode_with_masks`; TS
+exceeds the reference in remote, dtype view classes, and typed errors).
+**C/C++** have a broad sync+async core but are stringly-typed for options and
+inherit every C-ABI backend gap. **Fortran** is the smallest — a clean
+synchronous core that binds only ~36% of the C ABI; the overwhelming majority of
+its gaps are plain **[O]** omissions (iterators, scan, validate, doctor, hash
+utilities, masks, version, pre-encoded, decode variants, object descriptor
+accessors, the `threads` argument), not language limits.
+
+### Backend gaps to close first (the C ABI / core is the blocker)
+
+These block the whole C-family (and sometimes TS) and must be fixed upstream
+before wrapping:
+
+- **Convert (GRIB/NetCDF)** lives only in sibling crates + the CLI — no core/FFI
+  surface. Python reaches the crates directly; C/C++/TS/Fortran cannot.
+- **C ABI missing:** `decode_descriptors`, `decode_with_masks` (+ mask-set
+  introspection `DecodedMaskSet`/`MaskDescriptor`/`MasksMetadata`),
+  `decode_range_from_payload`; `scan_file`/`scan_with_options`/`ScanOptions`/
+  `data_object_inline_hashes`; `validate_buffer` and the **typed** validation
+  model (`ValidationReport`/`ValidationIssue`/`IssueCode`/…, currently JSON-only);
+  `compute_common`, `verify_canonical_cbor`; sync remote + `is_remote_url` +
+  `RemoteScanOptions` (only *async* remote open exists); typed wire introspection
+  (`FrameType`, `MessageFlags`, `MessageLayout`); typed `Dtype`, `ByteOrder`,
+  `AggregateHashPolicy`, `CompressionBackend` (all stringly-typed today).
+
+### Documented exceptions (accepted asymmetries — [L] language limits)
+
+These are the *only* sanctioned gaps. Everything else is a bug to fix.
+
+- **Fortran — async (cat 13, 19):** no coroutines/futures/closures/event loop in
+  Fortran 2008. The C ABI async *joins* are blocking and technically bindable,
+  but a Fortran caller can only immediately block-join, which collapses to the
+  sync API it already has. Accepted omission.
+- **Fortran — `float16`/`bfloat16` dtypes (cat 9):** no native half-precision
+  type; would require raw `int16` bit-manipulation with no arithmetic. Accepted.
+- **Fortran — unsigned dtypes `uint8/16/32/64` (cat 9):** Fortran has no unsigned
+  integer kind; round-tripping unsigned *tensors* is semantically lossy.
+  Accepted (scalar bit-pattern smuggling via `as_uint`→i64 is provided where it
+  makes sense).
+- **Fortran — metadata build beyond `base` (cat 7):** no stdlib JSON; the native
+  builder is a zero-dependency escaper limited to `base` entries. MARS/`_extra_`
+  must be authored as raw JSON. Accepted convenience-layer limit.
+- **TypeScript / WASM — `threads` (cat 3/4):** WASM is single-threaded; the
+  `threads`/`parallel_threshold` knobs are inert. The *option surface* should
+  still be accepted (and ignored) for source symmetry, but true parallelism is a
+  platform limit.
+- **C / C++ — typed value cursor vs Python/TS native:** Python returns native
+  `dict`/`list`; TS returns plain objects. This is idiomatic divergence, not a
+  gap — the *capability* (existence, typed read, nesting) is symmetric.
+
+### Interface defects found in the 0.24.0 audit (bugs, not by-design)
+
+Track and fix (see `plans/TODO.md`):
+
+- **C ABI:** the header documents `tgm_last_error_object_index()` (in the
+  `TGM_ERROR_MISSING_HASH` note) but the function **does not exist** — the
+  offending-object index is unreachable from C. Either add it or fix the doc.
+- **Python:** `DataObjectDescriptor.hash` is a permanent `None` stub whose
+  docstring points to `Message.object_inline_hashes()`/`Message.object_hash(i)`,
+  but `Message` is a bare 2-field `namedtuple` with **no such methods** — reading
+  v3 inline hashes is impossible from Python (dangling docs → dead end).
+- **Python:** `AsyncStreamingEncoder` (async streaming *encoder*) is entirely
+  absent, though the async *decode* surface is rich — a surprising [O] gap.
+- **TypeScript:** `TensogramFile.append` declares `allowNan`/`allowInf`/
+  `*MaskMethod`/`smallMaskThresholdBytes` in `AppendOptions` but `file.ts`
+  forwards **only `hash`** to `encode()` — the mask options are silently dropped.
+- **C ABI:** `tgm_doctor_to_json` exists but has **no C++ wrapper** (whole
+  `doctor` category missing from C++), and is unused by any C++ test/example.
+
+### Symmetry discipline (enforced going forward)
+
+- When you **add or change a user-facing capability**, mirror it across **all**
+  bindings in the same PR, or file follow-up gaps with the [O]/[B]/[L]
+  classification. The Rust core is the reference for names and semantics.
+- Prefer **widening the C ABI** for any capability the C-family lacks — that
+  unblocks C, C++, and Fortran at once.
+- Every capability must have a **runnable example in every language that
+  supports it** (`examples/<lang>/`), and the per-language example set should
+  cover the full public surface (see `# Examples` in AGENTS.md). The audit found
+  large example-coverage holes (e.g. the entire precise metadata cursor is
+  exercised by *no* C++/Python/Rust example; exotic dtypes by none).
+- This matrix is re-audited each release; the accepted-exceptions list above is
+  the sole source of truth for "intended" asymmetry.
+
 ## Key Design Decisions
 
 ### Per-Object Metadata
