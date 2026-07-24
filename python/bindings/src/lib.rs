@@ -33,13 +33,17 @@ use std::sync::Arc;
 #[cfg(feature = "async")]
 use tensogram_lib::AsyncStreamingEncoder;
 use tensogram_lib::validate::{
-    ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
+    ValidateOptions, ValidationLevel, validate_buffer as core_validate_buffer,
+    validate_file as core_validate_file, validate_message,
 };
 use tensogram_lib::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    RESERVED_KEY, RemoteScanOptions, StreamingEncoder, TensogramError, TensogramFile,
+    MessageLayout, ObjectIter as CoreObjectIter, RESERVED_KEY, RemoteScanOptions,
+    ScanOptions as CoreScanOptions, StreamingEncoder, TensogramError, TensogramFile,
     compute_common, data_object_inline_hashes, decode, decode_descriptors, decode_metadata,
-    decode_object, decode_range, encode, encode_pre_encoded, parse_hash_name, scan,
+    decode_object, decode_range, decode_range_from_payload, encode, encode_pre_encoded,
+    objects as core_objects, objects_metadata as core_objects_metadata, parse_hash_name, scan,
+    scan_file, scan_file_with_options, scan_with_options,
 };
 
 type PyObject = Py<PyAny>;
@@ -624,6 +628,58 @@ impl PyMetadata {
 }
 
 // ---------------------------------------------------------------------------
+// PyMessageLayout — wraps MessageLayout
+// ---------------------------------------------------------------------------
+
+/// Byte offset and length of a single message inside a ``.tgm`` file.
+///
+/// Direct binding of the Rust core :class:`tensogram::MessageLayout`,
+/// returned in scan order by :meth:`TensogramFile.message_layouts`.
+///
+/// Exposes ``offset`` and ``length`` read-only attributes and also
+/// behaves like a 2-tuple (``len(layout) == 2``; ``layout[0]`` is the
+/// offset, ``layout[1]`` the length), so ``off, length = layout`` works.
+#[pyclass(name = "MessageLayout", skip_from_py_object)]
+#[derive(Clone)]
+struct PyMessageLayout {
+    /// Byte offset of the message preamble.
+    #[pyo3(get)]
+    offset: u64,
+    /// Total message length in bytes (preamble through postamble).
+    #[pyo3(get)]
+    length: u64,
+}
+
+#[pymethods]
+impl PyMessageLayout {
+    fn __repr__(&self) -> String {
+        format!(
+            "MessageLayout(offset={}, length={})",
+            self.offset, self.length
+        )
+    }
+
+    fn __len__(&self) -> usize {
+        2
+    }
+
+    /// Tuple-style access: ``layout[0]`` → offset, ``layout[1]`` → length.
+    fn __getitem__(&self, py: Python<'_>, index: isize) -> PyResult<PyObject> {
+        match index {
+            0 | -2 => Ok(self.offset.into_pyobject(py)?.into_any().unbind()),
+            1 | -1 => Ok(self.length.into_pyobject(py)?.into_any().unbind()),
+            _ => Err(pyo3::exceptions::PyIndexError::new_err(
+                "MessageLayout index out of range (expected 0 or 1)",
+            )),
+        }
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.offset == other.offset && self.length == other.length
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PyTensogramFile — wraps TensogramFile
 // ---------------------------------------------------------------------------
 
@@ -680,9 +736,62 @@ impl PyTensogramFile {
         Ok(PyTensogramFile { file })
     }
 
+    /// Open a local file with memory-mapped I/O for zero-copy scans.
+    ///
+    /// Direct binding of the Rust core ``TensogramFile::open_mmap``
+    /// (Cargo feature ``mmap``, enabled by default in this build).  The
+    /// file is mapped into memory and the boundary scan runs directly on
+    /// the mapped buffer; :meth:`read_message` copies out of the mapped
+    /// region.  Memory-mapped files are read-only — :meth:`append` raises.
+    ///
+    /// Availability can be probed at runtime via ``tensogram.__has_mmap__``.
+    ///
+    /// Args:
+    ///     path: Path to a local ``.tgm`` file.
+    ///
+    /// Raises:
+    ///     OSError: If the file cannot be opened or mapped.
+    #[cfg(feature = "mmap")]
+    #[staticmethod]
+    fn open_mmap(py: Python<'_>, path: &str) -> PyResult<Self> {
+        let path = path.to_string();
+        let file = py
+            .detach(|| TensogramFile::open_mmap(&path))
+            .map_err(to_py_err)?;
+        Ok(PyTensogramFile { file })
+    }
+
     /// Number of valid messages in the file.
     fn message_count(&self, py: Python<'_>) -> PyResult<usize> {
         py.detach(|| self.file.message_count()).map_err(to_py_err)
+    }
+
+    /// Per-message ``(offset, length)`` layout, in scan order.
+    ///
+    /// Direct binding of the Rust core ``TensogramFile::message_layouts``.
+    /// Triggers a full scan if the file has not yet been scanned, then
+    /// returns one :class:`MessageLayout` per message — each carrying the
+    /// byte ``offset`` of the preamble and the total ``length`` (preamble
+    /// through postamble).  ``offset + length`` lands on the first byte of
+    /// the next message, or EOF for the last one.
+    ///
+    /// A :class:`MessageLayout` also unpacks like a 2-tuple, so both
+    /// ``layout.offset`` / ``layout.length`` and ``off, length = layout``
+    /// work.
+    ///
+    /// Example::
+    ///
+    ///     with tensogram.TensogramFile.open("data.tgm") as f:
+    ///         for layout in f.message_layouts():
+    ///             print(layout.offset, layout.length)
+    fn message_layouts(&self, py: Python<'_>) -> PyResult<Vec<PyMessageLayout>> {
+        let layouts = py
+            .detach(|| self.file.message_layouts())
+            .map_err(to_py_err)?;
+        Ok(layouts
+            .into_iter()
+            .map(|MessageLayout { offset, length }| PyMessageLayout { offset, length })
+            .collect())
     }
 
     /// Append one message.
@@ -1451,6 +1560,72 @@ fn py_decode_range(
     build_range_result(py, desc.dtype, parts, &ranges, join)
 }
 
+/// Decode sub-ranges directly from a raw object *payload*.
+///
+/// Direct binding of the Rust core
+/// :func:`tensogram::decode_range_from_payload` — the payload-relative
+/// primitive that :func:`decode_range` calls internally after it has
+/// located the frame.  Use it when you already hold a decoded
+/// :class:`DataObjectDescriptor` and the object's raw encoded payload
+/// bytes (e.g. from a custom container) and want to pull element
+/// sub-ranges without re-parsing the whole message frame.
+///
+/// The payload must be the object's on-wire encoded bytes matching the
+/// descriptor's ``encoding`` / ``filter`` / ``compression`` / ``params``.
+/// A ``filter`` other than ``"none"`` (e.g. ``shuffle``) and the
+/// sub-byte ``bitmask`` dtype are rejected — the same constraints as the
+/// Rust core.
+///
+/// Args:
+///     descriptor: the object's :class:`DataObjectDescriptor` (from
+///         :func:`decode_descriptors` / :func:`decode_object`).
+///     payload: the object's raw encoded payload bytes.
+///     ranges: list of ``(start, count)`` element-offset tuples,
+///         e.g. ``[(0, 10), (50, 5)]`` reads elements 0..10 and 50..55.
+///     join: when ``True``, return a single concatenated 1-d ndarray;
+///         when ``False`` (default), a ``list`` of 1-d ndarrays, one per
+///         range.
+///     native_byte_order: return native-endian bytes (``True``, default)
+///         or wire-order bytes (``False``).
+///     threads: thread budget (``0`` = sequential / env fallback).
+///
+/// Raises:
+///     ValueError: on an unsupported ``filter``/dtype, a malformed
+///         payload, or an out-of-bounds range.
+#[pyfunction]
+#[pyo3(
+    name = "decode_range_from_payload",
+    signature = (
+        descriptor,
+        payload,
+        ranges,
+        join=false,
+        native_byte_order=true,
+        threads=0,
+    )
+)]
+#[allow(clippy::too_many_arguments)]
+fn py_decode_range_from_payload(
+    py: Python<'_>,
+    descriptor: PyDataObjectDescriptor,
+    payload: PyBackedBytes,
+    ranges: Vec<(u64, u64)>,
+    join: bool,
+    native_byte_order: bool,
+    threads: u32,
+) -> PyResult<PyObject> {
+    let options = DecodeOptions {
+        native_byte_order,
+        threads,
+        ..Default::default()
+    };
+    let desc = descriptor.inner;
+    let parts = py.detach(|| {
+        decode_range_from_payload(&desc, &payload, &ranges, &options).map_err(to_py_err)
+    })?;
+    build_range_result(py, desc.dtype, parts, &ranges, join)
+}
+
 /// Scan *buf* for message boundaries → ``list[(offset, length)]``.
 ///
 /// Each tuple identifies one complete Tensogram message within the buffer.
@@ -1459,6 +1634,157 @@ fn py_decode_range(
 #[pyo3(name = "scan")]
 fn py_scan(py: Python<'_>, buf: PyBackedBytes) -> Vec<(usize, usize)> {
     py.detach(|| scan(&buf))
+}
+
+/// Reader-side options for the scan walkers.
+///
+/// Direct binding of the Rust core :class:`tensogram::ScanOptions` — the
+/// options consumed by :func:`scan_with_options` (in-memory) and
+/// :func:`scan_file_with_options` (streaming file I/O).
+///
+/// Args:
+///     bidirectional: When ``True`` (the default) the scanner runs a
+///         meet-in-the-middle walker pair — one forward from offset 0,
+///         one backward from EOF using the v3 postamble's mirrored
+///         ``total_length`` field — which can halve the hop count on
+///         multi-message inputs.  Set ``False`` to force a forward-only
+///         walk (pre-v3 behaviour; still correct).
+///     max_message_size: Upper bound on the ``total_length`` advertised
+///         by a postamble.  Anything larger is treated as corruption and
+///         the backward walker yields to the forward walker.  Defaults to
+///         4 GiB.  Lower it for producers that guarantee smaller messages
+///         to tighten corruption detection.
+///
+/// Example::
+///
+///     opts = tensogram.ScanOptions(bidirectional=False)
+///     spans = tensogram.scan_with_options(buf, opts)
+#[pyclass(name = "ScanOptions", from_py_object)]
+#[derive(Clone)]
+struct PyScanOptions {
+    inner: CoreScanOptions,
+}
+
+#[pymethods]
+impl PyScanOptions {
+    #[new]
+    #[pyo3(signature = (*, bidirectional=true, max_message_size=None))]
+    fn new(bidirectional: bool, max_message_size: Option<u64>) -> Self {
+        let defaults = CoreScanOptions::default();
+        PyScanOptions {
+            inner: CoreScanOptions {
+                bidirectional,
+                max_message_size: max_message_size.unwrap_or(defaults.max_message_size),
+            },
+        }
+    }
+
+    #[getter]
+    fn bidirectional(&self) -> bool {
+        self.inner.bidirectional
+    }
+
+    #[setter]
+    fn set_bidirectional(&mut self, value: bool) {
+        self.inner.bidirectional = value;
+    }
+
+    #[getter]
+    fn max_message_size(&self) -> u64 {
+        self.inner.max_message_size
+    }
+
+    #[setter]
+    fn set_max_message_size(&mut self, value: u64) {
+        self.inner.max_message_size = value;
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ScanOptions(bidirectional={}, max_message_size={})",
+            if self.inner.bidirectional {
+                "True"
+            } else {
+                "False"
+            },
+            self.inner.max_message_size,
+        )
+    }
+}
+
+/// Scan *buf* for message boundaries with explicit :class:`ScanOptions`.
+///
+/// Like :func:`scan` but lets the caller control the walker strategy
+/// (bidirectional vs forward-only, corruption cap).  Returns the same
+/// ``list[(offset, length)]`` — one tuple per complete message.
+///
+/// Args:
+///     buf: bytes containing zero or more wire-format messages.
+///     options: a :class:`ScanOptions` instance.
+#[pyfunction]
+#[pyo3(name = "scan_with_options")]
+fn py_scan_with_options(
+    py: Python<'_>,
+    buf: PyBackedBytes,
+    options: PyScanOptions,
+) -> Vec<(usize, usize)> {
+    py.detach(|| scan_with_options(&buf, &options.inner))
+}
+
+/// Scan a ``.tgm`` file for message boundaries using streaming I/O.
+///
+/// Direct binding of the Rust core :func:`tensogram::scan_file`.  Reads
+/// preamble-sized chunks and seeks forward, so the whole file is never
+/// loaded into memory — the counterpart to the in-memory :func:`scan`
+/// for large local files.  Returns the same ``list[(offset, length)]``
+/// pairs as :func:`scan`.
+///
+/// Args:
+///     path: Path to a local ``.tgm`` file.
+///
+/// Raises:
+///     OSError: If the file cannot be opened or read.
+///     ValueError: If the file is structurally malformed.
+#[pyfunction]
+#[pyo3(name = "scan_file")]
+fn py_scan_file(py: Python<'_>, path: &str) -> PyResult<Vec<(usize, usize)>> {
+    let path = path.to_string();
+    py.detach(|| {
+        let mut file = std::fs::File::open(&path).map_err(|e| {
+            TensogramError::Io(std::io::Error::new(e.kind(), format!("{path}: {e}")))
+        })?;
+        scan_file(&mut file)
+    })
+    .map_err(to_py_err)
+}
+
+/// Scan a ``.tgm`` file with explicit :class:`ScanOptions`.
+///
+/// Streaming-I/O sibling of :func:`scan_with_options`, binding the Rust
+/// core :func:`tensogram::scan_file_with_options`.
+///
+/// Args:
+///     path: Path to a local ``.tgm`` file.
+///     options: a :class:`ScanOptions` instance.
+///
+/// Raises:
+///     OSError: If the file cannot be opened or read.
+///     ValueError: If the file is structurally malformed.
+#[pyfunction]
+#[pyo3(name = "scan_file_with_options")]
+fn py_scan_file_with_options(
+    py: Python<'_>,
+    path: &str,
+    options: PyScanOptions,
+) -> PyResult<Vec<(usize, usize)>> {
+    let path = path.to_string();
+    py.detach(|| {
+        let mut file = std::fs::File::open(&path).map_err(|e| {
+            TensogramError::Io(std::io::Error::new(e.kind(), format!("{path}: {e}")))
+        })?;
+        scan_file_with_options(&mut file, &options.inner)
+    })
+    .map_err(to_py_err)
 }
 
 /// Read the per-object inline hash slots from a wire-format message.
@@ -1668,6 +1994,168 @@ impl PyBufferIter {
         let remaining = self.offsets.len().saturating_sub(self.index);
         format!(
             "MessageIter(position={}, remaining={})",
+            self.index, remaining
+        )
+    }
+}
+
+/// Lazily decode each object (tensor) in a single message.
+///
+/// Direct binding of the Rust core :func:`tensogram::objects` iterator.
+/// Unlike :func:`decode` (which eagerly materialises every object into a
+/// ``list``), this returns an :class:`ObjectIter` that decodes one object
+/// at a time on each ``next()`` — handy for large multi-object messages
+/// where the caller streams objects and discards each after use.
+///
+/// Args:
+///     buf: Wire-format message bytes (a single message, not a file).
+///     native_byte_order: Return native-endian bytes (``True``, default)
+///         or preserve the wire byte order (``False``).
+///     threads: intra-object thread budget (``0`` = sequential / env
+///         fallback).
+///     restore_non_finite: Re-materialise canonical NaN / ±Inf bit
+///         patterns from the frame's mask companion (``True``, default).
+///
+/// Yields:
+///     ``(DataObjectDescriptor, ndarray)`` tuples, one per object.
+///
+/// Example::
+///
+///     for desc, arr in tensogram.objects(msg):
+///         print(desc.shape, arr.mean())
+#[pyfunction]
+#[pyo3(
+    name = "objects",
+    signature = (
+        buf,
+        native_byte_order=true,
+        threads=0,
+        restore_non_finite=true,
+    )
+)]
+fn py_objects(
+    buf: PyBackedBytes,
+    native_byte_order: bool,
+    threads: u32,
+    restore_non_finite: bool,
+) -> PyResult<PyObjectIter> {
+    let options = DecodeOptions {
+        native_byte_order,
+        threads,
+        restore_non_finite,
+        ..Default::default()
+    };
+    let inner = core_objects(&buf, options).map_err(to_py_err)?;
+    Ok(PyObjectIter { inner })
+}
+
+/// Lazy iterator over the decoded objects in a single message.
+///
+/// Created by :func:`objects`.  Owns per-frame byte clones so it survives
+/// independently of the source buffer.  Implements ``__len__`` (remaining
+/// object count).
+#[pyclass(name = "ObjectIter")]
+struct PyObjectIter {
+    inner: CoreObjectIter,
+}
+
+#[pymethods]
+impl PyObjectIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        // Decode the next object off-GIL; `bytes_to_numpy` runs under
+        // the GIL because it constructs Python (numpy) objects.
+        match py.detach(|| self.inner.next()) {
+            None => Ok(None),
+            Some(Ok((desc, bytes))) => {
+                let arr = bytes_to_numpy(py, &desc, &bytes)?;
+                let py_desc = PyDataObjectDescriptor { inner: desc }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind();
+                let pair = pyo3::types::PyTuple::new(py, [py_desc, arr])?
+                    .into_any()
+                    .unbind();
+                Ok(Some(pair))
+            }
+            Some(Err(e)) => Err(to_py_err(e)),
+        }
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ObjectIter(remaining={})", self.inner.len())
+    }
+}
+
+/// Lazily iterate over the per-object descriptors in a message.
+///
+/// Direct binding of the Rust core :func:`tensogram::objects_metadata`.
+/// Reads only the frame headers and CBOR descriptors — no payload
+/// decompression — so it is much cheaper than :func:`objects` when the
+/// caller only needs shape / dtype / encoding metadata.
+///
+/// Args:
+///     buf: Wire-format message bytes (a single message, not a file).
+///
+/// Yields:
+///     :class:`DataObjectDescriptor` objects, one per object.
+///
+/// Example::
+///
+///     for desc in tensogram.objects_metadata(msg):
+///         print(desc.shape, desc.dtype)
+#[pyfunction]
+#[pyo3(name = "objects_metadata")]
+fn py_objects_metadata(buf: PyBackedBytes) -> PyResult<PyObjectMetadataIter> {
+    let descs: Vec<DataObjectDescriptor> =
+        core_objects_metadata(&buf).map_err(to_py_err)?.collect();
+    Ok(PyObjectMetadataIter { descs, index: 0 })
+}
+
+/// Lazy iterator over the per-object descriptors in a message.
+///
+/// Created by :func:`objects_metadata`.  Yields one
+/// :class:`DataObjectDescriptor` per ``next()`` without decoding any
+/// payload data.
+#[pyclass(name = "ObjectMetadataIter")]
+struct PyObjectMetadataIter {
+    descs: Vec<DataObjectDescriptor>,
+    index: usize,
+}
+
+#[pymethods]
+impl PyObjectMetadataIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        if self.index >= self.descs.len() {
+            return Ok(None);
+        }
+        let i = self.index;
+        self.index += 1;
+        let obj = PyDataObjectDescriptor {
+            inner: self.descs[i].clone(),
+        };
+        Ok(Some(obj.into_pyobject(py)?.into_any().unbind()))
+    }
+
+    fn __len__(&self) -> usize {
+        self.descs.len().saturating_sub(self.index)
+    }
+
+    fn __repr__(&self) -> String {
+        let remaining = self.descs.len().saturating_sub(self.index);
+        format!(
+            "ObjectMetadataIter(position={}, remaining={})",
             self.index, remaining
         )
     }
@@ -2228,6 +2716,42 @@ fn py_validate_file(
     let report = py
         .detach(|| core_validate_file(Path::new(&path), &options))
         .map_err(|e| PyIOError::new_err(format!("{e}")))?;
+    let json_val = serde_json::to_value(&report)
+        .map_err(|e| PyValueError::new_err(format!("serialization error: {e}")))?;
+    json_value_to_py(py, &json_val)
+}
+
+/// Validate all messages in an in-memory multi-message buffer.
+///
+/// Direct binding of the Rust core :func:`tensogram::validate_buffer` —
+/// the in-memory counterpart to :func:`validate_file`.  Distinct from
+/// :func:`validate`, which checks a **single** message: this scans *buf*
+/// for message boundaries, validates each message, and also reports
+/// file-level issues (gaps between messages, trailing bytes).
+///
+/// Args:
+///     buf: bytes containing zero or more wire-format messages.
+///     level: Validation depth (same as :func:`validate`).
+///     check_canonical: Check RFC 8949 deterministic CBOR key ordering.
+///
+/// Returns:
+///     A dict with keys ``"file_issues"`` (list of file-level issue dicts)
+///     and ``"messages"`` (list of per-message validation report dicts) —
+///     the same shape as :func:`validate_file`.  Each file-level issue has
+///     ``"byte_offset"``, ``"length"``, and ``"description"``.  Each
+///     message report has the same structure as the return value of
+///     :func:`validate` (``"issues"`` / ``"object_count"`` /
+///     ``"hash_verified"``).
+#[pyfunction]
+#[pyo3(name = "validate_buffer", signature = (buf, level="default", check_canonical=false))]
+fn py_validate_buffer(
+    py: Python<'_>,
+    buf: PyBackedBytes,
+    level: &str,
+    check_canonical: bool,
+) -> PyResult<PyObject> {
+    let options = parse_validate_options(level, check_canonical)?;
+    let report = py.detach(|| core_validate_buffer(&buf, &options));
     let json_val = serde_json::to_value(&report)
         .map_err(|e| PyValueError::new_err(format!("serialization error: {e}")))?;
     json_value_to_py(py, &json_val)
@@ -3679,11 +4203,18 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_decode_descriptors, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_object, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_range, m)?)?;
+    m.add_function(wrap_pyfunction!(py_decode_range_from_payload, m)?)?;
     m.add_function(wrap_pyfunction!(py_scan, m)?)?;
+    m.add_function(wrap_pyfunction!(py_scan_with_options, m)?)?;
+    m.add_function(wrap_pyfunction!(py_scan_file, m)?)?;
+    m.add_function(wrap_pyfunction!(py_scan_file_with_options, m)?)?;
+    m.add_function(wrap_pyfunction!(py_objects, m)?)?;
+    m.add_function(wrap_pyfunction!(py_objects_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(py_object_inline_hashes, m)?)?;
     m.add_function(wrap_pyfunction!(py_compute_common, m)?)?;
     m.add_function(wrap_pyfunction!(py_iter_messages, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(py_validate_buffer, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate_file, m)?)?;
     m.add_function(wrap_pyfunction!(py_compute_hash, m)?)?;
     m.add_function(wrap_pyfunction!(compute_packing_params, m)?)?;
@@ -3695,9 +4226,13 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_doctor, m)?)?;
     m.add_class::<PyMetadata>()?;
     m.add_class::<PyDataObjectDescriptor>()?;
+    m.add_class::<PyMessageLayout>()?;
+    m.add_class::<PyScanOptions>()?;
     m.add_class::<PyTensogramFile>()?;
     m.add_class::<PyFileIter>()?;
     m.add_class::<PyBufferIter>()?;
+    m.add_class::<PyObjectIter>()?;
+    m.add_class::<PyObjectMetadataIter>()?;
     m.add_class::<PyStreamingEncoder>()?;
     #[cfg(feature = "async")]
     m.add_class::<PyAsyncTensogramFile>()?;
@@ -3713,6 +4248,9 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     //       msgs = tensogram.convert_grib(...)
     m.add("__has_grib__", cfg!(feature = "grib"))?;
     m.add("__has_netcdf__", cfg!(feature = "netcdf"))?;
+    // Probe for memory-mapped file support. When true,
+    // `TensogramFile.open_mmap(path)` is available.
+    m.add("__has_mmap__", cfg!(feature = "mmap"))?;
 
     // Wire-format version constant.  See `plans/WIRE_FORMAT.md` §3 —
     // the version lives in the preamble of every message, never in the

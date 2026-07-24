@@ -9,8 +9,13 @@ name = "tensogram"
 crate-type = ["cdylib"]
 
 [features]
-default = ["async"]
+default = ["async", "mmap"]
 async = ["tensogram-lib/async", "dep:pyo3-async-runtimes", "dep:tokio"]
+# Memory-mapped file reads. Forwards to the core crate's `mmap` feature
+# (pulls in `memmap2`, a lightweight pure-Rust crate). When enabled,
+# `TensogramFile.open_mmap(path)` maps the file for zero-copy scans;
+# when off, the method is compiled out and `__has_mmap__` is False.
+mmap = ["tensogram-lib/mmap"]
 # Opt-in wrappers for GRIB / NetCDF conversion. These pull in the
 # `tensogram-grib` / `tensogram-netcdf` crates which link against
 # libeccodes / libnetcdf at build time. When the feature is off,
