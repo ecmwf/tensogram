@@ -1545,6 +1545,7 @@ fn build_tgm_message(
         encoding_strings,
         hash_type_strings,
         hash_value_strings,
+        object_masks: Vec::new(),
     }
 }
 
