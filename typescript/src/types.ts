@@ -218,6 +218,61 @@ export interface DecodedMessage {
 }
 
 /**
+ * Raw per-kind NaN / Inf bitmasks for one object, as returned by
+ * {@link decodeWithMasks}.
+ *
+ * Each mask is a `Uint8Array` of length `n_elements` (the descriptor's
+ * shape product), **one byte per tensor element**: `1` marks a position
+ * that held the corresponding non-finite value at encode time, `0` marks
+ * a finite position.  A kind the frame did not carry is `null`.
+ *
+ * The three kinds never overlap at the same index — the encoder assigns
+ * each element to at most one kind (the complex priority rule, see
+ * `plans/WIRE_FORMAT.md` §6.5.2).  Mask arrays are JS-heap copies and are
+ * safe to retain after the owning {@link DecodedMaskedMessage} is closed.
+ *
+ * Mirrors the Rust core `DecodedMaskSet { nan, pos_inf, neg_inf }`
+ * (each `Option<Vec<bool>>`).
+ */
+export interface DecodedMaskSet {
+  /** Positions that held NaN at encode time, or `null`. */
+  readonly nan: Uint8Array | null;
+  /** Positions that held `+Inf`, or `null`. */
+  readonly posInf: Uint8Array | null;
+  /** Positions that held `-Inf`, or `null`. */
+  readonly negInf: Uint8Array | null;
+}
+
+/**
+ * A single object decoded by {@link decodeWithMasks}: a normal
+ * {@link DecodedObject} whose `data()` / `dataView()` expose the
+ * `0.0`-substituted payload, plus the raw {@link DecodedMaskSet} for the
+ * three non-finite kinds.
+ */
+export interface DecodedMaskedObject extends DecodedObject {
+  /** Raw decompressed NaN / +Inf / -Inf masks for this object. */
+  readonly masks: DecodedMaskSet;
+}
+
+/**
+ * Result of {@link decodeWithMasks}.
+ *
+ * Like {@link DecodedMessage} but every object additionally carries a
+ * {@link DecodedMaskSet}.  The payloads are always `0.0`-substituted
+ * (restoration is intentionally not applied — that is the whole point of
+ * this advanced API); use the masks to reconstruct or reinterpret the
+ * missing positions.
+ */
+export interface DecodedMaskedMessage {
+  /** Global metadata parsed from the message's header metadata frame. */
+  readonly metadata: GlobalMetadata;
+  /** One entry per data-object frame in the message, in wire order. */
+  readonly objects: readonly DecodedMaskedObject[];
+  /** Release the underlying WASM memory. Idempotent. */
+  close(): void;
+}
+
+/**
  * A single decoded object frame from a streaming decoder.
  *
  * Similar to {@link DecodedObject} but additionally carries the
@@ -326,6 +381,29 @@ export interface MessagePosition {
   offset: number;
   /** Total byte length of the message (preamble through postamble). */
   length: number;
+}
+
+/**
+ * Options for {@link scanWithOptions}.
+ *
+ * Mirrors the Rust core `framing::ScanOptions`.
+ */
+export interface ScanOptions {
+  /**
+   * Enable the meet-in-the-middle walker pair (default `true`).  When
+   * `false`, the scanner walks forward from offset 0 only — still
+   * correct, just without the hop-count halving on multi-message
+   * buffers.
+   */
+  bidirectional?: boolean;
+  /**
+   * Upper bound (in bytes) on the `total_length` a postamble may
+   * advertise.  Anything larger is treated as corruption and the
+   * backward walker yields to the forward walker.  Default `4 GiB`
+   * (`4 * 1024 ** 3`).  Lower this for producers that guarantee
+   * smaller messages to tighten corruption detection.
+   */
+  maxMessageSize?: number;
 }
 
 /**

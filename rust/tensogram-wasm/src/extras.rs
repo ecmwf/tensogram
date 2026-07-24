@@ -19,6 +19,111 @@ use tensogram::{self as core, DecodeOptions};
 use tensogram_encodings::simple_packing;
 use wasm_bindgen::prelude::*;
 
+// ── decode_descriptors ───────────────────────────────────────────────────────
+
+/// Decode global metadata **and** per-object descriptors without
+/// decoding any payload data.
+///
+/// Thin binding over [`tensogram::decode_descriptors`].  Cheaper than
+/// [`crate::decode`] because the decompression / filter / endian-swap
+/// pipeline never runs — only shapes, dtypes, and the metadata frame
+/// are parsed.  Backs the lazy TypeScript `objects()` / `objectsMetadata()`
+/// iterators.
+///
+/// @param buf - Raw .tgm message bytes.
+/// @returns `{ metadata, descriptors }` — `metadata` is the same plain
+///   JS object shape as [`crate::decode_metadata`], `descriptors` is an
+///   array of descriptor objects (shape, dtype, encoding, …) in wire
+///   order.
+#[wasm_bindgen]
+pub fn decode_descriptors(buf: &[u8]) -> Result<JsValue, JsValue> {
+    let (metadata, descriptors) = core::decode_descriptors(buf).map_err(js_err)?;
+    let result = js_sys::Object::new();
+    set_field(&result, "metadata", &metadata_to_js(&metadata)?)?;
+    set_field(&result, "descriptors", &to_js(&descriptors)?)?;
+    Ok(result.into())
+}
+
+/// Set an own-property on a JS object, mapping the (practically
+/// unreachable) `Reflect::set` failure to a thrown JS error.
+fn set_field(obj: &js_sys::Object, key: &str, value: &JsValue) -> Result<(), JsValue> {
+    js_sys::Reflect::set(obj, &JsValue::from_str(key), value)
+        .map(|_| ())
+        .map_err(|_| JsValue::from(js_sys::Error::new(&format!("failed to set '{key}'"))))
+}
+
+// ── scan_with_options ────────────────────────────────────────────────────────
+
+/// Scan a multi-message buffer for message boundaries with explicit
+/// options.
+///
+/// Thin binding over [`tensogram::scan_with_options`].  Returns an array
+/// of `[offset, length]` pairs for each message found (identical shape
+/// to [`crate::scan`]).
+///
+/// @param buf - Buffer potentially containing multiple .tgm messages.
+/// @param bidirectional - Enable the meet-in-the-middle walker pair
+///   (default `true`).  When `false`, walks forward from offset 0 only.
+/// @param max_message_size - Upper bound (in bytes) on the `total_length`
+///   a postamble may advertise; anything larger is treated as corruption
+///   and the backward walker yields to the forward walker.  Omit for the
+///   core default (4 GiB).
+#[wasm_bindgen]
+pub fn scan_with_options(
+    buf: &[u8],
+    bidirectional: Option<bool>,
+    max_message_size: Option<f64>,
+) -> Result<JsValue, JsValue> {
+    let defaults = core::ScanOptions::default();
+    let max_message_size = match max_message_size {
+        Some(v) if v.is_finite() && v >= 0.0 => v as u64,
+        Some(v) => {
+            return Err(JsValue::from(js_sys::Error::new(&format!(
+                "max_message_size must be a non-negative finite number, got {v}"
+            ))));
+        }
+        None => defaults.max_message_size,
+    };
+    let opts = core::ScanOptions {
+        bidirectional: bidirectional.unwrap_or(defaults.bidirectional),
+        max_message_size,
+    };
+    let positions = core::scan_with_options(buf, &opts);
+    to_js(&positions)
+}
+
+// ── data_object_inline_hashes ────────────────────────────────────────────────
+
+/// Read the per-object inline hash slots from a wire-format message.
+///
+/// Thin binding over [`tensogram::data_object_inline_hashes`].  Walks
+/// the frame chain of a **single** message and collects the inline hash
+/// slot of every data-object frame, in emission order.
+///
+/// @param buf - Wire-format message bytes (a single message, not a file).
+/// @returns An array with one entry per data object, in order: a
+///   16-character lowercase xxh3-64 hex string (identical in form to
+///   [`crate::compute_hash`]) when the frame carries a non-zero digest,
+///   or `null` when the slot is empty (message encoded with hashing
+///   disabled, or that frame opted out).
+///
+/// The hex-string representation matches the Python
+/// `object_inline_hashes` and the C FFI `tgm_object_hash_value`
+/// accessor, so digests are byte-for-byte comparable across bindings.
+#[wasm_bindgen]
+pub fn data_object_inline_hashes(buf: &[u8]) -> Result<JsValue, JsValue> {
+    let hashes = core::data_object_inline_hashes(buf).map_err(js_err)?;
+    let arr = js_sys::Array::new_with_length(hashes.len() as u32);
+    for (i, h) in hashes.iter().enumerate() {
+        let val = match h {
+            Some(digest) => JsValue::from_str(&format!("{digest:016x}")),
+            None => JsValue::NULL,
+        };
+        arr.set(i as u32, val);
+    }
+    Ok(arr.into())
+}
+
 // ── decode_range ─────────────────────────────────────────────────────────────
 
 /// Decode partial sub-tensor ranges from a single data object.

@@ -25,6 +25,7 @@ mod convert;
 mod encoder;
 mod extras;
 mod layout;
+mod masks;
 mod remote_scan;
 mod streaming;
 
@@ -319,8 +320,13 @@ pub use remote_scan::{
 // ── Scope-C exports (decode_range, compute_hash, validate, …) ───────────────
 
 pub use extras::{
-    compute_hash, decode_range, encode_pre_encoded, simple_packing_compute_params, validate_buffer,
+    compute_hash, data_object_inline_hashes, decode_descriptors, decode_range, encode_pre_encoded,
+    scan_with_options, simple_packing_compute_params, validate_buffer,
 };
+
+// ── Wave-D exports (decode_with_masks + mask sets) ──────────────────────────
+
+pub use masks::{DecodedMaskedMessage, decode_with_masks};
 
 // ── Doctor: environment diagnostics ──────────────────────────────────────────
 

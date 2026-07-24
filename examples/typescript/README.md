@@ -61,3 +61,4 @@ npx tsx 01_encode_decode.ts
 | [`17_remote_s3_signed_fetch.ts`](17_remote_s3_signed_fetch.ts) | `createAwsSigV4Fetch` against a mock S3 that enforces `Authorization: AWS4-HMAC-SHA256 …` |
 | [`18_remote_scan_trace.ts`](18_remote_scan_trace.ts) | Intercept `console.debug` to capture `tensogram:scan:*` events from forward-only and bidirectional walkers |
 | [`19_file_create_masks.ts`](19_file_create_masks.ts) | `TensogramFile.create` empty-file factory + `append` with NaN/Inf mask options (`allowNan` / `allowInf` / `*MaskMethod`), read back with restoration |
+| [`20_masks_and_iterators.ts`](20_masks_and_iterators.ts) | `decodeWithMasks` (raw NaN / Inf masks) + lazy `objects` / `objectsMetadata` iterators + `scanWithOptions` / `dataObjectInlineHashes` |

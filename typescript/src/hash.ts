@@ -39,3 +39,35 @@ export function computeHash(data: Uint8Array, algo: HashAlgorithm = 'xxh3'): str
   const wbg = getWbg();
   return rethrowTyped(() => wbg.compute_hash(data, algo));
 }
+
+/**
+ * Read the per-object inline hash slots from a wire-format message.
+ *
+ * Mirrors the Rust core `tensogram::data_object_inline_hashes` (and the
+ * Python `object_inline_hashes` / C FFI `tgm_object_hash_value`): walks
+ * the frame chain of a **single** message and collects the inline hash
+ * slot of every data-object frame, in emission order.
+ *
+ * In v3 the per-object digest lives in the frame footer, not the CBOR
+ * descriptor (`plans/WIRE_FORMAT.md` §2.4), so this is the working
+ * accessor for the integrity digests that `DataObjectDescriptor.hash`
+ * cannot reach.
+ *
+ * @param buf - Wire-format message bytes (a single message, not a file).
+ * @returns   - One entry per data object, in order: a 16-character
+ *              lowercase xxh3-64 hex string (identical in form to the
+ *              output of {@link computeHash}) when the frame carries a
+ *              non-zero digest, or `null` when the slot is empty (the
+ *              message was encoded with hashing disabled, or that frame
+ *              opted out).
+ * @throws {InvalidArgumentError} when `buf` is not a `Uint8Array`.
+ * @throws {FramingError} when `buf` is not a structurally valid message
+ *   (truncated, bad frame header, length overflow).
+ */
+export function dataObjectInlineHashes(buf: Uint8Array): (string | null)[] {
+  if (!(buf instanceof Uint8Array)) {
+    throw new InvalidArgumentError(`buf must be a Uint8Array, got ${typeof buf}`);
+  }
+  const wbg = getWbg();
+  return rethrowTyped(() => wbg.data_object_inline_hashes(buf) as (string | null)[]);
+}
