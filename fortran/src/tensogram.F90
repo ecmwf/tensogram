@@ -83,6 +83,23 @@ module tensogram
    public :: tensogram_streaming_encoder_finish, tensogram_streaming_encoder_count
    public :: tensogram_num_objects, tensogram_object_ndim
    public :: tensogram_object_shape, tensogram_object_dtype
+   !> Wave-A symmetry surface — object descriptor accessors (mirror _dtype /
+   !> _shape), inline hash accessors, wire-version, whole-buffer utilities
+   !> (doctor / validate / scan / compute_hash), pre-encoded encode and the
+   !> decode-object / decode-range / decode-metadata variants.
+   public :: tensogram_object_type, tensogram_object_byte_order
+   public :: tensogram_object_filter, tensogram_object_compression
+   public :: tensogram_payload_encoding, tensogram_object_strides
+   public :: tensogram_object_hash_type, tensogram_object_hash_value
+   public :: tensogram_object_has_hash
+   public :: tensogram_message_version, tensogram_metadata_version
+   public :: TGM_WIRE_VERSION
+   public :: tensogram_doctor, tensogram_compute_hash
+   public :: tensogram_validate, tensogram_validate_file
+   public :: tensogram_scan
+   public :: tensogram_encode_pre_encoded
+   public :: tensogram_decode_object, tensogram_decode_metadata
+   public :: tensogram_decode_range
    public :: tensogram_strerror, tensogram_last_error, tensogram_check
    public :: TGM_ERROR_OK, TGM_ERROR_FRAMING, TGM_ERROR_METADATA,            &
              TGM_ERROR_ENCODING, TGM_ERROR_COMPRESSION, TGM_ERROR_OBJECT,    &
@@ -106,6 +123,14 @@ module tensogram
    integer(c_int), parameter :: TGM_ERROR_TIMEOUT       = 12
    integer(c_int), parameter :: TGM_ERROR_CANCELLED     = 13
 
+   ! ---- Wire-format version — mirror of TGM_WIRE_VERSION in tensogram.h -----
+   !  The wire version lives in the message PREAMBLE, never in the CBOR
+   !  metadata frame (see plans/WIRE_FORMAT.md §3). Exposed so callers can
+   !  reference it without decoding a message first; tensogram_message_version
+   !  / tensogram_metadata_version report the version a live handle carries
+   !  (always this value, since a v3 decoder rejects any other at parse time).
+   integer(c_int), parameter :: TGM_WIRE_VERSION = 3
+
    ! ---- tgm_value_type enum — mirror of tensogram.h (header order) ---------
    !  The kind of a metadata value handle. CBOR integers are i128-backed and
    !  surface as the single TGM_VALUE_TYPE_INT; use %as_int / %as_uint to
@@ -124,6 +149,15 @@ module tensogram
       type(c_ptr)       :: data = c_null_ptr
       integer(c_size_t) :: len  = 0_c_size_t
    end type tgm_bytes_t
+
+   ! ---- Interoperable POD struct: tgm_scan_entry_t -------------------------
+   !  One message's (byte offset, byte length) location within a scanned
+   !  buffer. A bind(C) POD like tgm_bytes_t, but returned BY VALUE from
+   !  tgm_scan_entry (never freed — the owning handle is tgm_scan_result_t*).
+   type, bind(C) :: tgm_scan_entry_t
+      integer(c_size_t) :: offset = 0_c_size_t
+      integer(c_size_t) :: length = 0_c_size_t
+   end type tgm_scan_entry_t
 
    ! ---- Owned encoded buffer (RAII over tgm_bytes_t) -----------------------
    type :: tensogram_buffer
@@ -699,6 +733,215 @@ module tensogram
          import :: c_ptr
          type(c_ptr), value :: enc
       end subroutine
+
+      ! ---- Wave-A symmetry additions ---------------------------------------
+      !  Plain synchronous C entry points: wire-version, environment doctor,
+      !  message/file validation, buffer scan, standalone hash, object
+      !  descriptor accessors, pre-encoded encode, and the decode variants.
+
+      function c_tgm_message_version(msg) &
+            bind(C, name="tgm_message_version") result(v)
+         import :: c_ptr, c_int64_t
+         type(c_ptr), value :: msg
+         integer(c_int64_t) :: v                 ! uint64_t
+      end function
+
+      function c_tgm_metadata_version(meta) &
+            bind(C, name="tgm_metadata_version") result(v)
+         import :: c_ptr, c_int64_t
+         type(c_ptr), value :: meta
+         integer(c_int64_t) :: v                 ! uint64_t
+      end function
+
+      function c_tgm_doctor_to_json(out) &
+            bind(C, name="tgm_doctor_to_json") result(err)
+         import :: c_int, tgm_bytes_t
+         type(tgm_bytes_t), intent(out) :: out
+         integer(c_int)                 :: err
+      end function
+
+      function c_tgm_validate(buf, buf_len, level, check_canonical, out) &
+            bind(C, name="tgm_validate") result(err)
+         import :: c_ptr, c_size_t, c_int32_t, c_int, tgm_bytes_t
+         type(c_ptr),        value       :: buf
+         integer(c_size_t),  value       :: buf_len
+         type(c_ptr),        value       :: level
+         integer(c_int32_t), value       :: check_canonical
+         type(tgm_bytes_t),  intent(out) :: out
+         integer(c_int)                  :: err
+      end function
+
+      function c_tgm_validate_file(path, level, check_canonical, out) &
+            bind(C, name="tgm_validate_file") result(err)
+         import :: c_ptr, c_int32_t, c_int, tgm_bytes_t
+         type(c_ptr),        value       :: path
+         type(c_ptr),        value       :: level
+         integer(c_int32_t), value       :: check_canonical
+         type(tgm_bytes_t),  intent(out) :: out
+         integer(c_int)                  :: err
+      end function
+
+      function c_tgm_scan(buf, buf_len, out) bind(C, name="tgm_scan") result(err)
+         import :: c_ptr, c_size_t, c_int
+         type(c_ptr),       value       :: buf
+         integer(c_size_t), value       :: buf_len
+         type(c_ptr),       intent(out) :: out
+         integer(c_int)                 :: err
+      end function
+
+      function c_tgm_scan_count(res) bind(C, name="tgm_scan_count") result(n)
+         import :: c_ptr, c_size_t
+         type(c_ptr), value :: res
+         integer(c_size_t)  :: n
+      end function
+
+      function c_tgm_scan_entry(res, index) &
+            bind(C, name="tgm_scan_entry") result(e)
+         import :: c_ptr, c_size_t, tgm_scan_entry_t
+         type(c_ptr),       value :: res
+         integer(c_size_t), value :: index
+         type(tgm_scan_entry_t)   :: e           ! POD struct returned BY VALUE
+      end function
+
+      subroutine c_tgm_scan_free(res) bind(C, name="tgm_scan_free")
+         import :: c_ptr
+         type(c_ptr), value :: res
+      end subroutine
+
+      function c_tgm_compute_hash(data, data_len, algo, out) &
+            bind(C, name="tgm_compute_hash") result(err)
+         import :: c_ptr, c_size_t, c_int, tgm_bytes_t
+         type(c_ptr),       value       :: data
+         integer(c_size_t), value       :: data_len
+         type(c_ptr),       value       :: algo
+         type(tgm_bytes_t), intent(out) :: out
+         integer(c_int)                 :: err
+      end function
+
+      function c_tgm_object_type(msg, idx) &
+            bind(C, name="tgm_object_type") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_object_byte_order(msg, idx) &
+            bind(C, name="tgm_object_byte_order") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_object_filter(msg, idx) &
+            bind(C, name="tgm_object_filter") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_object_compression(msg, idx) &
+            bind(C, name="tgm_object_compression") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_payload_encoding(msg, idx) &
+            bind(C, name="tgm_payload_encoding") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_object_hash_type(msg, idx) &
+            bind(C, name="tgm_object_hash_type") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_object_hash_value(msg, idx) &
+            bind(C, name="tgm_object_hash_value") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_payload_has_hash(msg, idx) &
+            bind(C, name="tgm_payload_has_hash") result(h)
+         import :: c_ptr, c_size_t, c_int32_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         integer(c_int32_t)       :: h
+      end function
+
+      function c_tgm_object_strides(msg, idx) &
+            bind(C, name="tgm_object_strides") result(p)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         type(c_ptr)              :: p
+      end function
+
+      function c_tgm_encode_pre_encoded(meta, ptrs, lens, n, hash, threads, out) &
+            bind(C, name="tgm_encode_pre_encoded") result(err)
+         import :: c_ptr, c_size_t, c_int32_t, c_int, tgm_bytes_t
+         type(c_ptr),        value       :: meta
+         type(c_ptr),        value       :: ptrs
+         type(c_ptr),        value       :: lens
+         integer(c_size_t),  value       :: n
+         type(c_ptr),        value       :: hash
+         integer(c_int32_t), value       :: threads
+         type(tgm_bytes_t),  intent(out) :: out
+         integer(c_int)                  :: err
+      end function
+
+      function c_tgm_decode_object(buf, buf_len, index, native_bo, threads, verify, out) &
+            bind(C, name="tgm_decode_object") result(err)
+         import :: c_ptr, c_size_t, c_int32_t, c_int
+         type(c_ptr),        value       :: buf
+         integer(c_size_t),  value       :: buf_len
+         integer(c_size_t),  value       :: index
+         integer(c_int32_t), value       :: native_bo
+         integer(c_int32_t), value       :: threads
+         integer(c_int32_t), value       :: verify
+         type(c_ptr),        intent(out) :: out
+         integer(c_int)                  :: err
+      end function
+
+      function c_tgm_decode_metadata(buf, buf_len, out) &
+            bind(C, name="tgm_decode_metadata") result(err)
+         import :: c_ptr, c_size_t, c_int
+         type(c_ptr),       value       :: buf
+         integer(c_size_t), value       :: buf_len
+         type(c_ptr),       intent(out) :: out
+         integer(c_int)                 :: err
+      end function
+
+      function c_tgm_decode_range(buf, buf_len, object_index, ranges_offsets,   &
+            ranges_counts, num_ranges, native_bo, threads, join, out, out_count) &
+            bind(C, name="tgm_decode_range") result(err)
+         import :: c_ptr, c_size_t, c_int32_t, c_int
+         type(c_ptr),        value       :: buf
+         integer(c_size_t),  value       :: buf_len
+         integer(c_size_t),  value       :: object_index
+         type(c_ptr),        value       :: ranges_offsets
+         type(c_ptr),        value       :: ranges_counts
+         integer(c_size_t),  value       :: num_ranges
+         integer(c_int32_t), value       :: native_bo
+         integer(c_int32_t), value       :: threads
+         integer(c_int32_t), value       :: join
+         type(c_ptr),        value       :: out       ! caller-owned tgm_bytes_t[]
+         integer(c_size_t),  intent(out) :: out_count
+         integer(c_int)                  :: err
+      end function
    end interface
 
 contains
@@ -756,6 +999,32 @@ contains
          f(i:i) = buf(i)
       end do
    end function cptr_len_to_fstr
+
+   !> C-address of a contiguous int8 buffer, or C_NULL_PTR for a zero-size
+   !> buffer. Honours the C ABI's "buf may be NULL when buf_len == 0" contract
+   !> (validate / scan / decode*) and avoids taking c_loc of a zero-size array.
+   function buf_ptr(b) result(p)
+      integer(c_int8_t), target, contiguous, intent(in) :: b(:)
+      type(c_ptr) :: p
+      if (size(b) > 0) then
+         p = c_loc(b)
+      else
+         p = c_null_ptr
+      end if
+   end function buf_ptr
+
+   !> Copy a Rust-owned tgm_bytes_t (UTF-8, length-delimited, NOT
+   !> NUL-terminated) into an allocatable Fortran string, then release it with
+   !> tgm_bytes_free. Shared by the JSON-report (doctor / validate) and
+   !> hex-digest (compute_hash) wrappers — the ptr+len payloads carry no
+   !> terminating NUL, so cptr_len_to_fstr (exact len, no strlen) is used,
+   !> mirroring the C++ `std::string(data, len)` + `tgm_bytes_free` idiom.
+   function take_bytes_str(raw) result(s)
+      type(tgm_bytes_t), intent(in) :: raw
+      character(len=:), allocatable :: s
+      s = cptr_len_to_fstr(raw%data, raw%len)
+      call c_tgm_bytes_free(raw)
+   end function take_bytes_str
 
    pure function itoa(i) result(s)
       integer(c_int64_t), intent(in) :: i
@@ -1071,6 +1340,59 @@ contains
 #undef FAM
 
    ! =========================================================================
+   !  Encode from pre-encoded payload bytes
+   ! =========================================================================
+
+   !> Encode a message from a full descriptor JSON and ALREADY-encoded payload
+   !> bytes. Unlike the generic tensogram_encode, the library does NOT re-run
+   !> the coding pipeline: each descriptor's encoding / filter / compression
+   !> must already describe `data` as supplied. `metadata_json` is the complete
+   !> `{"descriptors":[...]}` envelope (one descriptor per object). `data` is
+   !> every object's pre-encoded bytes CONCATENATED; `lens(k)` is object k's
+   !> byte length, so num_objects = size(lens) and sum(lens) == size(data). Any
+   !> `hash` embedded in the descriptors is ignored — the digest (default
+   !> "xxh3"; '' disables) is always recomputed over the caller's bytes.
+   subroutine tensogram_encode_pre_encoded(metadata_json, data, lens, buf, err, hash)
+      character(len=*),                      intent(in)  :: metadata_json
+      integer(c_int8_t), target, contiguous, intent(in)  :: data(:)
+      integer(c_size_t),                     intent(in)  :: lens(:)
+      type(tensogram_buffer),                intent(out) :: buf
+      integer(c_int),                        intent(out) :: err
+      character(len=*), intent(in), optional :: hash
+      character(kind=c_char), allocatable, target :: meta_c(:), hash_c(:)
+      type(c_ptr),       allocatable, target :: ptrs(:)
+      integer(c_size_t), allocatable, target :: lens_c(:)
+      type(c_ptr)       :: hash_ptr, ptrs_ptr, lens_ptr
+      integer(c_size_t) :: off
+      integer :: nobj, k
+      nobj = size(lens)
+      call f_to_cstr(metadata_json, meta_c)
+      call resolve_hash(hash, hash_c, hash_ptr)
+      ! max(nobj,1): never c_loc a zero-size array (the zero-object case passes
+      ! NULL pointers with num_objects = 0, mirroring the C++ binding).
+      allocate(ptrs(max(nobj, 1)), lens_c(max(nobj, 1)))
+      off = 0_c_size_t
+      do k = 1, nobj
+         if (lens(k) > 0_c_size_t) then
+            ptrs(k) = c_loc(data(off + 1_c_size_t))
+         else
+            ptrs(k) = c_null_ptr
+         end if
+         lens_c(k) = lens(k)
+         off = off + lens(k)
+      end do
+      if (nobj > 0) then
+         ptrs_ptr = c_loc(ptrs)
+         lens_ptr = c_loc(lens_c)
+      else
+         ptrs_ptr = c_null_ptr
+         lens_ptr = c_null_ptr
+      end if
+      err = c_tgm_encode_pre_encoded(c_loc(meta_c), ptrs_ptr, lens_ptr, &
+                                     int(nobj, c_size_t), hash_ptr, 0_c_int32_t, buf%raw)
+   end subroutine tensogram_encode_pre_encoded
+
+   ! =========================================================================
    !  Decode wire bytes -> message handle
    ! =========================================================================
 
@@ -1094,6 +1416,119 @@ contains
                          nbo, 0_c_int32_t, vh, out)
       if (err == TGM_ERROR_OK) msg%ptr = out
    end subroutine tensogram_decode
+
+   !> Decode a single object (1-based `obj_index`) into a message handle that
+   !> holds exactly that one object (accessible at Fortran index 1). `verify_hash`
+   !> (default .false.) and `native_byte_order` (default .true.) mirror
+   !> tensogram_decode.
+   subroutine tensogram_decode_object(wire, obj_index, msg, err, &
+                                      verify_hash, native_byte_order)
+      integer(c_int8_t), target, contiguous, intent(in)  :: wire(:)
+      integer,                                intent(in)  :: obj_index
+      type(tensogram_message),                intent(out) :: msg
+      integer(c_int),                         intent(out) :: err
+      logical, intent(in), optional :: verify_hash        ! default .false.
+      logical, intent(in), optional :: native_byte_order  ! default .true.
+      integer(c_int32_t) :: vh, nbo
+      type(c_ptr)        :: out
+      vh = 0_c_int32_t
+      if (present(verify_hash)) vh = merge(1_c_int32_t, 0_c_int32_t, verify_hash)
+      nbo = 1_c_int32_t
+      if (present(native_byte_order)) &
+         nbo = merge(1_c_int32_t, 0_c_int32_t, native_byte_order)
+      err = c_tgm_decode_object(buf_ptr(wire), size(wire, kind=c_size_t), &
+                                int(obj_index - 1, c_size_t), nbo, 0_c_int32_t, vh, out)
+      if (err == TGM_ERROR_OK) msg%ptr = out
+   end subroutine tensogram_decode_object
+
+   !> Decode only the global metadata (no payload bytes are read) into an
+   !> independent metadata handle (free with meta%free()).
+   subroutine tensogram_decode_metadata(wire, meta, err)
+      integer(c_int8_t), target, contiguous, intent(in)  :: wire(:)
+      type(tensogram_metadata),               intent(out) :: meta
+      integer(c_int),                         intent(out) :: err
+      type(c_ptr) :: out
+      err = c_tgm_decode_metadata(buf_ptr(wire), size(wire, kind=c_size_t), out)
+      if (err == TGM_ERROR_OK) meta%ptr = out
+   end subroutine tensogram_decode_metadata
+
+   !> Decode partial element ranges from object `obj_index` (1-based). Each
+   !> (offsets(k), counts(k)) pair selects `counts(k)` elements starting at the
+   !> 0-based element offset `offsets(k)` in the object's logical element
+   !> stream (offsets/counts must be the same length). With `join` = .false.
+   !> (default, split mode) the decoded buffers are returned CONCATENATED in
+   !> `out_bytes`, one entry per range in `out_lens`; with join = .true. a
+   !> single joined buffer is returned (out_lens has one entry). Only
+   !> uncompressed / szip objects support ranged decode; other pipelines set a
+   !> non-OK `err`. `native_byte_order` (default .true.) converts to host order.
+   subroutine tensogram_decode_range(wire, obj_index, offsets, counts, &
+                                     out_bytes, out_lens, err, join, native_byte_order)
+      integer(c_int8_t), target, contiguous, intent(in)  :: wire(:)
+      integer,                                intent(in)  :: obj_index
+      integer(c_int64_t),                     intent(in)  :: offsets(:)
+      integer(c_int64_t),                     intent(in)  :: counts(:)
+      integer(c_int8_t), allocatable,         intent(out) :: out_bytes(:)
+      integer(c_size_t), allocatable,         intent(out) :: out_lens(:)
+      integer(c_int),                         intent(out) :: err
+      logical, intent(in), optional :: join               ! default .false.
+      logical, intent(in), optional :: native_byte_order  ! default .true.
+      integer(c_int64_t), allocatable, target :: off_c(:), cnt_c(:)
+      type(tgm_bytes_t),  allocatable, target :: outs(:)
+      integer(c_int8_t),  pointer :: view(:)
+      integer(c_int32_t) :: nbo, jn
+      integer(c_size_t)  :: out_count, off
+      integer :: nr, nout, k
+
+      nr = size(offsets)
+      if (size(counts) /= nr) then
+         err = TGM_ERROR_INVALID_ARG
+         allocate(out_bytes(0), out_lens(0))
+         return
+      end if
+      if (nr == 0) then                          ! nothing requested
+         err = TGM_ERROR_OK
+         allocate(out_bytes(0), out_lens(0))
+         return
+      end if
+      nbo = 1_c_int32_t
+      if (present(native_byte_order)) &
+         nbo = merge(1_c_int32_t, 0_c_int32_t, native_byte_order)
+      jn = 0_c_int32_t
+      if (present(join)) jn = merge(1_c_int32_t, 0_c_int32_t, join)
+      off_c = offsets                            ! contiguous target copies for c_loc
+      cnt_c = counts
+      if (jn /= 0_c_int32_t) then
+         allocate(outs(1))
+      else
+         allocate(outs(nr))
+      end if
+      err = c_tgm_decode_range(buf_ptr(wire), size(wire, kind=c_size_t), &
+                               int(obj_index - 1, c_size_t), c_loc(off_c), c_loc(cnt_c), &
+                               int(nr, c_size_t), nbo, 0_c_int32_t, jn, c_loc(outs), out_count)
+      if (err /= TGM_ERROR_OK) then
+         allocate(out_bytes(0), out_lens(0))
+         return
+      end if
+      ! The C contract sets out_count == num_ranges (split) or 1 (join); clamp
+      ! to the buffers actually allocated as a belt-and-suspenders guard so a
+      ! surprising count can never drive an out-of-bounds read.
+      nout = int(min(out_count, int(size(outs), c_size_t)))
+      off = 0_c_size_t
+      do k = 1, nout                             ! total decoded byte count
+         off = off + outs(k)%len
+      end do
+      allocate(out_bytes(off), out_lens(nout))
+      off = 0_c_size_t
+      do k = 1, nout
+         out_lens(k) = outs(k)%len
+         if (outs(k)%len > 0_c_size_t .and. c_associated(outs(k)%data)) then
+            call c_f_pointer(outs(k)%data, view, [outs(k)%len])
+            out_bytes(off + 1_c_size_t : off + outs(k)%len) = view
+         end if
+         off = off + outs(k)%len
+         call c_tgm_bytes_free(outs(k))
+      end do
+   end subroutine tensogram_decode_range
 
    ! =========================================================================
    !  Object metadata accessors
@@ -1141,6 +1576,104 @@ contains
       character(len=:), allocatable :: dt
       dt = cptr_to_fstr(c_tgm_object_dtype(msg%ptr, int(iobj - 1, c_size_t)))
    end function tensogram_object_dtype
+
+   !> Object-type string of object `iobj` (e.g. "ntensor"); '' out of range.
+   function tensogram_object_type(msg, iobj) result(s)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      character(len=:), allocatable :: s
+      s = cptr_to_fstr(c_tgm_object_type(msg%ptr, int(iobj - 1, c_size_t)))
+   end function tensogram_object_type
+
+   !> Byte-order string of object `iobj` ("big" or "little"); '' out of range.
+   function tensogram_object_byte_order(msg, iobj) result(s)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      character(len=:), allocatable :: s
+      s = cptr_to_fstr(c_tgm_object_byte_order(msg%ptr, int(iobj - 1, c_size_t)))
+   end function tensogram_object_byte_order
+
+   !> Filter string of object `iobj` (e.g. "none", "shuffle"); '' out of range.
+   function tensogram_object_filter(msg, iobj) result(s)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      character(len=:), allocatable :: s
+      s = cptr_to_fstr(c_tgm_object_filter(msg%ptr, int(iobj - 1, c_size_t)))
+   end function tensogram_object_filter
+
+   !> Compression string of object `iobj` (e.g. "none", "zstd"); '' out of range.
+   function tensogram_object_compression(msg, iobj) result(s)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      character(len=:), allocatable :: s
+      s = cptr_to_fstr(c_tgm_object_compression(msg%ptr, int(iobj - 1, c_size_t)))
+   end function tensogram_object_compression
+
+   !> Encoding string of object `iobj` (e.g. "none", "simple_packing"); ''
+   !> out of range. (C name: tgm_payload_encoding.)
+   function tensogram_payload_encoding(msg, iobj) result(s)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      character(len=:), allocatable :: s
+      s = cptr_to_fstr(c_tgm_payload_encoding(msg%ptr, int(iobj - 1, c_size_t)))
+   end function tensogram_payload_encoding
+
+   !> Object element strides in FORTRAN (column-major) order — the on-wire
+   !> strides REVERSED, matching tensogram_object_shape. strd(1) is the
+   !> fastest-varying axis (1 for a C-/Fortran-contiguous array). Empty for an
+   !> out-of-range index.
+   function tensogram_object_strides(msg, iobj) result(strd)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      integer(c_int64_t), allocatable :: strd(:)
+      integer(c_int64_t), pointer     :: cstr(:)
+      integer     :: nd, k
+      type(c_ptr) :: p
+      nd = tensogram_object_ndim(msg, iobj)
+      allocate(strd(nd))
+      if (nd == 0) return
+      p = c_tgm_object_strides(msg%ptr, int(iobj - 1, c_size_t))
+      call c_f_pointer(p, cstr, [nd])
+      do k = 1, nd
+         strd(k) = cstr(nd - k + 1)              ! reverse -> Fortran order
+      end do
+   end function tensogram_object_strides
+
+   !> Hash-type string of object `iobj` ("xxh3"), or '' when it carries no
+   !> inline hash (or the index is out of range).
+   function tensogram_object_hash_type(msg, iobj) result(s)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      character(len=:), allocatable :: s
+      s = cptr_to_fstr(c_tgm_object_hash_type(msg%ptr, int(iobj - 1, c_size_t)))
+   end function tensogram_object_hash_type
+
+   !> Hash-value hex string of object `iobj`, or '' when it carries no inline
+   !> hash (or the index is out of range).
+   function tensogram_object_hash_value(msg, iobj) result(s)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      character(len=:), allocatable :: s
+      s = cptr_to_fstr(c_tgm_object_hash_value(msg%ptr, int(iobj - 1, c_size_t)))
+   end function tensogram_object_hash_value
+
+   !> .true. when object `iobj` has a populated inline xxh3 hash slot (see
+   !> tgm_payload_has_hash); .false. for an unhashed message or out-of-range
+   !> index. The matching digest is tensogram_object_hash_value.
+   function tensogram_object_has_hash(msg, iobj) result(has)
+      type(tensogram_message), intent(in) :: msg
+      integer,                 intent(in) :: iobj
+      logical :: has
+      has = c_tgm_payload_has_hash(msg%ptr, int(iobj - 1, c_size_t)) /= 0_c_int32_t
+   end function tensogram_object_has_hash
+
+   !> Wire-format version carried by this decoded message handle (always
+   !> TGM_WIRE_VERSION for a v3 decoder; 0 for a null handle).
+   function tensogram_message_version(msg) result(v)
+      type(tensogram_message), intent(in) :: msg
+      integer :: v
+      v = int(c_tgm_message_version(msg%ptr))
+   end function tensogram_message_version
 
    ! =========================================================================
    !  Decode helper: validate object i against an expected dtype, return the
@@ -1717,6 +2250,15 @@ contains
       n = int(c_tgm_metadata_num_objects(meta%ptr))
    end function tensogram_metadata_num_objects
 
+   !> Wire-format version the metadata handle was decoded under (always
+   !> TGM_WIRE_VERSION for a v3 decoder; 0 for a null handle). The version
+   !> lives in the preamble, not the CBOR frame.
+   function tensogram_metadata_version(meta) result(v)
+      type(tensogram_metadata), intent(in) :: meta
+      integer :: v
+      v = int(c_tgm_metadata_version(meta%ptr))
+   end function tensogram_metadata_version
+
    !> Existence check for a dot-notation path. With `obj_index` (1-based) the
    !> lookup is scoped to base[obj_index] (no cross-object first-match, no
    !> _extra_ fallback, _reserved_ hidden at the first segment); without it the
@@ -1950,5 +2492,146 @@ contains
 #undef KS
 #undef TGM_BODY
 #undef FAM
+
+   ! =========================================================================
+   !  Whole-buffer / environment utilities (doctor, validate, scan, hash)
+   ! =========================================================================
+
+   !> Environment diagnostics as a JSON report string (mirrors the CLI
+   !> `tensogram doctor`; keys include "build", "wire_version", "features",
+   !> "self_test"). Returns '' on failure — the optional `err` carries the code.
+   function tensogram_doctor(err) result(json)
+      integer(c_int), intent(out), optional :: err
+      character(len=:), allocatable :: json
+      type(tgm_bytes_t) :: raw
+      integer(c_int)    :: e
+      e = c_tgm_doctor_to_json(raw)
+      if (present(err)) err = e
+      if (e == TGM_ERROR_OK) then
+         json = take_bytes_str(raw)
+      else
+         json = ''
+      end if
+   end function tensogram_doctor
+
+   !> Validate a single message buffer; returns the JSON report string (keys
+   !> "issues", "object_count", "hash_verified"; a clean message has
+   !> "issues":[]). `level` (default "default") is one of "quick" / "default" /
+   !> "checksum" / "full"; `check_canonical` (default .false.) also checks RFC
+   !> 8949 CBOR key ordering. Returns '' on an argument error (optional `err`).
+   function tensogram_validate(buffer, level, check_canonical, err) result(report)
+      integer(c_int8_t), target, contiguous, intent(in)  :: buffer(:)
+      character(len=*), intent(in),  optional :: level
+      logical,          intent(in),  optional :: check_canonical
+      integer(c_int),   intent(out), optional :: err
+      character(len=:), allocatable :: report
+      character(kind=c_char), allocatable, target :: level_c(:)
+      type(c_ptr)        :: level_ptr
+      integer(c_int32_t) :: cc
+      type(tgm_bytes_t)  :: raw
+      integer(c_int)     :: e
+      if (present(level)) then
+         call f_to_cstr(trim(level), level_c)
+         level_ptr = c_loc(level_c)
+      else
+         level_ptr = c_null_ptr                  ! NULL => "default"
+      end if
+      cc = 0_c_int32_t
+      if (present(check_canonical)) cc = merge(1_c_int32_t, 0_c_int32_t, check_canonical)
+      e = c_tgm_validate(buf_ptr(buffer), size(buffer, kind=c_size_t), level_ptr, cc, raw)
+      if (present(err)) err = e
+      if (e == TGM_ERROR_OK) then
+         report = take_bytes_str(raw)
+      else
+         report = ''
+      end if
+   end function tensogram_validate
+
+   !> Validate all messages in a `.tgm` file; returns the JSON report string
+   !> (keys "file_issues", "messages"). `level` / `check_canonical` behave as
+   !> tensogram_validate. Returns '' on an I/O or argument error (optional
+   !> `err` — e.g. TGM_ERROR_IO for a missing file).
+   function tensogram_validate_file(path, level, check_canonical, err) result(report)
+      character(len=*), intent(in)            :: path
+      character(len=*), intent(in),  optional :: level
+      logical,          intent(in),  optional :: check_canonical
+      integer(c_int),   intent(out), optional :: err
+      character(len=:), allocatable :: report
+      character(kind=c_char), allocatable, target :: path_c(:), level_c(:)
+      type(c_ptr)        :: level_ptr
+      integer(c_int32_t) :: cc
+      type(tgm_bytes_t)  :: raw
+      integer(c_int)     :: e
+      call f_to_cstr(trim(path), path_c)
+      if (present(level)) then
+         call f_to_cstr(trim(level), level_c)
+         level_ptr = c_loc(level_c)
+      else
+         level_ptr = c_null_ptr                  ! NULL => "default"
+      end if
+      cc = 0_c_int32_t
+      if (present(check_canonical)) cc = merge(1_c_int32_t, 0_c_int32_t, check_canonical)
+      e = c_tgm_validate_file(c_loc(path_c), level_ptr, cc, raw)
+      if (present(err)) err = e
+      if (e == TGM_ERROR_OK) then
+         report = take_bytes_str(raw)
+      else
+         report = ''
+      end if
+   end function tensogram_validate_file
+
+   !> Scan a buffer for message boundaries. For each message found, `offsets(k)`
+   !> is its 1-BASED start index into `buffer` and `lengths(k)` is its byte
+   !> length, so message k is `buffer(offsets(k) : offsets(k) + lengths(k) - 1)`.
+   !> Both arrays are allocated to the message count (size 0 on error / empty
+   !> buffer).
+   subroutine tensogram_scan(buffer, offsets, lengths, err)
+      integer(c_int8_t), target, contiguous, intent(in)  :: buffer(:)
+      integer(c_size_t), allocatable,        intent(out) :: offsets(:)
+      integer(c_size_t), allocatable,        intent(out) :: lengths(:)
+      integer(c_int),                        intent(out) :: err
+      type(c_ptr)            :: res
+      type(tgm_scan_entry_t) :: entry
+      integer(c_size_t)      :: n, k
+      err = c_tgm_scan(buf_ptr(buffer), size(buffer, kind=c_size_t), res)
+      if (err /= TGM_ERROR_OK) then
+         allocate(offsets(0), lengths(0))
+         return
+      end if
+      n = c_tgm_scan_count(res)
+      allocate(offsets(n), lengths(n))
+      do k = 1_c_size_t, n
+         entry = c_tgm_scan_entry(res, k - 1_c_size_t)
+         offsets(k) = entry%offset + 1_c_size_t  ! 1-based Fortran index into buffer
+         lengths(k) = entry%length
+      end do
+      call c_tgm_scan_free(res)
+   end subroutine tensogram_scan
+
+   !> Hex-encoded hash of `data` (default algorithm "xxh3"; xxh3 => 16 hex
+   !> chars). Returns '' on failure (optional `err` carries the code).
+   function tensogram_compute_hash(data, algo, err) result(hex)
+      integer(c_int8_t), target, contiguous, intent(in)  :: data(:)
+      character(len=*), intent(in),  optional :: algo
+      integer(c_int),   intent(out), optional :: err
+      character(len=:), allocatable :: hex
+      character(len=:), allocatable :: algo_s
+      character(kind=c_char), allocatable, target :: algo_c(:)
+      type(tgm_bytes_t) :: raw
+      integer(c_int)    :: e
+      if (present(algo)) then
+         algo_s = trim(algo)
+      else
+         algo_s = 'xxh3'
+      end if
+      call f_to_cstr(algo_s, algo_c)
+      e = c_tgm_compute_hash(buf_ptr(data), size(data, kind=c_size_t), c_loc(algo_c), raw)
+      if (present(err)) err = e
+      if (e == TGM_ERROR_OK) then
+         hex = take_bytes_str(raw)
+      else
+         hex = ''
+      end if
+   end function tensogram_compute_hash
 
 end module tensogram

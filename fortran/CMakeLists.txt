@@ -82,13 +82,17 @@ if(TENSOGRAM_FORTRAN_EXAMPLES)
   add_executable(fortran_streaming
     ${CMAKE_CURRENT_SOURCE_DIR}/../examples/fortran/streaming.f90)
   target_link_libraries(fortran_streaming PRIVATE tensogram_f)
+
+  add_executable(fortran_validate
+    ${CMAKE_CURRENT_SOURCE_DIR}/../examples/fortran/validate.f90)
+  target_link_libraries(fortran_validate PRIVATE tensogram_f)
 endif()
 
 if(TENSOGRAM_FORTRAN_TESTS)
   enable_testing()
 
   # Positive tests: succeed (exit 0).
-  foreach(t test_roundtrip test_dtype_rank test_ranks test_file_api test_metadata test_metadata_value test_streaming test_edge_cases test_errors)
+  foreach(t test_roundtrip test_dtype_rank test_ranks test_file_api test_metadata test_metadata_value test_streaming test_edge_cases test_errors test_symmetry)
     add_executable(${t} test/${t}.f90)
     target_link_libraries(${t} PRIVATE tensogram_f)
     add_test(NAME ${t} COMMAND ${t})
@@ -97,7 +101,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   # Run the examples as smoke tests when they are built — otherwise they are
   # only compile-checked, never executed. Each must exit 0.
   if(TENSOGRAM_FORTRAN_EXAMPLES)
-    foreach(ex fortran_encode_decode fortran_file_api fortran_streaming)
+    foreach(ex fortran_encode_decode fortran_file_api fortran_streaming fortran_validate)
       add_test(NAME smoke_${ex} COMMAND ${ex})
     endforeach()
   endif()

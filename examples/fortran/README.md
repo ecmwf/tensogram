@@ -9,6 +9,7 @@ by `cargo cinstall -p tensogram-ffi` or the release tarballs).
 | `encode_decode.f90` | Encode a `real(:,:)` field, decode it back, and assert the round-trip is bit-identical |
 | `file_api.f90` | Append several fields to a multi-message `.tgm`, then reopen, count, and decode each by index |
 | `streaming.f90` | Stream a multi-object message progressively (one object at a time), then reopen and decode every object |
+| `validate.f90` | Scan a multi-message buffer for boundaries, read each message's wire version, and validate the buffer + a `.tgm` file (JSON reports) |
 
 ## Build & run
 
