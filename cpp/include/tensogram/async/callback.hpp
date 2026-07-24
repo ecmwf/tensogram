@@ -218,6 +218,41 @@ inline void trampoline_join_convert(void* userdata) noexcept {
     delete state;
 }
 
+/// Owned array of byte buffers returned by an async range decode.
+using range_buffers = std::vector<std::vector<std::uint8_t>>;
+
+/// Transfer an FFI `tgm_bytes_t[count]` array into owned vectors and
+/// release the array via `tgm_multi_bytes_free`.  Shared by the
+/// callback trampoline and the pull-model blocking joiner.
+inline range_buffers multi_bytes_to_vectors(tgm_bytes_t* array, std::size_t count) {
+    range_buffers out;
+    out.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        out.emplace_back(array[i].data, array[i].data + array[i].len);
+    }
+    tgm_multi_bytes_free(array, count);
+    return out;
+}
+
+/// Trampoline for the multi-byte-buffer join (`decode_range`).  The FFI
+/// hands back an owned array of `tgm_bytes_t` plus a count; we copy each
+/// into an owned vector and release the array with `tgm_multi_bytes_free`.
+/// This join has two out-params, so it cannot reuse the single-out
+/// `trampoline_join_convert`.
+inline void trampoline_join_multi_bytes(void* userdata) noexcept {
+    auto* state = static_cast<completion_state<range_buffers>*>(userdata);
+    tgm_bytes_t* array = nullptr;
+    std::size_t count = 0;
+    tgm_error e = tgm_async_task_join_multi_bytes(state->task, &array, &count);
+    if (e == TGM_ERROR_OK) {
+        state->cb(result<range_buffers>::ok_value(multi_bytes_to_vectors(array, count)));
+    } else {
+        state->cb(result<range_buffers>::err(e, error_message_from_last()));
+    }
+    tgm_async_task_free(state->task);
+    delete state;
+}
+
 }  // namespace detail
 
 // ============================================================
@@ -247,7 +282,100 @@ inline std::size_t size_to_size_t(std::uint64_t&& n) {
     return static_cast<std::size_t>(n);
 }
 
+// -- pull-model blocking joiners --------------------------------------
+//
+// The completion (push) trampolines above are paired with blocking
+// joiners here so the same typed-join + convert logic backs both the
+// callback frontend and the pull-model `task<T>` handle.  Each returns a
+// `result<T>` (never throws), snapshotting the FFI last-error message on
+// the joining thread before it can be clobbered.
+
+inline result<std::size_t> join_size_result(tgm_async_task_t* task) {
+    std::uint64_t n = 0;
+    tgm_error e = tgm_async_task_join_size(task, &n);
+    if (e == TGM_ERROR_OK) return result<std::size_t>::ok_value(static_cast<std::size_t>(n));
+    return result<std::size_t>::err(e, error_message_from_last());
+}
+
+inline result<tensogram::message> join_message_result(tgm_async_task_t* task) {
+    tgm_message_t* raw = nullptr;
+    tgm_error e = tgm_async_task_join_message(task, &raw);
+    if (e == TGM_ERROR_OK) {
+        return result<tensogram::message>::ok_value(tensogram::detail::message_from_raw(raw));
+    }
+    return result<tensogram::message>::err(e, error_message_from_last());
+}
+
+inline result<range_buffers> join_multi_bytes_result(tgm_async_task_t* task) {
+    tgm_bytes_t* array = nullptr;
+    std::size_t count = 0;
+    tgm_error e = tgm_async_task_join_multi_bytes(task, &array, &count);
+    if (e == TGM_ERROR_OK) return result<range_buffers>::ok_value(multi_bytes_to_vectors(array, count));
+    return result<range_buffers>::err(e, error_message_from_last());
+}
+
 }  // namespace detail
+
+// ============================================================
+// task<T> — pull-model (poll / cancel / join) task handle
+// ============================================================
+
+/// Move-only RAII owner of a single in-flight FFI task in the *pull*
+/// model.  Where the completion-based `async_file` methods hand the task
+/// to a dispatcher trampoline, `task<T>` keeps ownership so the caller
+/// can poll `ready()`, optionally `cancel()`, and then `join()` exactly
+/// once to consume the typed result.
+///
+/// Obtain one from the `*_task` launchers on async_file (e.g.
+/// `decode_object_task`).  This is the C++ surface for the FFI's
+/// `tgm_async_task_is_ready` / `tgm_async_task_cancel`; the completion
+/// frontends (coro / std_future) instead consume readiness through their
+/// awaiter / future and cancellation through `cancellation_token`.
+///
+/// @note Not thread-safe: poll / cancel / join from one thread at a time.
+template <typename T>
+class task {
+public:
+    task(task&&) noexcept = default;
+    task& operator=(task&&) noexcept = default;
+    task(const task&) = delete;
+    task& operator=(const task&) = delete;
+
+    /// Non-blocking readiness poll (`tgm_async_task_is_ready`).  Returns
+    /// true once the task has resolved (success, error, timeout, or
+    /// cancellation), so a subsequent join() will not block.
+    [[nodiscard]] bool ready() const noexcept {
+        return tgm_async_task_is_ready(handle_.get());
+    }
+
+    /// Request cooperative cancellation (`tgm_async_task_cancel`).  The
+    /// task transitions to `TGM_ERROR_CANCELLED` at its next yield point.
+    /// Idempotent; safe after the task has already resolved.
+    void cancel() noexcept { tgm_async_task_cancel(handle_.get()); }
+
+    /// Block until ready, then consume the typed result exactly once.
+    /// A second join() returns an `invalid_arg` result rather than
+    /// double-joining the underlying task.
+    result<T> join() {
+        if (joined_) {
+            return result<T>::err(TGM_ERROR_INVALID_ARG, "task result already consumed");
+        }
+        joined_ = true;
+        return joiner_(handle_.get());
+    }
+
+private:
+    friend class async_file;
+    using deleter_t = void (*)(tgm_async_task_t*);
+    using joiner_t = result<T> (*)(tgm_async_task_t*);
+
+    task(tgm_async_task_t* raw, joiner_t joiner)
+        : handle_(raw, &tgm_async_task_free), joiner_(joiner) {}
+
+    std::unique_ptr<tgm_async_task_t, deleter_t> handle_;
+    joiner_t joiner_;
+    bool joined_ = false;
+};
 
 class async_file {
 public:
@@ -421,6 +549,150 @@ public:
             &detail::trampoline_join_convert<std::vector<std::uint8_t>, tgm_bytes_t,
                 &tgm_async_task_join_bytes, &detail::bytes_to_vector>,
             state);
+    }
+
+    /// Async decode of a single object `obj_index` from message
+    /// `msg_index`, returning a single-object `tensogram::message` so the
+    /// usual object accessors apply.  Flags mirror decode_message().
+    void decode_object(std::size_t msg_index, std::size_t obj_index,
+                       std::function<void(result<tensogram::message>)> cb,
+                       cancellation_token* token = nullptr,
+                       std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        tgm_async_task_t* task = nullptr;
+        tgm_error err = tgm_async_file_decode_object(
+            handle_.get(), msg_index, obj_index,
+            true,   // native_byte_order
+            0,      // threads
+            true,   // restore_non_finite
+            false,  // verify_hash
+            token ? token->raw() : nullptr,
+            static_cast<uint64_t>(timeout.count()),
+            &task);
+        if (err != TGM_ERROR_OK) {
+            cb(result<tensogram::message>::err(err, detail::error_message_from_last()));
+            return;
+        }
+        auto* state = new detail::completion_state<tensogram::message>{std::move(cb), task};
+        tgm_async_task_set_completion(
+            task,
+            &detail::trampoline_join_convert<tensogram::message, tgm_message_t*,
+                &tgm_async_task_join_message, &detail::message_from_raw_handle>,
+            state);
+    }
+
+    /// Async decode of partial ranges from object `obj_index` in message
+    /// `msg_index`.  Each `(element_offset, element_count)` pair resolves
+    /// to one byte buffer (split mode), returned as a vector of vectors.
+    void decode_range(std::size_t msg_index, std::size_t obj_index,
+                      const std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges,
+                      std::function<void(result<std::vector<std::vector<std::uint8_t>>>)> cb,
+                      cancellation_token* token = nullptr,
+                      std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        // The FFI copies the offset/count arrays before returning, so
+        // these locals only need to outlive the synchronous launch call.
+        std::vector<std::uint64_t> offsets;
+        std::vector<std::uint64_t> counts;
+        offsets.reserve(ranges.size());
+        counts.reserve(ranges.size());
+        for (const auto& r : ranges) {
+            offsets.push_back(r.first);
+            counts.push_back(r.second);
+        }
+        tgm_async_task_t* task = nullptr;
+        tgm_error err = tgm_async_file_decode_range(
+            handle_.get(), msg_index, obj_index,
+            offsets.empty() ? nullptr : offsets.data(),
+            counts.empty() ? nullptr : counts.data(),
+            ranges.size(),
+            true,   // native_byte_order
+            0,      // threads
+            token ? token->raw() : nullptr,
+            static_cast<uint64_t>(timeout.count()),
+            &task);
+        if (err != TGM_ERROR_OK) {
+            cb(result<detail::range_buffers>::err(err, detail::error_message_from_last()));
+            return;
+        }
+        auto* state = new detail::completion_state<detail::range_buffers>{std::move(cb), task};
+        tgm_async_task_set_completion(task, &detail::trampoline_join_multi_bytes, state);
+    }
+
+    /// Borrowed file path (`tgm_async_file_path`).  Valid until this
+    /// handle is closed; empty for a null handle.
+    [[nodiscard]] std::string path() const {
+        const char* p = tgm_async_file_path(handle_.get());
+        return p ? p : "";
+    }
+
+    // -- pull-model launchers (poll / cancel / join) --------------------
+    //
+    // Return a `task<T>` the caller owns and consumes with ready() /
+    // cancel() / join(), instead of a dispatcher completion.  They throw
+    // the typed `tensogram::error` hierarchy if the launch itself fails
+    // (unlike the completion methods, which report launch errors through
+    // the callback).
+
+    /// Pull-model message count.  Join yields the count.
+    [[nodiscard]] task<std::size_t> message_count_task(
+        cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        tgm_async_task_t* raw = nullptr;
+        tensogram::detail::check(tgm_async_file_message_count(
+            handle_.get(), token ? token->raw() : nullptr,
+            static_cast<uint64_t>(timeout.count()), &raw));
+        return task<std::size_t>(raw, &detail::join_size_result);
+    }
+
+    /// Pull-model decode of message `index`.  Join yields a message.
+    [[nodiscard]] task<tensogram::message> decode_message_task(
+        std::size_t index, cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        tgm_async_task_t* raw = nullptr;
+        tensogram::detail::check(tgm_async_file_decode_message(
+            handle_.get(), index, true, 0, true, false,
+            token ? token->raw() : nullptr,
+            static_cast<uint64_t>(timeout.count()), &raw));
+        return task<tensogram::message>(raw, &detail::join_message_result);
+    }
+
+    /// Pull-model decode of object `obj_index` from message `msg_index`.
+    /// Join yields a single-object message.
+    [[nodiscard]] task<tensogram::message> decode_object_task(
+        std::size_t msg_index, std::size_t obj_index,
+        cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        tgm_async_task_t* raw = nullptr;
+        tensogram::detail::check(tgm_async_file_decode_object(
+            handle_.get(), msg_index, obj_index, true, 0, true, false,
+            token ? token->raw() : nullptr,
+            static_cast<uint64_t>(timeout.count()), &raw));
+        return task<tensogram::message>(raw, &detail::join_message_result);
+    }
+
+    /// Pull-model partial-range decode.  Join yields one byte buffer per
+    /// `(element_offset, element_count)` range (split mode).
+    [[nodiscard]] task<std::vector<std::vector<std::uint8_t>>> decode_range_task(
+        std::size_t msg_index, std::size_t obj_index,
+        const std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges,
+        cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        std::vector<std::uint64_t> offsets;
+        std::vector<std::uint64_t> counts;
+        offsets.reserve(ranges.size());
+        counts.reserve(ranges.size());
+        for (const auto& r : ranges) {
+            offsets.push_back(r.first);
+            counts.push_back(r.second);
+        }
+        tgm_async_task_t* raw = nullptr;
+        tensogram::detail::check(tgm_async_file_decode_range(
+            handle_.get(), msg_index, obj_index,
+            offsets.empty() ? nullptr : offsets.data(),
+            counts.empty() ? nullptr : counts.data(),
+            ranges.size(), true, 0,
+            token ? token->raw() : nullptr,
+            static_cast<uint64_t>(timeout.count()), &raw));
+        return task<detail::range_buffers>(raw, &detail::join_multi_bytes_result);
     }
 
     /// Internal helper: raw FFI handle.  Reserved for the
@@ -626,6 +898,13 @@ public:
     /// for a typed version that distinguishes those cases.
     [[nodiscard]] std::size_t object_count() const noexcept {
         return tgm_async_streaming_encoder_object_count(handle_.get());
+    }
+
+    /// Borrowed encoder output path (`tgm_async_streaming_encoder_path`).
+    /// Valid for the lifetime of the handle; empty for a null handle.
+    [[nodiscard]] std::string path() const {
+        const char* p = tgm_async_streaming_encoder_path(handle_.get());
+        return p ? p : "";
     }
 
 private:

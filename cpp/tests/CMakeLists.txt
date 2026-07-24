@@ -22,12 +22,15 @@ set(TENSOGRAM_TEST_SOURCES
     test_validate.cpp
     test_allow_nan_inf.cpp
     test_decode_verify_hash.cpp
+    test_doctor.cpp
 )
 
 if(TENSOGRAM_ASYNC)
     list(APPEND TENSOGRAM_TEST_SOURCES test_async_callback.cpp)
     list(APPEND TENSOGRAM_TEST_SOURCES test_async_stdfuture.cpp)
     list(APPEND TENSOGRAM_TEST_SOURCES test_async_producer_consumer.cpp)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_decode_object_range.cpp)
+    list(APPEND TENSOGRAM_TEST_SOURCES test_async_task_control.cpp)
 endif()
 
 # Test executable

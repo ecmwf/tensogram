@@ -128,9 +128,27 @@ public:
 /// Catch this base when you want to handle either kind
 /// uniformly; catch the subclasses to discriminate.  See
 /// `plans/DESIGN.md` §"Integrity Hashing".
+///
+/// Carries the 0-based index of the offending data object (the frame
+/// whose inline hash was missing or mismatched) via object_index(),
+/// mirroring the C ABI's `tgm_last_error_object_index()`.
 class integrity_error : public error {
 public:
-    integrity_error(tgm_error code, const std::string& msg) : error(code, msg) {}
+    integrity_error(tgm_error code, const std::string& msg,
+                    std::int64_t object_index = -1)
+        : error(code, msg), object_index_(object_index) {}
+
+    /// The 0-based index of the data object this integrity failure
+    /// refers to, or `-1` when the error carries no object index.
+    ///
+    /// Sourced from the C ABI's `tgm_last_error_object_index()` at the
+    /// throw site.  For `hash_mismatch_error` / `missing_hash_error`
+    /// this pinpoints the frame that failed decode-time verification,
+    /// so callers can react per-object without parsing `what()`.
+    [[nodiscard]] std::int64_t object_index() const noexcept { return object_index_; }
+
+private:
+    std::int64_t object_index_;
 };
 
 /// Thrown when decode-time hash verification was requested,
@@ -146,8 +164,9 @@ public:
 /// structured fields.  See `plans/WIRE_FORMAT.md` §2.5.
 class hash_mismatch_error : public integrity_error {
 public:
-    hash_mismatch_error(tgm_error code, const std::string& msg)
-        : integrity_error(code, msg) {}
+    hash_mismatch_error(tgm_error code, const std::string& msg,
+                        std::int64_t object_index = -1)
+        : integrity_error(code, msg, object_index) {}
 };
 
 /// Thrown when decode-time hash verification was requested but
@@ -157,8 +176,9 @@ public:
 /// against.  See `plans/WIRE_FORMAT.md` §2.5.
 class missing_hash_error : public integrity_error {
 public:
-    missing_hash_error(tgm_error code, const std::string& msg)
-        : integrity_error(code, msg) {}
+    missing_hash_error(tgm_error code, const std::string& msg,
+                       std::int64_t object_index = -1)
+        : integrity_error(code, msg, object_index) {}
 };
 
 /// Thrown when an invalid argument is passed to a Tensogram function.
@@ -204,7 +224,13 @@ namespace detail {
 /// thread-local last-error string) and by the async frontends (which
 /// capture the message inside completion handlers, before any other FFI
 /// call on the thread can clobber the last-error slot).
-[[noreturn]] inline void throw_for_code(tgm_error err, const std::string& message) {
+///
+/// `object_index` is the 0-based data-object index the error refers to
+/// (from `tgm_last_error_object_index()`), or `-1` when none.  It is
+/// carried only by the integrity subclasses; every other exception
+/// ignores it.
+[[noreturn]] inline void throw_for_code(tgm_error err, const std::string& message,
+                                        std::int64_t object_index = -1) {
     switch (err) {
         case TGM_ERROR_FRAMING:       throw framing_error(err, message);
         case TGM_ERROR_METADATA:      throw metadata_error(err, message);
@@ -212,8 +238,8 @@ namespace detail {
         case TGM_ERROR_COMPRESSION:   throw compression_error(err, message);
         case TGM_ERROR_OBJECT:        throw object_error(err, message);
         case TGM_ERROR_IO:            throw io_error(err, message);
-        case TGM_ERROR_HASH_MISMATCH: throw hash_mismatch_error(err, message);
-        case TGM_ERROR_MISSING_HASH:  throw missing_hash_error(err, message);
+        case TGM_ERROR_HASH_MISMATCH: throw hash_mismatch_error(err, message, object_index);
+        case TGM_ERROR_MISSING_HASH:  throw missing_hash_error(err, message, object_index);
         case TGM_ERROR_INVALID_ARG:   throw invalid_arg_error(err, message);
         case TGM_ERROR_REMOTE:        throw remote_error(err, message);
         case TGM_ERROR_TIMEOUT:       throw timeout_error(err, message);
@@ -227,8 +253,13 @@ namespace detail {
 inline void check(tgm_error err) {
     if (err == TGM_ERROR_OK) return;
     const char* msg = tgm_last_error();
+    // Snapshot the object index immediately after the message pointer,
+    // before any other FFI call on this thread can clobber the shared
+    // thread-local error slot.  `tgm_error_string` (below) is a pure
+    // lookup and does not touch the slot, so this ordering is safe.
+    const std::int64_t object_index = tgm_last_error_object_index();
     std::string message = msg ? msg : tgm_error_string(err);
-    throw_for_code(err, message);
+    throw_for_code(err, message, object_index);
 }
 
 /// Adapter that splits a vector of (pointer, length) pairs into parallel
@@ -266,6 +297,26 @@ struct scatter_gather {
 struct scan_entry {
     std::size_t offset;  ///< Byte offset of the message start.
     std::size_t length;  ///< Byte length of the message.
+};
+
+/// simple_packing (GRIB-style lossy quantisation) parameters computed
+/// from a set of sample values by compute_simple_packing_params().
+///
+/// These are the three scale parameters a `simple_packing` descriptor
+/// needs (`sp_reference_value`, `sp_binary_scale_factor`,
+/// `sp_decimal_scale_factor`); pass them straight into the descriptor
+/// JSON instead of hand-rolling the C out-params.
+struct simple_packing_params {
+    /// Reference (minimum) value subtracted from every sample before
+    /// packing — the descriptor's `sp_reference_value`.
+    double reference_value = 0.0;
+    /// Base-2 scale exponent chosen to fit the value range into
+    /// `bits_per_value` bits — the descriptor's `sp_binary_scale_factor`.
+    std::int32_t binary_scale_factor = 0;
+    /// Base-10 scale exponent, echoed back from the request so callers
+    /// have all three params in one place — the descriptor's
+    /// `sp_decimal_scale_factor`.
+    std::int32_t decimal_scale_factor = 0;
 };
 
 /// Options controlling message encoding.
@@ -1736,6 +1787,46 @@ private:
     return result;
 }
 
+/// Compute simple_packing (lossy quantisation) parameters for a set of
+/// f64 sample values.
+///
+/// Wraps `tgm_simple_packing_compute_params`: given the samples, the
+/// target `bits_per_value`, and a `decimal_scale_factor`, it returns the
+/// `reference_value` + `binary_scale_factor` the packer will use (plus
+/// the decimal scale echoed back).  Feed the returned
+/// simple_packing_params into a `simple_packing` descriptor so callers
+/// do not have to touch the C out-params.
+///
+/// @param values               Pointer to the f64 samples.
+/// @param num_values           Number of samples.
+/// @param bits_per_value       Target bit width per packed value.
+/// @param decimal_scale_factor Base-10 pre-scale (usually 0).
+/// @return The computed simple_packing_params.
+/// @throws tensogram::encoding_error If the samples contain NaN.
+[[nodiscard]] inline simple_packing_params compute_simple_packing_params(
+    const double* values, std::size_t num_values,
+    int bits_per_value, int decimal_scale_factor = 0) {
+    simple_packing_params params{};
+    params.decimal_scale_factor = static_cast<std::int32_t>(decimal_scale_factor);
+    detail::check(tgm_simple_packing_compute_params(
+        values, num_values,
+        static_cast<std::uint32_t>(bits_per_value),
+        static_cast<std::int32_t>(decimal_scale_factor),
+        &params.reference_value, &params.binary_scale_factor));
+    return params;
+}
+
+/// Compute simple_packing parameters for a vector of f64 sample values.
+///
+/// Convenience overload of compute_simple_packing_params() taking a
+/// std::vector; see that overload for semantics and throwing behaviour.
+[[nodiscard]] inline simple_packing_params compute_simple_packing_params(
+    const std::vector<double>& values,
+    int bits_per_value, int decimal_scale_factor = 0) {
+    return compute_simple_packing_params(values.data(), values.size(),
+                                         bits_per_value, decimal_scale_factor);
+}
+
 /// Validate a single Tensogram message buffer.
 ///
 /// Returns a JSON string describing the validation report.
@@ -1782,6 +1873,31 @@ private:
                                                bool check_canonical = false) {
     tgm_bytes_t bytes{};
     detail::check(tgm_validate_file(path, level, check_canonical ? 1 : 0, &bytes));
+    std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
+    tgm_bytes_free(bytes);
+    return result;
+}
+
+/// Run environment diagnostics and return the report as a JSON string.
+///
+/// Wraps `tgm_doctor_to_json`, mirroring `tensogram::doctor::run_diagnostics()`
+/// and the `tensogram doctor` CLI subcommand.  The same JSON shape is
+/// produced by Python's `tensogram.doctor()` and the WASM `doctor()`
+/// export (see `docs/src/cli/doctor.md` for the schema).  The report
+/// covers the library version, build/runtime environment, the codecs
+/// compiled into this build, and a `self_test` array for the core
+/// encode/decode pipeline; the C FFI build does not run the CLI-only
+/// GRIB / NetCDF converter self-tests.
+///
+/// The returned `tgm_bytes_t` is managed with the same RAII /
+/// `tgm_bytes_free` pattern as validate() and metadata::to_json().
+///
+/// @return JSON diagnostics report (UTF-8) ready for
+///         `nlohmann::json::parse` or any JSON reader.
+/// @throws tensogram::encoding_error If serialising the report fails.
+[[nodiscard]] inline std::string doctor() {
+    tgm_bytes_t bytes{};
+    detail::check(tgm_doctor_to_json(&bytes));
     std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
     tgm_bytes_free(bytes);
     return result;

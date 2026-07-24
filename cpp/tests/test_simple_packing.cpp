@@ -162,6 +162,78 @@ TEST(SimplePackingTest, ConstantField) {
 }
 
 // ---------------------------------------------------------------------------
+// Typed C++ wrapper: compute_simple_packing_params
+// ---------------------------------------------------------------------------
+
+TEST(SimplePackingTest, TypedHelperVectorOverloadMatchesRawCApi) {
+    std::vector<double> values = {100.0, 200.0, 300.0, 400.0};
+
+    // Raw C API for comparison.
+    double ref_c = 0.0;
+    std::int32_t bsf_c = 0;
+    ASSERT_EQ(tgm_simple_packing_compute_params(
+                  values.data(), values.size(), 16, 0, &ref_c, &bsf_c),
+              TGM_ERROR_OK);
+
+    // Typed helper — vector overload.
+    auto params = tensogram::compute_simple_packing_params(values, 16);
+    EXPECT_DOUBLE_EQ(params.reference_value, ref_c);
+    EXPECT_EQ(params.binary_scale_factor, bsf_c);
+    EXPECT_DOUBLE_EQ(params.reference_value, 100.0);  // reference == minimum
+    EXPECT_EQ(params.decimal_scale_factor, 0);        // echoed back
+}
+
+TEST(SimplePackingTest, TypedHelperPointerOverloadEchoesDecimalScale) {
+    std::vector<double> values = {270.0, 275.0, 280.0, 285.0, 290.0};
+    auto params = tensogram::compute_simple_packing_params(
+        values.data(), values.size(), /*bits_per_value=*/12,
+        /*decimal_scale_factor=*/2);
+    EXPECT_DOUBLE_EQ(params.reference_value, 270.0);
+    EXPECT_EQ(params.decimal_scale_factor, 2);
+}
+
+TEST(SimplePackingTest, TypedHelperThrowsEncodingErrorOnNaN) {
+    std::vector<double> values = {1.0, std::nan(""), 3.0};
+    EXPECT_THROW(tensogram::compute_simple_packing_params(values, 16),
+                 tensogram::encoding_error);
+}
+
+TEST(SimplePackingTest, TypedHelperRoundTripBuildsDescriptor) {
+    // End-to-end: use the typed helper to fill in the descriptor's packing
+    // params, encode, decode, and verify the values round-trip.
+    std::vector<double> values = {100.0, 200.0, 300.0, 400.0, 500.0};
+    const int bits_per_value = 16;
+
+    auto params = tensogram::compute_simple_packing_params(values, bits_per_value);
+
+    char ref_buf[64];
+    std::snprintf(ref_buf, sizeof(ref_buf), "%.17g", params.reference_value);
+
+    std::string json =
+        R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[5],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"simple_packing","filter":"none","compression":"none","sp_bits_per_value":)" +
+        std::to_string(bits_per_value) +
+        R"(,"sp_reference_value":)" + std::string(ref_buf) +
+        R"(,"sp_binary_scale_factor":)" + std::to_string(params.binary_scale_factor) +
+        R"(,"sp_decimal_scale_factor":)" + std::to_string(params.decimal_scale_factor) +
+        R"(}]})";
+
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(values.data()),
+         values.size() * sizeof(double)}};
+
+    auto encoded = tensogram::encode(json, objects);
+    auto msg = tensogram::decode(encoded.data(), encoded.size());
+    auto obj = msg.object(0);
+    EXPECT_EQ(obj.encoding(), "simple_packing");
+
+    const double* decoded = obj.data_as<double>();
+    ASSERT_EQ(obj.element_count<double>(), values.size());
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        EXPECT_NEAR(decoded[i], values[i], 1.0) << "Mismatch at index " << i;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Auto-compute path: descriptor with only sp_bits_per_value lets the
 // encoder derive sp_reference_value + sp_binary_scale_factor from the data.
 // ---------------------------------------------------------------------------

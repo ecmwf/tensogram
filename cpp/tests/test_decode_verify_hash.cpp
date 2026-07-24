@@ -212,6 +212,79 @@ TEST(VerifyHashTest, CellFTamperObjectOneSurfacesIndexOne) {
         // wire-side format ever drifts.
         EXPECT_NE(std::string(e.what()).find("object 1"), std::string::npos)
             << "expected message to name object 1, got: " << e.what();
+        // The structured accessor pinpoints the same object without
+        // parsing `what()` (tgm_last_error_object_index wiring).
+        EXPECT_EQ(e.object_index(), 1);
+    }
+}
+
+// ── object_index() accessor — structured integrity-error location ─────
+
+TEST(VerifyHashTest, MissingHashCarriesObjectIndexZero) {
+    // Unhashed single-object message + verify → missing_hash_error whose
+    // object_index() names the offending frame (object 0).
+    auto bytes = encode_simple_with_hash({5.0f}, /*hashing=*/false);
+    tensogram::decode_options opts{};
+    opts.verify_hash = true;
+    try {
+        tensogram::decode(bytes.data(), bytes.size(), opts);
+        FAIL() << "expected missing_hash_error";
+    } catch (const tensogram::missing_hash_error& e) {
+        EXPECT_EQ(e.object_index(), 0);
+    }
+}
+
+TEST(VerifyHashTest, HashMismatchCarriesObjectIndexZeroOnTamperedSlot) {
+    // Tamper object 0's inline-hash slot → hash_mismatch_error with
+    // object_index() == 0.
+    auto bytes = encode_simple_with_hash({1.0f, 2.0f, 3.0f}, /*hashing=*/true);
+    auto [frame_start, total_length] = locate_object_frame(bytes, 0);
+    ASSERT_GT(total_length, 0u);
+    bytes[frame_start + total_length - 12] ^= 0xFF;
+
+    tensogram::decode_options opts{};
+    opts.verify_hash = true;
+    try {
+        tensogram::decode(bytes.data(), bytes.size(), opts);
+        FAIL() << "expected hash_mismatch_error";
+    } catch (const tensogram::hash_mismatch_error& e) {
+        EXPECT_EQ(e.object_index(), 0);
+    }
+}
+
+TEST(VerifyHashTest, ObjectIndexReadableThroughIntegrityErrorBase) {
+    // The accessor lives on the integrity_error base, so a caller that
+    // catches the family uniformly can still discriminate by object.
+    auto bytes = read_golden("multi_object_xxh3.tgm");
+    if (bytes.empty()) {
+        GTEST_SKIP() << "could not locate golden — running outside the repo?";
+    }
+    auto [frame_start, total_length] = locate_object_frame(bytes, 2);
+    ASSERT_GT(total_length, 0u);
+    bytes[frame_start + total_length - 12] ^= 0xff;
+
+    tensogram::decode_options opts{};
+    opts.verify_hash = true;
+    try {
+        tensogram::decode(bytes.data(), bytes.size(), opts);
+        FAIL() << "expected an integrity_error";
+    } catch (const tensogram::integrity_error& e) {
+        EXPECT_EQ(e.object_index(), 2);
+    }
+}
+
+TEST(VerifyHashTest, NonIntegrityErrorsDoNotClaimAnObjectIndex) {
+    // A framing/decoding error unrelated to hashing must report -1
+    // (no object index) through the integrity accessor family — verified
+    // here by confirming such errors are NOT integrity_errors at all.
+    std::vector<std::uint8_t> garbage(64, 0x00);
+    try {
+        tensogram::decode(garbage.data(), garbage.size(), {});
+        FAIL() << "expected a decode failure on garbage input";
+    } catch (const tensogram::integrity_error&) {
+        FAIL() << "garbage input should not surface as an integrity_error";
+    } catch (const tensogram::error&) {
+        SUCCEED();
     }
 }
 
