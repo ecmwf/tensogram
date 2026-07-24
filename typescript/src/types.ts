@@ -379,6 +379,23 @@ export interface EncodeOptions {
 /** Options for `decode()` / `decodeObject()`. */
 export interface DecodeOptions {
   /**
+   * When `true` (the default), decoded payloads are converted to the
+   * host's native byte order regardless of the wire byte order
+   * declared in the object descriptor.  Set to `false` to receive the
+   * bytes in the message's declared wire `byte_order` — useful for
+   * zero-copy forwarding to another consumer that expects the wire
+   * order.
+   *
+   * Note the {@link TypedArray} views returned by `.data()` /
+   * `.dataView()` always interpret bytes in the **host's** native
+   * order, so a non-native payload read back through a typed view
+   * appears byte-swapped; use the raw byte length / an explicit
+   * `DataView` when forwarding in wire order.
+   *
+   * Mirrors the Rust core `DecodeOptions.native_byte_order`.
+   */
+  nativeByteOrder?: boolean;
+  /**
    * When `true` (the default), decode writes canonical NaN / ±Inf
    * bit patterns at positions recorded in the frame's mask companion.
    * Set to `false` to receive the `0.0`-substituted bytes as they

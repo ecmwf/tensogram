@@ -59,15 +59,22 @@ use wasm_bindgen::prelude::*;
 ///                      payload that the TS wrapper routes to
 ///                      dedicated error classes.  See
 ///                      `plans/DESIGN.md` §"Integrity Hashing".
+/// @param native_byte_order - When true (default), decoded payloads are
+///                      converted to the host's native byte order
+///                      regardless of the wire byte order declared in
+///                      the descriptor.  Set to false to receive bytes
+///                      in the message's declared wire byte order.
 #[wasm_bindgen]
 pub fn decode(
     buf: &[u8],
     restore_non_finite: Option<bool>,
     verify_hash: Option<bool>,
+    native_byte_order: Option<bool>,
 ) -> Result<DecodedMessage, JsValue> {
     let options = DecodeOptions {
         restore_non_finite: restore_non_finite.unwrap_or(true),
         verify_hash: verify_hash.unwrap_or(false),
+        native_byte_order: native_byte_order.unwrap_or(true),
         ..Default::default()
     };
     let (metadata, objects) = core::decode(buf, &options).map_err(js_err)?;
@@ -92,16 +99,21 @@ pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsValue> {
 /// @param restore_non_finite - Restore canonical NaN / Inf from mask companion (default: true)
 /// @param verify_hash - Per-frame hash verification (default false).
 ///                      See `decode` for the full contract.
+/// @param native_byte_order - When true (default), convert the decoded
+///                      payload to the host's native byte order.  Set to
+///                      false to receive bytes in the wire byte order.
 #[wasm_bindgen]
 pub fn decode_object(
     buf: &[u8],
     index: usize,
     restore_non_finite: Option<bool>,
     verify_hash: Option<bool>,
+    native_byte_order: Option<bool>,
 ) -> Result<DecodedMessage, JsValue> {
     let options = DecodeOptions {
         restore_non_finite: restore_non_finite.unwrap_or(true),
         verify_hash: verify_hash.unwrap_or(false),
+        native_byte_order: native_byte_order.unwrap_or(true),
         ..Default::default()
     };
     let (metadata, descriptor, data) = core::decode_object(buf, index, &options).map_err(js_err)?;

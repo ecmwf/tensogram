@@ -61,6 +61,7 @@ import type {
   DecodeRangeOptions,
   DecodeRangeResult,
   EncodeInput,
+  EncodeOptions,
   FileSource,
   FromUrlOptions,
   GlobalMetadata,
@@ -188,6 +189,75 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
       path,
       bytes,
       positions,
+    });
+  }
+
+  /**
+   * Create a new, empty local `.tgm` file for writing.
+   *
+   * Mirrors the Rust core `tensogram::file::create` (and the Python /
+   * FFI / C++ `TensogramFile::create` factories): the file is created
+   * if absent and **truncated to empty** if it already exists, and any
+   * missing parent directories are created first.  The returned handle
+   * is backed by the local filesystem with an empty message index, so
+   * subsequent {@link TensogramFile.append} calls extend it on disk.
+   *
+   * Node-only, exactly like {@link TensogramFile.open} and
+   * {@link TensogramFile.append} — the `node:fs/promises` import is
+   * dynamic so browser bundlers can tree-shake this write path.  In a
+   * browser, build messages with {@link encode} and persist them by
+   * other means.
+   *
+   * ```ts
+   * const file = await TensogramFile.create('out/series.tgm');
+   * await file.append(meta, objects);   // grows the file
+   * file.close();
+   * ```
+   *
+   * @throws {InvalidArgumentError} if `path` is not a string or `file://` URL
+   * @throws {IoError} if Node is unavailable or the file cannot be created
+   */
+  static async create(
+    path: string | URL,
+    options: OpenFileOptions = {},
+  ): Promise<TensogramFile> {
+    if (typeof path !== 'string' && !(path instanceof URL)) {
+      throw new InvalidArgumentError(
+        'TensogramFile.create: path must be a string or file:// URL',
+      );
+    }
+    let mkdir: typeof import('node:fs/promises').mkdir;
+    let writeFile: typeof import('node:fs/promises').writeFile;
+    try {
+      ({ mkdir, writeFile } = await import('node:fs/promises'));
+    } catch (cause) {
+      throw withCause(
+        new IoError(
+          'TensogramFile.create requires Node; build bytes with encode() in browsers',
+        ),
+        cause,
+      );
+    }
+
+    try {
+      // Mirror Rust `file::create`: ensure the parent directory exists,
+      // then create-or-truncate the target to a zero-length file.
+      const parent = await parentDir(path);
+      if (parent !== undefined) {
+        await mkdir(parent, { recursive: true });
+      }
+      const writeOpts = options.signal ? { signal: options.signal } : undefined;
+      await writeFile(path, new Uint8Array(0), writeOpts);
+    } catch (err) {
+      throw withCause(new IoError(`TensogramFile.create: ${errorMessage(err)}`), err);
+    }
+
+    return new TensogramFile({
+      kind: 'local',
+      source: 'local',
+      path,
+      bytes: new Uint8Array(0),
+      positions: [],
     });
   }
 
@@ -1107,7 +1177,22 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     }
     const b = this.#backend;
 
-    const encodeOpts = options.hash === false ? { hash: false as const } : { hash: 'xxh3' as const };
+    // Forward the FULL AppendOptions surface to encode() — not just
+    // `hash`.  `AppendOptions` mirrors `EncodeOptions` field-for-field
+    // (hash + the NaN/Inf mask knobs), so map every field through; the
+    // top-level `encode` applies the same defaults the direct caller
+    // would get.  Dropping the mask options here silently rejected any
+    // appended message carrying a NaN/±Inf even when the caller passed
+    // `allowNan` / `allowInf` (BUG-TS).
+    const encodeOpts: EncodeOptions = {
+      hash: options.hash ?? 'xxh3',
+      allowNan: options.allowNan ?? false,
+      allowInf: options.allowInf ?? false,
+      nanMaskMethod: options.nanMaskMethod,
+      posInfMaskMethod: options.posInfMaskMethod,
+      negInfMaskMethod: options.negInfMaskMethod,
+      smallMaskThresholdBytes: options.smallMaskThresholdBytes,
+    };
     const bytes = rethrowTyped(() => encode(metadata, objects, encodeOpts));
 
     let writeFile: typeof import('node:fs/promises').appendFile;
@@ -1152,6 +1237,27 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
       throw new InvalidArgumentError('TensogramFile has been closed');
     }
   }
+}
+
+// ── Node write helpers ────────────────────────────────────────────────────
+
+/**
+ * Resolve the parent directory of a `string` / `file://` URL path using
+ * Node's `path` + `url` modules (dynamically imported so browser
+ * bundlers can drop this Node-only write path).  Returns `undefined`
+ * when the path has no distinct parent to create — a bare filename
+ * (`dirname` → `"."`) or a filesystem root.  Used by
+ * {@link TensogramFile.create} to mirror the Rust `create_dir_all`
+ * step in core `file::create`.
+ */
+async function parentDir(path: string | URL): Promise<string | undefined> {
+  const [{ dirname }, { fileURLToPath }] = await Promise.all([
+    import('node:path'),
+    import('node:url'),
+  ]);
+  const fsPath = typeof path === 'string' ? path : fileURLToPath(path);
+  const parent = dirname(fsPath);
+  return parent === '' || parent === '.' || parent === fsPath ? undefined : parent;
 }
 
 // ── Lazy HTTP helpers ─────────────────────────────────────────────────────

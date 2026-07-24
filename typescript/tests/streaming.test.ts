@@ -12,6 +12,7 @@ import {
   InvalidArgumentError,
   StreamingLimitError,
   type DecodedFrame,
+  type DecodeStreamOptions,
   type StreamDecodeError,
 } from '../src/index.js';
 import { defaultMeta, makeDescriptor } from './helpers.js';
@@ -368,5 +369,29 @@ base: [
     for (let i = 0; i < directArr.length; i++) {
       expect(streamed[0][i]).toBe(directArr[i]);
     }
+  });
+
+  it('accepts a DecodeStreamOptions-typed options bag re-exported from the index', async () => {
+    // Regression for the minor gap in `plans/INTERFACE_SYMMETRY.md`
+    // §5.4: `DecodeStreamOptions` must be nameable by consumers.  It is
+    // imported (as a type) from the package index at the top of this
+    // file and used here to annotate a real options bag.
+    await init();
+    const msg = encode(defaultMeta(), [
+      { descriptor: makeDescriptor([3], 'float32'), data: new Float32Array([1, 2, 3]) },
+    ]);
+    const skips: StreamDecodeError[] = [];
+    const options: DecodeStreamOptions = {
+      maxBufferBytes: 64 * 1024 * 1024,
+      onError: (err) => skips.push(err),
+    };
+    const frames: DecodedFrame[] = [];
+    for await (const frame of decodeStream(streamFromChunks([msg]), options)) {
+      frames.push(frame);
+    }
+    expect(frames).toHaveLength(1);
+    expect(Array.from(frames[0].data() as Float32Array)).toEqual([1, 2, 3]);
+    expect(skips).toHaveLength(0);
+    frames[0].close();
   });
 });

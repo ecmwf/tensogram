@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [features]
 default = ["async"]
-async = ["tensogram-lib/async", "dep:pyo3-async-runtimes"]
+async = ["tensogram-lib/async", "dep:pyo3-async-runtimes", "dep:tokio"]
 # Opt-in wrappers for GRIB / NetCDF conversion. These pull in the
 # `tensogram-grib` / `tensogram-netcdf` crates which link against
 # libeccodes / libnetcdf at build time. When the feature is off,
@@ -31,3 +31,9 @@ ciborium = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"], optional = true }
+# `tokio::sync::Mutex` guards the async streaming encoder so the lock can be
+# held across `.await`. Only needed with the `async` feature; the encoder
+# writes to an in-memory `std::io::Cursor<Vec<u8>>` (tokio implements
+# AsyncWrite + AsyncSeek for it), so no extra tokio runtime features are
+# required here.
+tokio = { version = "1", features = ["sync"], optional = true }

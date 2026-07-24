@@ -445,6 +445,48 @@ public:
             });
     }
 
+    /// Async decode of object `obj_index` from message `msg_index`,
+    /// resolving to a single-object `tensogram::message`.
+    [[nodiscard]] awaiter<tensogram::message> decode_object(
+        std::size_t msg_index, std::size_t obj_index,
+        tac::cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        auto inner = inner_;
+        return detail::launch_awaiter<tensogram::message>(
+            [inner, msg_index, obj_index, token, timeout](auto cb) {
+                inner->decode_object(msg_index, obj_index, std::move(cb), token, timeout);
+            });
+    }
+
+    /// Async partial-range decode of object `obj_index` in message
+    /// `msg_index`, resolving to one byte buffer per `(offset, count)`
+    /// range (split mode).
+    [[nodiscard]] awaiter<std::vector<std::vector<std::uint8_t>>> decode_range(
+        std::size_t msg_index, std::size_t obj_index,
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges,
+        tac::cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        auto inner = inner_;
+        return detail::launch_awaiter<std::vector<std::vector<std::uint8_t>>>(
+            [inner, msg_index, obj_index, ranges = std::move(ranges), token, timeout](auto cb) {
+                inner->decode_range(msg_index, obj_index, ranges, std::move(cb), token, timeout);
+            });
+    }
+
+    /// Pull-model decode of object `obj_index` from message `msg_index`,
+    /// returning a `tac::task<tensogram::message>` the caller can poll
+    /// (`ready()`), `cancel()`, and `join()` outside the coroutine — the
+    /// escape hatch to the FFI's `tgm_async_task_is_ready` / `_cancel`.
+    [[nodiscard]] tac::task<tensogram::message> decode_object_task(
+        std::size_t msg_index, std::size_t obj_index,
+        tac::cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) const {
+        return inner_->decode_object_task(msg_index, obj_index, token, timeout);
+    }
+
+    /// Borrowed file path (`tgm_async_file_path`).
+    [[nodiscard]] std::string path() const { return inner_->path(); }
+
     async_file(async_file&&) noexcept = default;
     async_file& operator=(async_file&&) noexcept = default;
     async_file(const async_file&) = delete;
@@ -541,6 +583,9 @@ public:
     [[nodiscard]] std::size_t object_count() const noexcept {
         return inner_->object_count();
     }
+
+    /// Borrowed encoder output path (`tgm_async_streaming_encoder_path`).
+    [[nodiscard]] std::string path() const { return inner_->path(); }
 
     async_streaming_encoder(async_streaming_encoder&&) noexcept = default;
     async_streaming_encoder& operator=(async_streaming_encoder&&) noexcept = default;

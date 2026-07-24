@@ -19,6 +19,14 @@ from .tensogram import *  # noqa: F403
 from .tensogram import Metadata as Metadata
 from .tensogram import __version__ as __version__
 
+# Explicit re-exports for the metadata/wire helpers so static analysers and
+# ``from tensogram import compute_common`` see them (``import *`` already
+# exposes them at runtime). ``AsyncStreamingEncoder`` is feature-gated on the
+# ``async`` build (default-on, like ``AsyncTensogramFile``) and is left to the
+# star import so a no-async build still imports cleanly.
+from .tensogram import compute_common as compute_common
+from .tensogram import object_inline_hashes as object_inline_hashes
+
 # `Metadata` implements the full read-only Mapping protocol at the Rust level
 # (``__getitem__``/``__iter__``/``__len__``/``__contains__``/``get``/``keys``/
 # ``values``/``items``).  Register it as a virtual subclass so

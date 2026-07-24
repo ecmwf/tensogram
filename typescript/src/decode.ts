@@ -46,6 +46,7 @@ export function decode(buf: Uint8Array, opts?: DecodeOptions): DecodedMessage {
       buf,
       opts?.restoreNonFinite ?? true,
       opts?.verifyHash ?? false,
+      opts?.nativeByteOrder ?? true,
     ) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);
@@ -80,6 +81,7 @@ export function decodeObject(
       index,
       opts?.restoreNonFinite ?? true,
       opts?.verifyHash ?? false,
+      opts?.nativeByteOrder ?? true,
     ) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);

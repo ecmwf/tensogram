@@ -141,6 +141,7 @@ export type {
   DecodeOptions,
   DecodeRangeOptions,
   DecodeRangeResult,
+  DecodeStreamOptions,
   Dtype,
   EncodeInput,
   EncodeOptions,

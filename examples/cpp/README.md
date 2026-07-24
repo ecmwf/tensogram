@@ -18,6 +18,7 @@ C++17 interface over the C FFI.
 | `07_scan_buffer.cpp` | Scanning a multi-message buffer with `scan()`, skipping corrupt regions |
 | `08_decode_variants.cpp` | `decode` / `decode_metadata` / `decode_object` / `decode_range` |
 | `09_streaming_consumer.cpp` | Consumer-side streaming: scan a growing buffer, decode messages as they arrive |
+| `10_doctor.cpp` | Environment diagnostics via `doctor()` (build / features / self-test JSON report) |
 | `13_validate.cpp` | Structural, integrity, and fidelity validation at four levels |
 | `16_multi_threaded_pipeline.cpp` | Caller-controlled `threads=N` encode/decode with determinism invariants |
 | `19_async_decode_remote.cpp` | Async remote decode over an object store / `file://` (coroutine frontend) |
@@ -26,8 +27,9 @@ C++17 interface over the C FFI.
 | `22_async_callback.cpp` | Async read via the callback frontend (C++17): open, count, decode with completion handlers |
 | `23_async_stdfuture.cpp` | Async read via the `std::future` frontend (C++17) |
 | `24_async_cancellation.cpp` | Cancellation tokens and timeouts (callback frontend) |
+| `25_async_decode_object_range.cpp` | Async single-object + partial-range decode, `path()`, and the pull-model task handle (`ready()`/`cancel()`/`join()`) |
 
-### Async examples (19–24)
+### Async examples (19–25)
 
 These require the async surface (`TENSOGRAM_ASYNC=ON`, the default). The
 callback / `std::future` examples (22–24) compile on C++17. The
