@@ -223,9 +223,8 @@ same lane serialize). Lanes: **FFI** (serial, chokepoint), **CPP**, **PY**,
 | **Wave D — reach the core directly (parallel, isolated)** |
 | D-TS-MASKS | TS `decode_with_masks` via a wasm-crate widen (binds core) | `typescript/`+wasm | wasm | — | TS |
 | D-PY-2 | Python `scan_file`/`scan_with_options`, `validate_buffer`, `message_layouts`/`open_mmap` | `python/` | no | — | PY |
-| **Wave E — convert lowering (big [B])** |
-| E-FFI-CONVERT | Lower GRIB/NetCDF convert into the C ABI (ecCodes/netcdf linkage, feature-gated) | `tensogram-ffi` + grib/netcdf | yes | — | FFI |
-| E-CPP-CONVERT / E-FTN-CONVERT | wrap | `cpp/`/`fortran/` | no | E-FFI-CONVERT | CPP/FTN |
+| **Wave E — convert: DECIDED not to lower into the core C ABI (accepted `[A]` exception)** |
+| E-DECISION | Convert (GRIB/NetCDF) stays **CLI + Python**. Lowering `libeccodes`/`libnetcdf`/`libhdf5` into the lean C ABI is deliberately avoided — it would break the self-contained C-API tarball and force native-lib linkage on every C-family build. See `DESIGN.md` § *Documented exceptions* `[A]`. Escalation path (a separate opt-in `tensogram-convert-ffi`) is tracked in `plans/TODO.md`, not scheduled. | docs | — | — | — |
 | **Wave F — example/test coverage (per binding, ongoing)** |
 | F-{CPP,PY,TS,RS}-COVER | Add examples exercising the precise metadata cursor, exotic dtypes, masks, doctor where missing | per lang | no | features exist | each |
 
@@ -241,7 +240,9 @@ same lane serialize). Lanes: **FFI** (serial, chokepoint), **CPP**, **PY**,
    agent is building. Each W is independently shippable.
 3. **Wave C:** after each W lands, dispatch its C++ and Fortran wrappers
    (sequentially between CPP and FTN; parallel with PY/TS work).
-4. **Wave E** last (largest; needs native ecCodes/netcdf in the FFI build).
+4. **Wave E — not scheduled:** convert is an accepted native-library exception
+   (DESIGN.md § *Documented exceptions* `[A]`); a separate opt-in
+   `tensogram-convert-ffi` is the escalation path, tracked in `plans/TODO.md`.
 5. **Wave F** interleaved — every feature landed must gain an example in each
    language that supports it (symmetry contract).
 

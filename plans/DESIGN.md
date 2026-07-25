@@ -182,7 +182,7 @@ core.
 | 17 | Validate (message/file/buffer, typed report) | ● | ◐ | ◐ | ● | ● | ○ |
 | 18 | Doctor (diagnostics) | ● | ● | ○ | ● | ● | ○ |
 | 19 | Remote access (feat) | ● | ◐ | ◐ | ● | ● | ○ |
-| 20 | Convert GRIB/NetCDF | — | ○ | ○ | ● | ○ | ○ |
+| 20 | Convert GRIB/NetCDF ‡ | — | ○ | ○ | ● | ○ | ○ |
 | 21 | Masks (encode + `decode_with_masks` introspection) | ● | ◐ | ◐ | ● | ◐ | ○ |
 | 22 | Version (wire + package) | ● | ◐ | ◐ | ● | ● | ○ |
 | 23 | Error handling (typed) | ● | ◐ | ● | ● | ● | ● |
@@ -201,10 +201,9 @@ accessors, the `threads` argument), not language limits.
 ### Backend gaps to close first (the C ABI / core is the blocker)
 
 These block the whole C-family (and sometimes TS) and must be fixed upstream
-before wrapping:
+before wrapping. (**Convert** is *not* here — it is a deliberate accepted
+exception; see *Documented exceptions* `[A]` below.)
 
-- **Convert (GRIB/NetCDF)** lives only in sibling crates + the CLI — no core/FFI
-  surface. Python reaches the crates directly; C/C++/TS/Fortran cannot.
 - **C ABI missing:** `decode_descriptors`, `decode_with_masks` (+ mask-set
   introspection `DecodedMaskSet`/`MaskDescriptor`/`MasksMetadata`),
   `decode_range_from_payload`; `scan_file`/`scan_with_options`/`ScanOptions`/
@@ -215,11 +214,25 @@ before wrapping:
   (`FrameType`, `MessageFlags`, `MessageLayout`); typed `Dtype`, `ByteOrder`,
   `AggregateHashPolicy`, `CompressionBackend` (all stringly-typed today).
 
-### Documented exceptions (accepted asymmetries — [L] language limits)
+### Documented exceptions (accepted asymmetries — [L] language limit, [A] architectural)
 
 These are the *only* sanctioned gaps. Everything else is a bug to fix.
 
-- **Fortran — async (cat 13, 19):** no coroutines/futures/closures/event loop in
+- **[A] Convert GRIB/NetCDF (cat 20 ‡) — C, C++, TypeScript, Fortran.** Convert
+  lives in the sibling crates `tensogram-grib` / `tensogram-netcdf`, which link
+  the heavy native C libraries **libeccodes**, **libnetcdf**, and **libhdf5**.
+  Lowering it into the C ABI would tie tensogram's lean, self-contained C
+  library — today Rust-only, with *no* system-C dependency — to those libraries,
+  breaking the self-contained C-API tarball and forcing native-lib linkage into
+  every C-family build (`cargo-c`, `cpp`, `fortran`, `publish-ffi`). C/C++/
+  Fortran users who process GRIB/NetCDF already link ecCodes/netCDF directly, so
+  the incremental value is low. Convert therefore stays **CLI + Python** (both
+  feature-gated at build; the published PyPI wheel ships *runtime stubs* unless
+  built with the `grib`/`netcdf` features + native libs). **Escalation path** if
+  a concrete C-family convert consumer appears: a *separate*, opt-in
+  `tensogram-convert-ffi` cdylib that isolates the native deps and leaves the
+  core C ABI lean — tracked in `plans/TODO.md`, not scheduled.
+- **[L] Fortran — async (cat 13, 19):** no coroutines/futures/closures/event loop in
   Fortran 2008. The C ABI async *joins* are blocking and technically bindable,
   but a Fortran caller can only immediately block-join, which collapses to the
   sync API it already has. Accepted omission.
