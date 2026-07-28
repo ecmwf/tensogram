@@ -15,6 +15,7 @@ set(EXAMPLES
     13_validate
     16_multi_threaded_pipeline
     17_masks_scan_validate
+    26_frame_walker
 )
 
 # Async examples on the callback / std::future frontends (C++17, header-only).

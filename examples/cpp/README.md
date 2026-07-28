@@ -29,6 +29,7 @@ C++17 interface over the C FFI.
 | `23_async_stdfuture.cpp` | Async read via the `std::future` frontend (C++17) |
 | `24_async_cancellation.cpp` | Cancellation tokens and timeouts (callback frontend) |
 | `25_async_decode_object_range.cpp` | Async single-object + partial-range decode, `path()`, and the pull-model task handle (`ready()`/`cancel()`/`join()`) |
+| `26_frame_walker.cpp` | Lazy `frames()` walk + `read_message_header()` envelope, borrowed frame payloads, `encode_options::aggregate_hash` / `codec_backend`, typed `dtype_enum()`, and `is_remote_url()` |
 
 ### Async examples (19–25)
 
@@ -48,6 +49,24 @@ See the [C++ Async API](../../docs/src/guide/cpp-async.md) and
 [C++ Async Streaming](../../docs/src/guide/cpp-streaming-async.md) guides
 for the API reference and the producer/consumer recipe.
 
+### Synchronous remote sources
+
+`tensogram::is_remote_url()` and `tensogram::file::open_remote()` link in
+every build, but they need the C API's `remote` Cargo feature to actually
+reach an object store. Without it `is_remote_url()` answers `false` for
+every URL (this build genuinely cannot open one) and `open_remote()`
+throws `tensogram::remote_error` explaining how to enable it:
+
+```bash
+cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release -DTENSOGRAM_REMOTE=ON
+cmake --build build -j
+```
+
+`open_remote()` returns an ordinary `tensogram::file`, so `message_count()`,
+`read_message()`, `decode_message()` and `file_iterator` work unchanged
+against `s3://`, `gs://`, `az://`, `http(s)://` and `file://` sources. It is
+independent of the async options — no async runtime is pulled in.
+
 ## API Overview
 
 ```cpp
@@ -66,8 +85,25 @@ msg.version();          // wire-format version
 msg.num_objects();      // number of data objects
 auto obj = msg.object(0);
 obj.dtype_string();     // "float32", "int64", etc.
+obj.dtype_enum();       // tensogram::dtype::float32 — switchable
+obj.byte_order_enum();  // tensogram::byte_order::little
 obj.shape();            // std::vector<uint64_t>
 obj.data_as<float>();   // typed pointer to payload
+
+// Message envelope + lazy frame walk (payloads borrow `buf`)
+auto header = tensogram::read_message_header(buf, len);
+header.total_length();  // 0 for a streaming message never back-filled
+for (const auto& f : tensogram::frames(buf, len)) {
+    f.type();           // tensogram::frame_type::ntensor, ...
+    f.offset();         // where the frame starts in `buf`
+    f.payload();        // std::string_view INTO `buf`
+    f.has_hash();       // per-frame HASH_PRESENT flag
+}
+
+// Remote sources (needs the C API's `remote` feature)
+tensogram::is_remote_url("s3://bucket/key.tgm");
+auto remote = tensogram::file::open_remote("s3://bucket/key.tgm",
+                                           {{"aws_region", "eu-west-1"}});
 
 // Range-based for over objects
 for (const auto& obj : msg) { ... }
@@ -92,6 +128,12 @@ tensogram::object_iterator iter(buf, len);
 tensogram::streaming_encoder enc(path, metadata_json, opts);
 enc.write_object(descriptor_json, data, len);
 enc.finish();
+
+// Encode options (every field defaults to the library default)
+tensogram::encode_options opts;
+opts.hash_algo = "xxh3";
+opts.aggregate_hash = tensogram::aggregate_hash_policy::both;   // buffered only
+opts.codec_backend = tensogram::compression_backend::pure;      // szip / zstd
 
 // Utilities
 auto entries = tensogram::scan(buf, len);
