@@ -19,9 +19,14 @@ from .tensogram import *  # noqa: F403
 # the reader-side scan family (``scan_file`` / ``scan_with_options`` /
 # ``ScanOptions``), multi-message ``validate_buffer``, the lazy per-object
 # iterators (``objects`` / ``objects_metadata``), ``decode_range_from_payload``,
-# and ``MessageLayout``. ``AsyncStreamingEncoder`` is feature-gated on the
-# ``async`` build (default-on, like ``AsyncTensogramFile``) and is left to the
-# star import so a no-async build still imports cleanly.
+# ``MessageLayout``, and the structural walkers (``frames`` / ``Frame`` /
+# ``FrameIter`` / ``message_header`` / ``MessageHeader``).
+# ``AsyncStreamingEncoder`` is feature-gated on the ``async`` build
+# (default-on, like ``AsyncTensogramFile``) and is left to the star import so a
+# no-async build still imports cleanly.
+from .tensogram import Frame as Frame
+from .tensogram import FrameIter as FrameIter
+from .tensogram import MessageHeader as MessageHeader
 from .tensogram import MessageLayout as MessageLayout
 from .tensogram import Metadata as Metadata
 from .tensogram import ObjectIter as ObjectIter
@@ -30,6 +35,8 @@ from .tensogram import ScanOptions as ScanOptions
 from .tensogram import __version__ as __version__
 from .tensogram import compute_common as compute_common
 from .tensogram import decode_range_from_payload as decode_range_from_payload
+from .tensogram import frames as frames
+from .tensogram import message_header as message_header
 from .tensogram import object_inline_hashes as object_inline_hashes
 from .tensogram import objects as objects
 from .tensogram import objects_metadata as objects_metadata

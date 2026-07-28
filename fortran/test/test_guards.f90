@@ -26,6 +26,7 @@ program test_guards
    case ('file');        call g_file()
    case ('metadata');    call g_metadata()
    case ('stream');      call g_stream()
+   case ('frames');      call g_frames()
    case ('check_ctx');   call tensogram_check(TGM_ERROR_OBJECT, 'guard-context')
    case ('check_noctx'); call tensogram_check(TGM_ERROR_OBJECT)
    case default;         print '(a)', 'unknown guard mode'; error stop 2
@@ -91,5 +92,19 @@ contains
       b = a
       if (tensogram_streaming_encoder_count(b) < 0) print '(a)', 'x'
    end subroutine g_stream
+
+   subroutine g_frames()
+      type(tensogram_buffer) :: buf
+      type(tensogram_frame_iterator) :: a, b
+      type(tensogram_frame)  :: fr
+      integer(c_int8_t), allocatable :: w(:)
+      integer(c_int) :: err
+      logical :: found
+      call live_buffer(buf); call buf%as_array(w)
+      call tensogram_frames(w, a, err)
+      b = a                                   ! non-copyable guard -> error stop
+      call b%next(fr, found)
+      if (found) print '(a)', 'x'
+   end subroutine g_frames
 
 end program test_guards

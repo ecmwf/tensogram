@@ -151,6 +151,26 @@ msg = tensogram.encode(
 )
 ```
 
+### Message-level encode options
+
+Two keyword arguments steer the writer rather than a single object's pipeline. Both are accepted by `encode()`, `TensogramFile.append()`, `StreamingEncoder(...)`, and `AsyncStreamingEncoder.create(...)`:
+
+```python
+msg = tensogram.encode(
+    {},
+    [(desc, data)],
+    aggregate_hash="both",          # "auto" (default) | "none" | "header" | "footer" | "both"
+    compression_backend="pure",     # "auto" (default) | "ffi" | "pure"
+)
+```
+
+| Argument | What it does |
+|-----------|--------------|
+| `aggregate_hash` | Where the aggregate hash frame (the redundant list of every per-object digest) is written. `"auto"` resolves to the header when buffering and the footer when streaming; `"none"` omits the frame entirely. Ignored when `hash=None` — there is nothing to aggregate. |
+| `compression_backend` | Which implementation to use for `szip` / `zstd` when both a C and a pure-Rust one are compiled in. `"auto"` consults `TENSOGRAM_COMPRESSION_BACKEND`, then the platform default. Purely an implementation choice: the decoded values are identical either way. |
+
+An unknown value for either raises `ValueError`. On a `StreamingEncoder`, `aggregate_hash="header"` / `"both"` also raise `ValueError`: the streaming header is written before any data object exists, so the per-object hashes are not yet known. Use [`frames()`](frame-introspection.md) to see where the frame actually landed.
+
 ### Pre-encoded data
 
 If you already have compressed/packed payloads (e.g. from another system), use `tensogram.encode_pre_encoded()` with the same interface. The library skips the encoding pipeline and writes the bytes as-is:
@@ -239,6 +259,28 @@ To iterate messages in a multi-message buffer:
 for meta, objects in tensogram.iter_messages(buf):
     print(meta.version, len(objects))
 ```
+
+### Frame introspection
+
+`tensogram.message_header()` and `tensogram.frames()` describe a message's *structure* without decoding a payload or a byte of CBOR. Both take exactly **one** message, so slice a multi-message buffer with `scan()` first:
+
+```python
+header = tensogram.message_header(msg)
+header.version               # 3
+header.total_length          # 0 for a non-back-filled streaming message
+header.has_header_index      # True → random-access layout
+
+for frame in tensogram.frames(msg):
+    print(frame.frame_type,       # "HeaderMetadata", "NTensorFrame", …
+          frame.frame_type_code,  # the numeric wire code
+          frame.offset,           # start of the frame within `msg`
+          frame.length,           # whole-frame span: header through ENDF
+          len(frame.payload),     # content only: header + footer stripped
+          frame.has_hash,
+          frame.is_data_object)
+```
+
+`MessageHeader` also exposes `flags` plus the other seven `has_*` predicates (`has_footer_metadata`, `has_header_hashes`, …). `FrameIter` supports `len()` (frames left to yield) and a readable `repr()`; `Frame.payload` is `bytes`, materialised on access from the buffer the iterator retains, so walking a large message purely for offsets copies nothing. A malformed frame chain raises `ValueError` from `next()` *after* the frames that did parse; an unreadable preamble raises from `frames()` itself. See [Frame Introspection](frame-introspection.md) for the full contract and `examples/python/21_frames_and_message_header.py` for a runnable tour.
 
 ### Hash verification
 

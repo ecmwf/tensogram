@@ -25,6 +25,11 @@
 ///       (data(), data_as<T>(), shape(), strides(), etc.) borrow from the
 ///       parent message handle and are valid only until that handle is
 ///       destroyed or moved-from.
+///
+/// @note Lifetime: the frame walker borrows differently — frames() views the
+///       caller's message buffer directly, so frame::payload() stays valid
+///       for as long as *that buffer* lives, outliving the frame_range that
+///       produced it.  See frame_range for the full contract.
 
 #ifndef TENSOGRAM_HPP
 #define TENSOGRAM_HPP
@@ -32,6 +37,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -325,6 +331,172 @@ namespace detail {
 
 }  // namespace detail
 
+/// An element type, mirroring the C `tgm_dtype` enum and
+/// `tensogram::Dtype` one-for-one.
+///
+/// The wire format stores the dtype as a **string** (see
+/// `plans/WIRE_FORMAT.md` §6.1), so these codes are a binding convenience
+/// rather than a wire value — but they are part of the frozen C ABI.
+/// decoded_object::dtype_string() returns the same information as text;
+/// this enum is what you want in a `switch`.
+enum class dtype {
+    float16    = TGM_DTYPE_FLOAT16,
+    bfloat16   = TGM_DTYPE_BFLOAT16,
+    float32    = TGM_DTYPE_FLOAT32,
+    float64    = TGM_DTYPE_FLOAT64,
+    complex64  = TGM_DTYPE_COMPLEX64,
+    complex128 = TGM_DTYPE_COMPLEX128,
+    int8       = TGM_DTYPE_INT8,
+    int16      = TGM_DTYPE_INT16,
+    int32      = TGM_DTYPE_INT32,
+    int64      = TGM_DTYPE_INT64,
+    uint8      = TGM_DTYPE_UINT8,
+    uint16     = TGM_DTYPE_UINT16,
+    uint32     = TGM_DTYPE_UINT32,
+    uint64     = TGM_DTYPE_UINT64,
+    /// Sub-byte packed bitmask; the element width is 1 bit, so the byte
+    /// width of this dtype is reported as 0.
+    bitmask    = TGM_DTYPE_BITMASK,
+};
+
+/// A payload's byte order, mirroring the C `tgm_byte_order` enum and
+/// `tensogram::ByteOrder`.
+///
+/// Like dtype these codes are a binding convenience — the wire stores
+/// `"little"` / `"big"` as text — and are frozen as part of the C ABI.
+/// decoded_object::byte_order_string() returns the same information as text.
+enum class byte_order {
+    little = TGM_BYTE_ORDER_LITTLE,
+    big    = TGM_BYTE_ORDER_BIG,
+};
+
+/// Where to place the aggregate hash frame, mirroring the C
+/// `tgm_aggregate_hash_policy` enum and `tensogram::AggregateHashPolicy`.
+///
+/// The default is aggregate_hash_policy::automatic, so a
+/// default-constructed encode_options asks the encoder to choose — header
+/// when buffering, footer when streaming — exactly as before this knob
+/// existed.
+///
+/// `header` and `both` are **buffered-mode only**: a streaming encoder
+/// writes its header before any data object exists, so the per-object
+/// hashes are not yet known.  Passing either to streaming_encoder throws
+/// tensogram::encoding_error.
+enum class aggregate_hash_policy {
+    /// Encoder picks: buffered → header, streaming → footer.
+    automatic = TGM_AGGREGATE_HASH_POLICY_AUTO,
+    /// Emit no aggregate hash frame.  Per-frame inline hash slots are
+    /// unaffected — see frame::has_hash().
+    none      = TGM_AGGREGATE_HASH_POLICY_NONE,
+    /// Emit a frame_type::header_hash frame.  Buffered mode only.
+    header    = TGM_AGGREGATE_HASH_POLICY_HEADER,
+    /// Emit a frame_type::footer_hash frame.  Valid in both modes.
+    footer    = TGM_AGGREGATE_HASH_POLICY_FOOTER,
+    /// Emit both a header and a footer hash frame carrying identical hash
+    /// lists.  Buffered mode only.
+    both      = TGM_AGGREGATE_HASH_POLICY_BOTH,
+};
+
+/// Which codec implementation to use where both are compiled in, mirroring
+/// the C `tgm_compression_backend` enum and `tensogram::CompressionBackend`.
+///
+/// `automatic` (the default) consults the `TENSOGRAM_COMPRESSION_BACKEND`
+/// environment variable, then the platform default.  `ffi` and `pure` are
+/// explicit overrides that always win over the environment.  The choice
+/// affects szip and zstd, the two codecs with both a C and a pure-Rust
+/// implementation; the decoded payload is identical either way, only the
+/// compressed bytes may differ.
+enum class compression_backend {
+    /// Consult the environment, then the platform default.
+    automatic = TGM_COMPRESSION_BACKEND_AUTO,
+    /// Use the C FFI codecs (libaec for szip, libzstd for zstd).
+    ffi       = TGM_COMPRESSION_BACKEND_FFI,
+    /// Use the pure-Rust codecs (tensogram-szip, ruzstd).
+    pure      = TGM_COMPRESSION_BACKEND_PURE,
+};
+
+namespace detail {
+
+/// Map a C `tgm_dtype` discriminant to the C++ dtype enum.
+[[nodiscard]] inline dtype dtype_from_c(tgm_dtype t) noexcept {
+    switch (t) {
+        case TGM_DTYPE_FLOAT16:    return dtype::float16;
+        case TGM_DTYPE_BFLOAT16:   return dtype::bfloat16;
+        case TGM_DTYPE_FLOAT32:    return dtype::float32;
+        case TGM_DTYPE_FLOAT64:    return dtype::float64;
+        case TGM_DTYPE_COMPLEX64:  return dtype::complex64;
+        case TGM_DTYPE_COMPLEX128: return dtype::complex128;
+        case TGM_DTYPE_INT8:       return dtype::int8;
+        case TGM_DTYPE_INT16:      return dtype::int16;
+        case TGM_DTYPE_INT32:      return dtype::int32;
+        case TGM_DTYPE_INT64:      return dtype::int64;
+        case TGM_DTYPE_UINT8:      return dtype::uint8;
+        case TGM_DTYPE_UINT16:     return dtype::uint16;
+        case TGM_DTYPE_UINT32:     return dtype::uint32;
+        case TGM_DTYPE_UINT64:     return dtype::uint64;
+        case TGM_DTYPE_BITMASK:    return dtype::bitmask;
+    }
+    // Defensive: an unknown discriminant from a future ABI decays to the
+    // zero variant, which is also what the C accessor reports on failure.
+    return dtype::float16;
+}
+
+/// Map a C `tgm_byte_order` discriminant to the C++ byte_order enum.
+[[nodiscard]] inline byte_order byte_order_from_c(tgm_byte_order o) noexcept {
+    switch (o) {
+        case TGM_BYTE_ORDER_LITTLE: return byte_order::little;
+        case TGM_BYTE_ORDER_BIG:    return byte_order::big;
+    }
+    // Defensive: an unknown discriminant from a future ABI decays to the
+    // zero variant.
+    return byte_order::little;
+}
+
+/// Map the C++ aggregate_hash_policy to the C discriminant.
+[[nodiscard]] inline tgm_aggregate_hash_policy aggregate_hash_policy_to_c(
+    aggregate_hash_policy p) noexcept {
+    switch (p) {
+        case aggregate_hash_policy::automatic: return TGM_AGGREGATE_HASH_POLICY_AUTO;
+        case aggregate_hash_policy::none:      return TGM_AGGREGATE_HASH_POLICY_NONE;
+        case aggregate_hash_policy::header:    return TGM_AGGREGATE_HASH_POLICY_HEADER;
+        case aggregate_hash_policy::footer:    return TGM_AGGREGATE_HASH_POLICY_FOOTER;
+        case aggregate_hash_policy::both:      return TGM_AGGREGATE_HASH_POLICY_BOTH;
+    }
+    // Defensive: an unknown enumerator decays to the library default.
+    return TGM_AGGREGATE_HASH_POLICY_AUTO;
+}
+
+/// Map the C++ compression_backend to the C discriminant.
+[[nodiscard]] inline tgm_compression_backend compression_backend_to_c(
+    compression_backend b) noexcept {
+    switch (b) {
+        case compression_backend::automatic: return TGM_COMPRESSION_BACKEND_AUTO;
+        case compression_backend::ffi:       return TGM_COMPRESSION_BACKEND_FFI;
+        case compression_backend::pure:      return TGM_COMPRESSION_BACKEND_PURE;
+    }
+    // Defensive: an unknown enumerator decays to the library default.
+    return TGM_COMPRESSION_BACKEND_AUTO;
+}
+
+/// Bounds-check an object index on behalf of the typed enum accessors.
+///
+/// The C enum accessors have no spare code for failure: on a NULL handle or
+/// an out-of-range index they record the reason in the thread-local error
+/// slot and return their zero variant, which is indistinguishable from a
+/// genuine `float16` / `little` answer.  The paired **string** getter returns
+/// NULL for exactly those inputs, so it is the unambiguous check — pass its
+/// result as @p probe and the wrapper raises instead of handing back a
+/// plausible-looking value.
+inline void require_object_index(const char* probe, std::size_t index, const char* what) {
+    if (probe == nullptr) {
+        throw invalid_arg_error(TGM_ERROR_INVALID_ARG,
+                                std::string(what) + ": object index " +
+                                    std::to_string(index) + " is out of range");
+    }
+}
+
+}  // namespace detail
+
 /// Options controlling scan_with_options() and scan_file_with_options().
 ///
 /// Mirrors the C `TgmScanOptions` POD and `tensogram::ScanOptions`.  A
@@ -362,6 +534,20 @@ struct simple_packing_params {
 };
 
 /// Options controlling message encoding.
+///
+/// Maps onto the C `TgmEncodeOptions` POD (plus the `threads` argument the
+/// C entry points take separately).  Every field's default selects the
+/// library default, so a default-constructed encode_options behaves exactly
+/// like passing no options at all.
+///
+/// The encode entry points — encode(), file::append() and
+/// streaming_encoder — pick the narrowest C function that can carry the
+/// options actually set: the plain one, the mask-aware one, or the full
+/// `*_with_encode_options` one.  No field is ever silently dropped, and a
+/// caller who sets nothing new keeps the exact call path (and bytes) they
+/// had before these knobs existed.  encode_pre_encoded() is the exception
+/// the C ABI imposes: it has no full-option entry point, so it rejects
+/// `aggregate_hash` / `codec_backend` rather than ignoring them.
 struct encode_options {
     /// Hash algorithm name (e.g. "xxh3").  Empty string disables hashing.
     std::string hash_algo = "xxh3";
@@ -397,6 +583,20 @@ struct encode_options {
     /// 128.  Set to 0 to disable the fallback.  Negative values use the
     /// library default.
     std::ptrdiff_t small_mask_threshold_bytes = -1;
+    /// Where to write the aggregate hash frame.  Ignored when hashing is
+    /// off (`hash_algo` empty or "none") — there is nothing to aggregate.
+    ///
+    /// aggregate_hash_policy::header and ::both are buffered-mode only;
+    /// streaming_encoder rejects them with tensogram::encoding_error.
+    aggregate_hash_policy aggregate_hash = aggregate_hash_policy::automatic;
+    /// Which codec implementation to prefer for szip / zstd.
+    ///
+    /// Maps to `TgmEncodeOptions::compression_backend` and to
+    /// `compression_backend=` / `compressionBackend` in the other bindings.
+    /// Spelled `codec_backend` here because a member named
+    /// `compression_backend` would shadow the enum type of the same name
+    /// inside this struct.
+    compression_backend codec_backend = compression_backend::automatic;
 };
 
 /// Options controlling message decoding.
@@ -466,6 +666,41 @@ inline mask_opts_holder build_mask_opts(const encode_options& opts) {
         opts.neg_inf_mask_method.empty() ? nullptr : opts.neg_inf_mask_method.c_str();
     h.value.small_mask_threshold_bytes = opts.small_mask_threshold_bytes;
     return h;
+}
+
+/// True when encode_options carries something only the full
+/// `TgmEncodeOptions` entry points can express — the aggregate-hash
+/// placement or the codec backend.
+///
+/// The encode paths use this to escalate: with neither knob set they keep
+/// calling the narrower C functions (`tgm_encode` / `tgm_encode_with_options`
+/// and friends), so existing callers keep their exact behaviour; with either
+/// set they switch to `*_with_encode_options`, so nothing is dropped.
+[[nodiscard]] inline bool needs_encode_options(const encode_options& opts) noexcept {
+    return opts.aggregate_hash != aggregate_hash_policy::automatic
+        || opts.codec_backend != compression_backend::automatic;
+}
+
+/// Build the full `TgmEncodeOptions` POD from encode_options.
+///
+/// @warning The struct's `const char*` fields alias strings owned by @p opts,
+///          so the returned value must not outlive it.
+[[nodiscard]] inline TgmEncodeOptions build_encode_opts(const encode_options& opts) noexcept {
+    TgmEncodeOptions c_opts{};
+    // The FFI convention is "name it to get it": a NULL hash means no hashing.
+    c_opts.hash = opts.hash_algo.empty() ? nullptr : opts.hash_algo.c_str();
+    c_opts.aggregate_hash = aggregate_hash_policy_to_c(opts.aggregate_hash);
+    c_opts.compression_backend = compression_backend_to_c(opts.codec_backend);
+    c_opts.allow_nan = opts.allow_nan;
+    c_opts.allow_inf = opts.allow_inf;
+    c_opts.nan_mask_method =
+        opts.nan_mask_method.empty() ? nullptr : opts.nan_mask_method.c_str();
+    c_opts.pos_inf_mask_method =
+        opts.pos_inf_mask_method.empty() ? nullptr : opts.pos_inf_mask_method.c_str();
+    c_opts.neg_inf_mask_method =
+        opts.neg_inf_mask_method.empty() ? nullptr : opts.neg_inf_mask_method.c_str();
+    c_opts.small_mask_threshold_bytes = opts.small_mask_threshold_bytes;
+    return c_opts;
 }
 }  // namespace detail
 
@@ -537,6 +772,20 @@ public:
         return s ? s : "";
     }
 
+    /// Dtype as a typed enumerator (e.g. dtype::float32) — the `switch`-able
+    /// companion to dtype_string().
+    ///
+    /// Wraps `tgm_object_dtype_enum`.  That accessor has no spare code to
+    /// signal failure, so this wrapper bounds-checks through the paired
+    /// string getter first and raises rather than returning the zero variant.
+    ///
+    /// @throws tensogram::invalid_arg_error If the object index is out of
+    ///         range (dtype_string() returns "" for exactly the same input).
+    [[nodiscard]] tensogram::dtype dtype_enum() const {
+        detail::require_object_index(tgm_object_dtype(msg_, index_), index_, "dtype_enum");
+        return detail::dtype_from_c(tgm_object_dtype_enum(msg_, index_));
+    }
+
     /// Object type string (e.g. "ndarray").
     [[nodiscard]] std::string object_type() const {
         const char* s = tgm_object_type(msg_, index_);
@@ -547,6 +796,20 @@ public:
     [[nodiscard]] std::string byte_order_string() const {
         const char* s = tgm_object_byte_order(msg_, index_);
         return s ? s : "";
+    }
+
+    /// Byte order as a typed enumerator — the `switch`-able companion to
+    /// byte_order_string().
+    ///
+    /// Wraps `tgm_object_byte_order_enum`; see dtype_enum() for why the
+    /// bounds check goes through the string getter.
+    ///
+    /// @throws tensogram::invalid_arg_error If the object index is out of
+    ///         range (byte_order_string() returns "" for the same input).
+    [[nodiscard]] tensogram::byte_order byte_order_enum() const {
+        detail::require_object_index(tgm_object_byte_order(msg_, index_), index_,
+                                     "byte_order_enum");
+        return detail::byte_order_from_c(tgm_object_byte_order_enum(msg_, index_));
     }
 
     /// Encoding pipeline string (e.g. "none", "simple_packing").
@@ -1289,6 +1552,60 @@ inline metadata message::get_metadata() const {
 }
 
 // ============================================================
+// Remote sources — is_remote_url / remote_scan_options
+// ============================================================
+
+/// Reader-side scan-walker options for file::open_remote().
+///
+/// Mirrors the C `TgmRemoteScanOptions` POD and
+/// `tensogram::RemoteScanOptions`.  A default-constructed
+/// remote_scan_options requests the library defaults.
+struct remote_scan_options {
+    /// Enable the meet-in-the-middle (bidirectional) remote walk, which
+    /// pairs forward preamble fetches with backward postamble fetches and
+    /// roughly halves wall-clock layout discovery on real networks.
+    /// `false` forces a forward-only walk.
+    bool bidirectional = true;
+};
+
+namespace detail {
+
+/// Reject a string that cannot survive the trip through a C string.
+///
+/// The C ABI takes NUL-terminated `const char*`, so an interior NUL would
+/// silently truncate the value — opening a *different* object than the
+/// caller named.  std::string / std::string_view can carry one, so the
+/// wrapper checks rather than letting the truncation happen.
+inline void require_nul_free(std::string_view value, const char* what) {
+    if (value.find('\0') != std::string_view::npos) {
+        throw invalid_arg_error(TGM_ERROR_INVALID_ARG,
+                                std::string(what) + " must not contain an embedded NUL");
+    }
+}
+
+}  // namespace detail
+
+/// True when @p source is a URL this build can open remotely.
+///
+/// Wraps `tgm_is_remote_url`, binding `tensogram::is_remote_url`.  The
+/// recognised schemes are `s3`, `s3a`, `gs`, `az`, `azure`, `http` and
+/// `https`, compared case-insensitively.  Plain paths and `file://` URLs are
+/// **not** remote — they belong to the local backend (file::open()).
+///
+/// Returns false for **every** input when the C API was built without the
+/// `remote` Cargo feature: such a build genuinely cannot open any remote
+/// URL, so "not remote for me" is the honest answer.
+///
+/// @return true if @p source names a remote object this build can open.
+///         Never throws — a source with an embedded NUL is simply not a
+///         remote URL.
+[[nodiscard]] inline bool is_remote_url(std::string_view source) {
+    if (source.find('\0') != std::string_view::npos) return false;
+    const std::string src(source);
+    return tgm_is_remote_url(src.c_str());
+}
+
+// ============================================================
 // file — RAII wrapper for tgm_file_t
 // ============================================================
 
@@ -1313,6 +1630,61 @@ public:
     [[nodiscard]] static file create(const std::string& path) {
         tgm_file_t* raw = nullptr;
         detail::check(tgm_file_create(path.c_str(), &raw));
+        return file(raw);
+    }
+
+    /// Open a remote `.tgm` (S3 / GCS / Azure / HTTP) for **synchronous**
+    /// reading.
+    ///
+    /// Wraps `tgm_file_open_remote`.  The result is an ordinary file, so the
+    /// whole existing API — message_count(), read_message(),
+    /// decode_message(), file_iterator, … — works unchanged against the
+    /// remote source, and the handle closes the same way.
+    ///
+    /// @param source          Remote URL (see is_remote_url() for the
+    ///                        recognised schemes).
+    /// @param storage_options Backend options (credentials, region,
+    ///                        endpoint, …) forwarded verbatim to the
+    ///                        object-store backend.
+    /// @param opts            Scan-walker options; the default requests the
+    ///                        bidirectional walk.
+    /// @throws tensogram::invalid_arg_error If @p source or any storage
+    ///         option contains an embedded NUL (it could not be passed to
+    ///         the C ABI without silently truncating).
+    /// @throws tensogram::remote_error If the URL is unparseable, the object
+    ///         is missing, a storage option is rejected, the transport
+    ///         fails — or the C API was built without the `remote` Cargo
+    ///         feature, in which case the message says how to enable it.
+    [[nodiscard]] static file open_remote(
+        std::string_view source,
+        const std::map<std::string, std::string>& storage_options = {},
+        remote_scan_options opts = {})
+    {
+        detail::require_nul_free(source, "remote source");
+        const std::string source_str(source);
+
+        // The C call takes parallel key / value arrays of `const char*`.
+        // The map owns the strings, so the pointers stay valid for the call.
+        std::vector<const char*> keys;
+        std::vector<const char*> values;
+        keys.reserve(storage_options.size());
+        values.reserve(storage_options.size());
+        for (const auto& [key, value] : storage_options) {
+            detail::require_nul_free(key, "storage option key");
+            detail::require_nul_free(value, "storage option value");
+            keys.push_back(key.c_str());
+            values.push_back(value.c_str());
+        }
+
+        TgmRemoteScanOptions c_opts{};
+        c_opts.bidirectional = opts.bidirectional;
+
+        tgm_file_t* raw = nullptr;
+        detail::check(tgm_file_open_remote(
+            source_str.c_str(),
+            keys.empty() ? nullptr : keys.data(),
+            values.empty() ? nullptr : values.data(),
+            keys.size(), &c_opts, &raw));
         return file(raw);
     }
 
@@ -1373,7 +1745,13 @@ public:
         const char* hash = opts.hash_algo.empty() ? nullptr
                                                      : opts.hash_algo.c_str();
         auto mask_holder = detail::build_mask_opts(opts);
-        if (mask_holder.active) {
+        if (detail::needs_encode_options(opts)) {
+            const TgmEncodeOptions c_opts = detail::build_encode_opts(opts);
+            detail::check(tgm_file_append_with_encode_options(
+                handle_.get(), metadata_json.c_str(),
+                sg.ptrs.data(), sg.lens.data(),
+                objects.size(), opts.threads, &c_opts));
+        } else if (mask_holder.active) {
             detail::check(tgm_file_append_with_options(
                 handle_.get(), metadata_json.c_str(),
                 sg.ptrs.data(), sg.lens.data(),
@@ -1554,6 +1932,382 @@ private:
 };
 
 // ============================================================
+// Frame walker — frame_type / frame / frame_range
+// ============================================================
+
+/// The kind of a wire frame, mirroring the C `tgm_frame_type` enum.
+///
+/// The enumerator values **are** the wire's frame-type numbers (see
+/// `plans/WIRE_FORMAT.md` §4), not a binding invention.  Type 4 is
+/// reserved — it held the obsolete v2 data-object layout — and therefore
+/// has no enumerator, which is why the sequence skips from 3 to 5.
+enum class frame_type : std::uint16_t {
+    /// CBOR global metadata, written in the header (random-access mode).
+    header_metadata   = TGM_FRAME_TYPE_HEADER_METADATA,
+    /// Object index, written in the header (random-access mode).
+    header_index      = TGM_FRAME_TYPE_HEADER_INDEX,
+    /// Aggregate hash frame, written in the header.
+    header_hash       = TGM_FRAME_TYPE_HEADER_HASH,
+    /// Aggregate hash frame, written in the footer.
+    footer_hash       = TGM_FRAME_TYPE_FOOTER_HASH,
+    /// Object index, written in the footer (streaming mode).
+    footer_index      = TGM_FRAME_TYPE_FOOTER_INDEX,
+    /// CBOR global metadata, written in the footer (streaming mode).
+    footer_metadata   = TGM_FRAME_TYPE_FOOTER_METADATA,
+    /// Per-object metadata frame immediately preceding a data-object frame.
+    preceder_metadata = TGM_FRAME_TYPE_PRECEDER_METADATA,
+    /// N-dimensional tensor data-object frame — the only data-object type
+    /// in v3, and the only frame type with a 20-byte footer.
+    ntensor           = TGM_FRAME_TYPE_NTENSOR,
+};
+
+namespace detail {
+
+/// Map the C `tgm_frame_type` discriminant to the C++ frame_type enum.
+///
+/// The two enums carry identical values (both are the wire number), so this
+/// is an exact, total conversion rather than a lookup table — an unknown
+/// discriminant from a future ABI is preserved as its number instead of
+/// being silently folded into a known variant.
+[[nodiscard]] inline frame_type frame_type_from_c(tgm_frame_type t) noexcept {
+    return static_cast<frame_type>(static_cast<std::uint16_t>(t));
+}
+
+}  // namespace detail
+
+/// One frame's structural description plus a **borrowed** view of its
+/// content — the C++ face of the C `TgmFrame` POD.
+///
+/// A frame is a small value type (copyable, cheap) yielded by frame_range.
+///
+/// @warning Lifetime: payload() / payload_data() point **into the message
+///          buffer** passed to frames() — a view, never a copy, with nothing
+///          to free.  They stay valid for exactly as long as that buffer
+///          does, independently of the range that produced them: destroying
+///          the frame_range does **not** invalidate them.  Copy the bytes
+///          out if you need them to outlive the message buffer.
+class frame {
+public:
+    /// Which kind of frame this is.
+    [[nodiscard]] frame_type type() const noexcept {
+        return detail::frame_type_from_c(raw_.frame_type);
+    }
+
+    /// Frame-type-specific version field from the frame header.
+    [[nodiscard]] std::uint16_t version() const noexcept { return raw_.version; }
+
+    /// Raw 16-bit frame flags; bit 1 is `HASH_PRESENT` (see has_hash()).
+    [[nodiscard]] std::uint16_t flags() const noexcept { return raw_.flags; }
+
+    /// Byte offset of the frame header, relative to the start of the message.
+    [[nodiscard]] std::size_t offset() const noexcept { return raw_.offset; }
+
+    /// Whole-frame span in bytes: frame header through `ENDF`, excluding any
+    /// alignment padding that follows.
+    [[nodiscard]] std::size_t length() const noexcept { return raw_.length; }
+
+    /// Borrowed pointer to the content bytes — everything between the
+    /// 16-byte frame header and the type-specific footer (20 bytes for
+    /// frame_type::ntensor, 12 for every other type).
+    /// @warning Borrows the caller's message buffer; see the class warning.
+    [[nodiscard]] const std::uint8_t* payload_data() const noexcept { return raw_.payload; }
+
+    /// Length of the borrowed content bytes.
+    [[nodiscard]] std::size_t payload_size() const noexcept { return raw_.payload_len; }
+
+    /// The content bytes as a std::string_view (a byte view — the payload is
+    /// binary CBOR or tensor data, not text).
+    ///
+    /// The project targets C++17, so this is the borrowing byte-range type
+    /// available; it is built from `ptr + len` and never `strlen`, so interior
+    /// NUL bytes are preserved.
+    /// @warning Borrows the caller's message buffer; see the class warning.
+    [[nodiscard]] std::string_view payload() const noexcept {
+        if (raw_.payload == nullptr) return {};
+        return std::string_view(reinterpret_cast<const char*>(raw_.payload),
+                                raw_.payload_len);
+    }
+
+    /// True if this frame's `HASH_PRESENT` flag is set, i.e. its inline hash
+    /// slot holds a meaningful digest (`plans/WIRE_FORMAT.md` §2.5).
+    ///
+    /// This is the authoritative answer for a single frame —
+    /// message_header::has_hashes_present() is only an advisory
+    /// message-wide summary.
+    [[nodiscard]] bool has_hash() const noexcept { return tgm_frame_has_hash(&raw_); }
+
+    /// True if this frame carries a data object (frame_type::ntensor is the
+    /// only data-object type in v3).
+    [[nodiscard]] bool is_data_object() const noexcept {
+        return type() == frame_type::ntensor;
+    }
+
+private:
+    friend class frame_range;
+
+    frame() = default;
+    explicit frame(const TgmFrame& raw) noexcept : raw_(raw) {}
+    TgmFrame raw_{};
+};
+
+/// A lazy, single-pass range over the frames of one message.
+///
+/// Returned by frames().  Owns the underlying C cursor (RAII, move-only) and
+/// pulls exactly one frame per `++` — nothing is materialised up front, so a
+/// caller that only needs the first frames never pays for the rest.
+///
+/// Supports range-for:
+/// @code
+/// for (const auto& f : tensogram::frames(msg.data(), msg.size())) {
+///     if (f.is_data_object()) { ... }
+/// }
+/// @endcode
+///
+/// @warning **Lifetime**: the range borrows the message buffer — the buffer
+///          must outlive the range and must not be moved, reallocated, or
+///          mutated while the range lives.  Frames yielded by the walk keep
+///          pointing into that buffer and stay valid after the range is
+///          destroyed (see the frame class documentation).
+///
+/// @note **End vs malformed**: the underlying cursor stops for two different
+///       reasons.  A clean end simply terminates the loop; a truncated or
+///       inconsistent frame chain throws tensogram::framing_error from the
+///       increment that discovers it, after the intact frames have been
+///       yielded.  A buffer whose preamble does not parse at all throws from
+///       frames() itself.
+class frame_range {
+public:
+    /// End-of-walk marker.  C++17 permits a range-for `end()` of a different
+    /// type from `begin()`, which lets the cursor answer "am I done?" from
+    /// its own state instead of synthesising a comparable end iterator.
+    struct sentinel {};
+
+    /// Input iterator over the frames of a message.
+    ///
+    /// Single-pass by construction: every copy shares the one C cursor owned
+    /// by the frame_range, exactly like std::istream_iterator.
+    class iterator {
+    public:
+        using value_type        = frame;
+        using difference_type   = std::ptrdiff_t;
+        using pointer           = const frame*;
+        using reference         = const frame&;
+        using iterator_category = std::input_iterator_tag;
+
+        /// Construct an exhausted iterator (compares equal to any sentinel).
+        iterator() = default;
+
+        [[nodiscard]] const frame& operator*() const noexcept { return current_; }
+        [[nodiscard]] const frame* operator->() const noexcept { return &current_; }
+
+        /// Pull the next frame.
+        /// @throws tensogram::framing_error If the frame chain is malformed.
+        iterator& operator++() { advance(); return *this; }
+
+        /// Post-increment returns void, as C++20's `std::input_iterator`
+        /// permits: every copy shares the one C cursor, so a returned copy
+        /// could not be advanced independently of this one.  Use the
+        /// pre-increment form.
+        /// @throws tensogram::framing_error If the frame chain is malformed.
+        void operator++(int) { advance(); }
+
+        [[nodiscard]] bool operator==(sentinel) const noexcept { return done_; }
+        [[nodiscard]] bool operator!=(sentinel) const noexcept { return !done_; }
+        [[nodiscard]] friend bool operator==(sentinel s, const iterator& it) noexcept {
+            return it == s;
+        }
+        [[nodiscard]] friend bool operator!=(sentinel s, const iterator& it) noexcept {
+            return it != s;
+        }
+        /// Two iterators are equal when they share a cursor and its state.
+        [[nodiscard]] bool operator==(const iterator& other) const noexcept {
+            return it_ == other.it_ && done_ == other.done_;
+        }
+        [[nodiscard]] bool operator!=(const iterator& other) const noexcept {
+            return !(*this == other);
+        }
+
+    private:
+        friend class frame_range;
+
+        explicit iterator(tgm_frame_iter_t* it) : it_(it), done_(false) { advance(); }
+
+        /// Pull one frame, translating the C cursor's single `false` return
+        /// into the two outcomes it actually stands for.
+        ///
+        /// `tgm_frame_iter_next` clears the thread-local last error on a
+        /// clean exhaustion and sets it on a malformed frame, so the error
+        /// slot — not the return value — is what tells the two apart.
+        void advance() {
+            if (done_ || it_ == nullptr) {
+                done_ = true;
+                return;
+            }
+            TgmFrame raw{};
+            if (tgm_frame_iter_next(it_, &raw)) {
+                current_ = frame(raw);
+                return;
+            }
+            done_ = true;
+            current_ = frame();
+            if (const char* msg = tgm_last_error()) {
+                throw framing_error(TGM_ERROR_FRAMING, msg);
+            }
+        }
+
+        /// Borrowed from the owning frame_range — the cursor's address is
+        /// stable across a move of the range, so iterators survive it.
+        tgm_frame_iter_t* it_ = nullptr;
+        frame current_{};
+        bool done_ = true;
+    };
+
+    /// Start a walk over the frames of the message in `[msg, msg + len)`.
+    ///
+    /// @throws tensogram::invalid_arg_error If @p msg is null.
+    /// @throws tensogram::framing_error If the preamble does not parse
+    ///         (truncated buffer, wrong magic, unsupported version).
+    frame_range(const std::uint8_t* msg, std::size_t len) {
+        if (msg == nullptr) {
+            throw invalid_arg_error(TGM_ERROR_INVALID_ARG,
+                                    "frames: message buffer is null");
+        }
+        tgm_frame_iter_t* raw = tgm_frame_iter_create(msg, len);
+        if (raw == nullptr) {
+            const char* err = tgm_last_error();
+            throw framing_error(TGM_ERROR_FRAMING,
+                                err ? err : "message preamble does not parse");
+        }
+        handle_.reset(raw);
+    }
+
+    frame_range(frame_range&&) noexcept = default;
+    frame_range& operator=(frame_range&&) noexcept = default;
+    ~frame_range() = default;
+
+    frame_range(const frame_range&) = delete;
+    frame_range& operator=(const frame_range&) = delete;
+
+    /// Begin the walk, pulling the first frame.
+    ///
+    /// Single-pass: calling begin() a second time resumes where the previous
+    /// iterator stopped rather than restarting the walk.
+    /// @throws tensogram::framing_error If the first frame is malformed.
+    [[nodiscard]] iterator begin() { return iterator(handle_.get()); }
+
+    /// The end-of-walk sentinel.
+    [[nodiscard]] sentinel end() const noexcept { return sentinel{}; }
+
+private:
+    struct deleter {
+        void operator()(tgm_frame_iter_t* p) const noexcept { tgm_frame_iter_free(p); }
+    };
+    std::unique_ptr<tgm_frame_iter_t, deleter> handle_;
+};
+
+/// Walk the frames of a single message, lazily.
+///
+/// Wraps `tgm_frame_iter_create`, binding `tensogram::frames`.  @p msg must
+/// point at the start of a message (the `TENSOGRM` preamble magic) —
+/// typically a slice located with scan().  Only the type 1–9 `FR` frames are
+/// yielded; the preamble and postamble are not frames, use
+/// read_message_header() for the envelope.
+///
+/// @param msg  Wire-format bytes of a single message.
+/// @param len  Length of @p msg.
+/// @return A lazy range; see frame_range for the lifetime and
+///         end-vs-malformed contracts.
+/// @throws tensogram::invalid_arg_error If @p msg is null.
+/// @throws tensogram::framing_error If the preamble does not parse.
+[[nodiscard]] inline frame_range frames(const std::uint8_t* msg, std::size_t len) {
+    return frame_range(msg, len);
+}
+
+// ============================================================
+// message_header — the message envelope, without walking frames
+// ============================================================
+
+class message_header;
+[[nodiscard]] inline message_header read_message_header(const std::uint8_t* msg,
+                                                        std::size_t len);
+
+/// A message's envelope (the 24-byte preamble) as a value type.
+///
+/// Produced by read_message_header().  The eight `has_*` accessors are the
+/// preamble's structural flags decoded into named predicates, so callers
+/// never touch a raw bitset.  Together they say whether a message is
+/// *random-access* (metadata / index / hashes in the **header**) or
+/// *streaming* (in the **footer**) without reading a single frame.
+class message_header {
+public:
+    /// Wire-format version (tensogram::wire_version for messages this build
+    /// writes).
+    [[nodiscard]] std::uint16_t version() const noexcept { return raw_.version; }
+
+    /// Total message length in bytes, preamble through postamble, or `0` if
+    /// a streaming writer never back-filled it.  Zero is not an error — it
+    /// means "unknown at write time".
+    [[nodiscard]] std::uint64_t total_length() const noexcept { return raw_.total_length; }
+
+    /// A frame_type::header_metadata frame is present (random-access mode).
+    [[nodiscard]] bool has_header_metadata() const noexcept {
+        return raw_.has_header_metadata;
+    }
+    /// A frame_type::footer_metadata frame is present (streaming mode).
+    [[nodiscard]] bool has_footer_metadata() const noexcept {
+        return raw_.has_footer_metadata;
+    }
+    /// A frame_type::header_index frame is present.
+    [[nodiscard]] bool has_header_index() const noexcept { return raw_.has_header_index; }
+    /// A frame_type::footer_index frame is present.
+    [[nodiscard]] bool has_footer_index() const noexcept { return raw_.has_footer_index; }
+    /// A frame_type::header_hash frame is present.
+    [[nodiscard]] bool has_header_hashes() const noexcept { return raw_.has_header_hashes; }
+    /// A frame_type::footer_hash frame is present.
+    [[nodiscard]] bool has_footer_hashes() const noexcept { return raw_.has_footer_hashes; }
+    /// At least one frame_type::preceder_metadata frame appears in the body.
+    ///
+    /// **Advisory in streaming mode**: the encoder writes the preamble before
+    /// it knows whether any preceder will follow, so `true` does not
+    /// guarantee a frame.  Only "frame present ⇒ flag set" holds there; in
+    /// buffered mode the flag is exact.
+    [[nodiscard]] bool has_preceder_metadata() const noexcept {
+        return raw_.has_preceder_metadata;
+    }
+    /// Advisory: every frame in this message has its per-frame
+    /// `HASH_PRESENT` bit set.  For any single frame, frame::has_hash()
+    /// stays authoritative.
+    [[nodiscard]] bool has_hashes_present() const noexcept {
+        return raw_.has_hashes_present;
+    }
+
+private:
+    friend message_header tensogram::read_message_header(const std::uint8_t*, std::size_t);
+
+    message_header() = default;
+    TgmMessageHeader raw_{};
+};
+
+/// Read a message's envelope without walking its frames.
+///
+/// Wraps `tgm_message_header`, binding `tensogram::message_header`.  @p msg
+/// must point at the start of a message (the `TENSOGRM` preamble magic) —
+/// typically a slice located with scan().
+///
+/// @param msg  Wire-format bytes of a single message.
+/// @param len  Length of @p msg.
+/// @return The decoded envelope.
+/// @throws tensogram::invalid_arg_error If @p msg is null.
+/// @throws tensogram::framing_error If the preamble does not parse
+///         (truncated message, wrong magic, unsupported version).
+[[nodiscard]] inline message_header read_message_header(const std::uint8_t* msg,
+                                                        std::size_t len) {
+    message_header header;
+    detail::check(tgm_message_header(msg, len, &header.raw_));
+    return header;
+}
+
+// ============================================================
 // streaming_encoder — RAII wrapper for tgm_streaming_encoder_t
 // ============================================================
 
@@ -1570,6 +2324,12 @@ public:
     /// @param path          Output file path (created/truncated).
     /// @param metadata_json JSON with "version" and optional extra keys.
     /// @param opts          Encoding options (hash algorithm, etc.).
+    /// @throws tensogram::encoding_error If `opts.aggregate_hash` asks for a
+    ///         header-side placement (aggregate_hash_policy::header or
+    ///         ::both): a streaming writer emits its header before any data
+    ///         object exists, so the per-object hashes are not yet known.
+    ///         Use aggregate_hash_policy::automatic (which resolves to the
+    ///         footer when streaming) or ::footer.
     streaming_encoder(const std::string& path,
                       const std::string& metadata_json,
                       const encode_options& opts = {}) {
@@ -1577,7 +2337,11 @@ public:
         const char* hash = opts.hash_algo.empty() ? nullptr
                                                     : opts.hash_algo.c_str();
         auto mask_holder = detail::build_mask_opts(opts);
-        if (mask_holder.active) {
+        if (detail::needs_encode_options(opts)) {
+            const TgmEncodeOptions c_opts = detail::build_encode_opts(opts);
+            detail::check(tgm_streaming_encoder_create_with_encode_options(
+                path.c_str(), metadata_json.c_str(), opts.threads, &c_opts, &raw));
+        } else if (mask_holder.active) {
             detail::check(tgm_streaming_encoder_create_with_options(
                 path.c_str(), metadata_json.c_str(), hash, opts.threads,
                 &mask_holder.value, &raw));
@@ -1682,7 +2446,16 @@ private:
     tgm_bytes_t bytes{};
     auto mask_holder = detail::build_mask_opts(opts);
     const TgmEncodeMaskOptions* mask_ptr = mask_holder.active ? &mask_holder.value : nullptr;
-    if (mask_ptr != nullptr) {
+    if (detail::needs_encode_options(opts)) {
+        // Aggregate-hash placement / codec backend live only in the full
+        // option struct, which also carries the hash algorithm and the mask
+        // policy — so there is no separate `hash_algo` argument here.
+        const TgmEncodeOptions c_opts = detail::build_encode_opts(opts);
+        detail::check(tgm_encode_with_encode_options(metadata_json.c_str(),
+                                                     sg.ptrs.data(), sg.lens.data(),
+                                                     objects.size(), opts.threads,
+                                                     &c_opts, &bytes));
+    } else if (mask_ptr != nullptr) {
         detail::check(tgm_encode_with_options(metadata_json.c_str(),
                                               sg.ptrs.data(), sg.lens.data(), objects.size(),
                                               hash, opts.threads,
@@ -1728,18 +2501,38 @@ private:
 /// @param objects        Vector of (pointer, length) pairs pointing at
 ///                       already-encoded payload bytes — one per descriptor
 ///                       entry.
-/// @param opts           Encoding options (hash algorithm, etc.).
+/// @param opts           Encoding options (hash algorithm, threads).  The
+///                       mask fields do not apply to opaque pre-encoded
+///                       bytes and are ignored.
 /// @return The encoded message as a byte vector.
+/// @throws tensogram::invalid_arg_error If `opts.aggregate_hash` or
+///         `opts.codec_backend` is set to a non-default value: the C ABI
+///         has no pre-encoded entry point that carries them, so honouring
+///         them here is impossible and ignoring them would emit a message
+///         that contradicts the request.  Use encode() for those.
 [[nodiscard]] inline std::vector<std::uint8_t> encode_pre_encoded(
     const std::string& metadata_json,
     const std::vector<std::pair<const std::uint8_t*, std::size_t>>& objects,
     const encode_options& opts = {})
 {
-    // Strict-finite flags are raw-input-only — pre-encoded bytes are
-    // opaque to the library and cannot be meaningfully scanned for
-    // NaN/Inf.  The underlying C FFI does not accept these flags, but
-    // we catch the case here to give the C++ caller a clear error
-    // rather than silently discarding their intent.
+    // The mask fields are raw-input-only — pre-encoded bytes are opaque to
+    // the library and cannot be meaningfully scanned for NaN / Inf — and
+    // `tgm_encode_pre_encoded` accordingly takes no mask options, so they
+    // are inapplicable here.
+    //
+    // The aggregate-hash placement and the codec backend are different:
+    // they describe the *message* the encoder writes, not the payload
+    // bytes, yet the C ABI has no pre-encoded entry point that carries
+    // them.  Accepting them would emit a message that contradicts what the
+    // caller asked for, so the mismatch is reported instead of dropped.
+    if (detail::needs_encode_options(opts)) {
+        throw invalid_arg_error(
+            TGM_ERROR_INVALID_ARG,
+            "encode_pre_encoded: encode_options::aggregate_hash and "
+            "::codec_backend are not supported on the pre-encoded path "
+            "(the C ABI has no pre-encoded entry point that carries them); "
+            "use encode() for those, or leave both at their default");
+    }
     detail::scatter_gather sg(objects);
     const char* hash = opts.hash_algo.empty() ? nullptr : opts.hash_algo.c_str();
     tgm_bytes_t bytes{};

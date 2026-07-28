@@ -18,6 +18,8 @@
  *   {@link scanWithOptions} — whole-buffer decoding with dtype-aware payload views
  * - {@link decodeWithMasks} — advanced decode returning raw NaN / Inf masks
  *   alongside the `0.0`-substituted payloads
+ * - {@link frames}, {@link messageHeader} — structural introspection of ONE
+ *   message: its frame chain and its typed envelope, without decoding
  * - {@link objects}, {@link objectsMetadata} — lazy per-object iterators over
  *   one message (decode on demand / descriptors without payload decode)
  * - {@link dataObjectInlineHashes} — read per-object inline integrity digests
@@ -51,6 +53,7 @@ export const WIRE_VERSION = 3;
 export { encode } from './encode.js';
 export { decode, decodeMetadata, decodeObject, scan, scanWithOptions } from './decode.js';
 export { decodeWithMasks } from './decodeMasks.js';
+export { frames, messageHeader } from './frameWalk.js';
 export { objects, objectsMetadata } from './iter.js';
 export { decodeStream } from './streaming.js';
 export { TensogramFile } from './file.js';
@@ -136,11 +139,13 @@ export {
 } from './errors.js';
 
 export type {
+  AggregateHashPolicy,
   AppendOptions,
   BaseEntry,
   ByteOrder,
   CborValue,
   Compression,
+  CompressionBackend,
   DataObjectDescriptor,
   DecodedFrame,
   DecodedMaskSet,
@@ -161,12 +166,15 @@ export type {
   FileSource,
   FileValidationReport,
   Filter,
+  Frame,
+  FrameTypeName,
   FromUrlOptions,
   GlobalMetadata,
   HashDescriptor,
   IssueCode,
   IssueSeverity,
   MaskMethod,
+  MessageHeader,
   MessagePosition,
   OpenFileOptions,
   PreEncodedInput,

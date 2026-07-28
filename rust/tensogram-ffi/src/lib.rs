@@ -59,8 +59,8 @@ use tensogram::{
     DataObjectDescriptor, DecodeOptions, DecodedMaskSet, EncodeOptions, GlobalMetadata, MetaType,
     MetaValue, RESERVED_KEY, ScanOptions, StreamingEncoder, TensogramError, TensogramFile,
     compute_common, decode, decode_metadata, decode_object, decode_range, decode_with_masks,
-    encode, encode_pre_encoded, parse_hash_name, scan, scan_file, scan_file_with_options,
-    scan_with_options, verify_canonical_cbor,
+    encode, encode_pre_encoded, message_header as core_message_header, parse_hash_name, scan,
+    scan_file, scan_file_with_options, scan_with_options, verify_canonical_cbor,
 };
 
 // ---------------------------------------------------------------------------
@@ -174,6 +174,19 @@ fn set_last_error(msg: &str) {
     LAST_ERROR_OBJECT_INDEX.with(|c| c.set(-1));
 }
 
+/// Discard the thread-local last error, so [`tgm_last_error`] reports NULL.
+///
+/// Needed wherever "nothing went wrong" has to be observable *through the
+/// error channel* rather than the return value — e.g. [`tgm_frame_iter_next`]
+/// returns `false` both at a clean end and on a malformed frame, and callers
+/// tell the two apart by whether a last error is set.
+fn clear_last_error() {
+    LAST_ERROR.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+    LAST_ERROR_OBJECT_INDEX.with(|c| c.set(-1));
+}
+
 /// Returns a pointer to the last error message, or NULL if no error.
 /// The pointer is valid until the next FFI call on the same thread.
 #[unsafe(no_mangle)]
@@ -272,6 +285,158 @@ unsafe fn apply_mask_options(
         return Ok(());
     }
     let opts = unsafe { &*opts };
+    encode_opts.allow_nan = opts.allow_nan;
+    encode_opts.allow_inf = opts.allow_inf;
+    encode_opts.nan_mask_method =
+        unsafe { parse_mask_method_cstr(opts.nan_mask_method, MaskMethod::default())? };
+    encode_opts.pos_inf_mask_method =
+        unsafe { parse_mask_method_cstr(opts.pos_inf_mask_method, MaskMethod::default())? };
+    encode_opts.neg_inf_mask_method =
+        unsafe { parse_mask_method_cstr(opts.neg_inf_mask_method, MaskMethod::default())? };
+    if opts.small_mask_threshold_bytes >= 0 {
+        encode_opts.small_mask_threshold_bytes = opts.small_mask_threshold_bytes as usize;
+    }
+    Ok(())
+}
+
+/// Where to place the aggregate hash frame (cbindgen:
+/// `tgm_aggregate_hash_policy`, variants `TGM_AGGREGATE_HASH_POLICY_*`).
+///
+/// Mirrors [`tensogram::AggregateHashPolicy`].  `AUTO` is the zero value, so a
+/// zero-initialised [`TgmEncodeOptions`] asks the encoder to choose
+/// (`HEADER` when buffering, `FOOTER` when streaming) — the same default the
+/// Rust API has.
+///
+/// `HEADER` and `BOTH` are **buffered-mode only**: a streaming encoder writes
+/// its header before any data object exists, so the per-object hashes are not
+/// yet known.  [`tgm_streaming_encoder_create_with_encode_options`] rejects
+/// them with `TGM_ERROR_ENCODING` and an explanatory
+/// [`tgm_last_error`] message.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmAggregateHashPolicy {
+    /// Encoder picks: buffered → header, streaming → footer.
+    Auto = 0,
+    /// Emit no aggregate hash frame.  Per-frame inline hash slots are
+    /// unaffected.
+    None = 1,
+    /// Emit a `TGM_FRAME_TYPE_HEADER_HASH` frame.  Buffered mode only.
+    Header = 2,
+    /// Emit a `TGM_FRAME_TYPE_FOOTER_HASH` frame.  Valid in both modes.
+    Footer = 3,
+    /// Emit both a header and a footer hash frame carrying identical hash
+    /// lists.  Buffered mode only.
+    Both = 4,
+}
+
+impl From<TgmAggregateHashPolicy> for tensogram::AggregateHashPolicy {
+    fn from(p: TgmAggregateHashPolicy) -> Self {
+        match p {
+            TgmAggregateHashPolicy::Auto => tensogram::AggregateHashPolicy::Auto,
+            TgmAggregateHashPolicy::None => tensogram::AggregateHashPolicy::None,
+            TgmAggregateHashPolicy::Header => tensogram::AggregateHashPolicy::Header,
+            TgmAggregateHashPolicy::Footer => tensogram::AggregateHashPolicy::Footer,
+            TgmAggregateHashPolicy::Both => tensogram::AggregateHashPolicy::Both,
+        }
+    }
+}
+
+/// Which codec implementation to use where both are compiled in (cbindgen:
+/// `tgm_compression_backend`, variants `TGM_COMPRESSION_BACKEND_*`).
+///
+/// Mirrors [`tensogram::CompressionBackend`].  `AUTO` is the zero value:
+/// consult `TENSOGRAM_COMPRESSION_BACKEND`, else the platform default (FFI on
+/// native, pure-Rust on wasm32).  `FFI` and `PURE` are explicit overrides that
+/// always win over the environment.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmCompressionBackend {
+    /// Consult the environment, then the platform default.
+    Auto = 0,
+    /// Use the C FFI codecs (libaec for szip, libzstd for zstd).
+    Ffi = 1,
+    /// Use the pure-Rust codecs (tensogram-szip, ruzstd).
+    Pure = 2,
+}
+
+impl From<TgmCompressionBackend> for tensogram::CompressionBackend {
+    fn from(b: TgmCompressionBackend) -> Self {
+        match b {
+            TgmCompressionBackend::Auto => tensogram::CompressionBackend::Auto,
+            TgmCompressionBackend::Ffi => tensogram::CompressionBackend::Ffi,
+            TgmCompressionBackend::Pure => tensogram::CompressionBackend::Pure,
+        }
+    }
+}
+
+/// The full encode-side option set (cbindgen: `TgmEncodeOptions`).
+///
+/// Supersedes [`TgmEncodeMaskOptions`], which stays for source compatibility:
+/// it carries the same six mask fields **plus** the three knobs that
+/// previously had no C surface at all — the hash algorithm, where the
+/// aggregate hash frame goes, and which codec backend to use.
+///
+/// Pass `NULL` to any `*_with_encode_options` entry point for the library
+/// defaults; a zero-initialised struct means the same thing, because every
+/// field's zero value *is* the default:
+///
+/// | field | `NULL` / zero | meaning |
+/// |---|---|---|
+/// | `hash` | NULL | no hashing (the FFI convention: name it to get it) |
+/// | `aggregate_hash` | `TGM_AGGREGATE_HASH_POLICY_AUTO` | encoder picks the placement |
+/// | `compression_backend` | `TGM_COMPRESSION_BACKEND_AUTO` | env, then platform default |
+/// | `allow_nan` / `allow_inf` | `false` | non-finite input is a hard error |
+/// | `*_mask_method` | NULL | the library default (`"roaring"`) |
+/// | `small_mask_threshold_bytes` | negative | the library default (128) |
+///
+/// `hash` is `"xxh3"` (v3's only algorithm), `"none"`, or NULL; anything else
+/// is [`TgmError::InvalidArg`].  Each `*_mask_method` is one of `"none"`,
+/// `"rle"`, `"roaring"`, `"lz4"`, `"zstd"`, `"blosc2"`.
+/// `small_mask_threshold_bytes` is the byte count below which mask blobs are
+/// stored raw regardless of the requested method; `0` disables that
+/// auto-fallback, negative values select the library default.
+#[repr(C)]
+pub struct TgmEncodeOptions {
+    /// Hash algorithm name (`"xxh3"`, `"none"`) or NULL for no hashing.
+    pub hash: *const c_char,
+    /// Where to write the aggregate hash frame.  Ignored when `hash` is NULL
+    /// or `"none"` — there is nothing to aggregate.
+    pub aggregate_hash: TgmAggregateHashPolicy,
+    /// Which codec implementation to prefer for szip / zstd.
+    pub compression_backend: TgmCompressionBackend,
+    /// Substitute NaN with `0.0` and record a bitmask companion frame.
+    pub allow_nan: bool,
+    /// Substitute `±Inf` with `0.0` and record per-sign bitmask companions.
+    pub allow_inf: bool,
+    /// Compression method for the NaN mask, or NULL for the default.
+    pub nan_mask_method: *const c_char,
+    /// Compression method for the `+Inf` mask, or NULL for the default.
+    pub pos_inf_mask_method: *const c_char,
+    /// Compression method for the `-Inf` mask, or NULL for the default.
+    pub neg_inf_mask_method: *const c_char,
+    /// Raw-storage threshold for mask blobs; `0` disables, negative = default.
+    pub small_mask_threshold_bytes: isize,
+}
+
+/// Apply the optional [`TgmEncodeOptions`] pointer to an [`EncodeOptions`].
+/// `NULL` is a no-op, leaving the caller's defaults in place.  Returns an
+/// error message (routed to [`set_last_error`] by the caller) when the hash
+/// algorithm or a mask method name is invalid UTF-8 or unknown.
+///
+/// # Safety
+///
+/// `opts` must either be `NULL` or point to a valid `TgmEncodeOptions` whose
+/// string fields are NULL or NUL-terminated.
+unsafe fn apply_encode_options(
+    encode_opts: &mut EncodeOptions,
+    opts: *const TgmEncodeOptions,
+) -> Result<(), String> {
+    let Some(opts) = (unsafe { opts.as_ref() }) else {
+        return Ok(());
+    };
+    encode_opts.hashing = parse_hash_algo(opts.hash).map_err(|(_code, msg)| msg)?;
+    encode_opts.aggregate_hash = opts.aggregate_hash.into();
+    encode_opts.compression_backend = opts.compression_backend.into();
     encode_opts.allow_nan = opts.allow_nan;
     encode_opts.allow_inf = opts.allow_inf;
     encode_opts.nan_mask_method =
@@ -1030,6 +1195,90 @@ pub extern "C" fn tgm_encode_with_options(
     }
 }
 
+/// Encode with the full [`TgmEncodeOptions`] set.
+///
+/// Like [`tgm_encode_with_options`], but the option struct also carries the
+/// hash algorithm, the aggregate-hash placement and the compression backend —
+/// so there is no separate `hash_algo` argument here; put the algorithm name
+/// in `options->hash`.  `NULL` options behave exactly like [`tgm_encode`] with
+/// a NULL `hash_algo`: no hashing, `AUTO` placement, `AUTO` backend,
+/// non-finite input rejected.
+///
+/// On success returns `TGM_ERROR_OK` and fills `out` with the encoded bytes,
+/// which the caller frees with [`tgm_bytes_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_encode_with_encode_options(
+    metadata_json: *const c_char,
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    num_objects: usize,
+    threads: u32,
+    options: *const TgmEncodeOptions,
+    out: *mut TgmBytes,
+) -> TgmError {
+    if metadata_json.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    // The hash algorithm now travels inside `options`; pass NULL to the
+    // shared parser and let `apply_encode_options` set `hashing`.
+    let mut parsed = match unsafe {
+        parse_encode_args(
+            json_str,
+            data_ptrs,
+            data_lens,
+            num_objects,
+            ptr::null(),
+            threads,
+        )
+    } {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+    if let Err(msg) = unsafe { apply_encode_options(&mut parsed.options, options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
+
+    let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
+        .descriptors
+        .iter()
+        .zip(parsed.data_slices.iter())
+        .map(|(d, s)| (d, *s))
+        .collect();
+
+    match encode(&parsed.global_metadata, &pairs, &parsed.options) {
+        Ok(bytes) => {
+            let mut bytes = bytes.into_boxed_slice().into_vec();
+            let result = TgmBytes {
+                data: bytes.as_mut_ptr(),
+                len: bytes.len(),
+            };
+            std::mem::forget(bytes);
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
 /// Decode with explicit NaN / Inf restoration options.
 ///
 /// Like [`tgm_decode`] but takes a [`TgmDecodeMaskOptions`] pointer
@@ -1180,6 +1429,87 @@ pub extern "C" fn tgm_streaming_encoder_create_with_options(
     }
 }
 
+/// Streaming-encoder constructor taking the full [`TgmEncodeOptions`] set.
+///
+/// Like [`tgm_streaming_encoder_create_with_options`], but the option struct
+/// also carries the hash algorithm, the aggregate-hash placement and the
+/// compression backend, so there is no separate `hash_algo` argument.  `NULL`
+/// options behave like [`tgm_streaming_encoder_create`] with a NULL
+/// `hash_algo`.
+///
+/// `TGM_AGGREGATE_HASH_POLICY_HEADER` and `..._BOTH` are rejected here with
+/// `TGM_ERROR_ENCODING`: a streaming writer emits its header before any data
+/// object exists, so the per-object hashes are not yet known.  Use `AUTO`
+/// (which resolves to the footer when streaming) or `FOOTER`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_streaming_encoder_create_with_encode_options(
+    path: *const c_char,
+    metadata_json: *const c_char,
+    threads: u32,
+    options: *const TgmEncodeOptions,
+    out: *mut *mut TgmStreamingEncoder,
+) -> TgmError {
+    if path.is_null() || metadata_json.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in path: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+    let global_metadata = match parse_streaming_metadata_json(json_str) {
+        Ok(m) => m,
+        Err(e) => {
+            set_last_error(&e);
+            return TgmError::Metadata;
+        }
+    };
+    // Parse the option *names* before creating the file, so a typo'd hash
+    // algorithm or mask method cannot truncate an existing one.  Whether the
+    // aggregate-hash placement is legal in streaming mode stays core's call
+    // (`StreamingEncoder::new`), so that rule has one home.
+    let mut encode_options = EncodeOptions {
+        threads,
+        hashing: false,
+        ..Default::default()
+    };
+    if let Err(msg) = unsafe { apply_encode_options(&mut encode_options, options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
+    let file = match std::fs::File::create(path_str) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return TgmError::Io;
+        }
+    };
+    let writer = std::io::BufWriter::new(file);
+    match StreamingEncoder::new(writer, &global_metadata, &encode_options) {
+        Ok(enc) => {
+            let handle = Box::new(TgmStreamingEncoder { inner: Some(enc) });
+            unsafe {
+                *out = Box::into_raw(handle);
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
 /// Append a message to a file with explicit NaN / Inf mask-companion options.
 ///
 /// Like [`tgm_file_append`] but takes a [`TgmEncodeMaskOptions`]
@@ -1224,6 +1554,72 @@ pub extern "C" fn tgm_file_append_with_options(
         }
     };
     if let Err(msg) = unsafe { apply_mask_options(&mut parsed.options, mask_options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
+    let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
+        .descriptors
+        .iter()
+        .zip(parsed.data_slices.iter())
+        .map(|(d, s)| (d, *s))
+        .collect();
+    let f = unsafe { &mut (*file).file };
+    match f.append(&parsed.global_metadata, &pairs, &parsed.options) {
+        Ok(()) => TgmError::Ok,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Append a message to a file with the full [`TgmEncodeOptions`] set.
+///
+/// Like [`tgm_file_append_with_options`], but the option struct also carries
+/// the hash algorithm, the aggregate-hash placement and the compression
+/// backend, so there is no separate `hash_algo` argument.  `NULL` options
+/// behave like [`tgm_file_append`] with a NULL `hash_algo`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn tgm_file_append_with_encode_options(
+    file: *mut TgmFile,
+    metadata_json: *const c_char,
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    num_objects: usize,
+    threads: u32,
+    options: *const TgmEncodeOptions,
+) -> TgmError {
+    if file.is_null() || metadata_json.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+    // The hash algorithm travels inside `options`; see
+    // [`tgm_encode_with_encode_options`].
+    let mut parsed = match unsafe {
+        parse_encode_args(
+            json_str,
+            data_ptrs,
+            data_lens,
+            num_objects,
+            ptr::null(),
+            threads,
+        )
+    } {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+    if let Err(msg) = unsafe { apply_encode_options(&mut parsed.options, options) } {
         set_last_error(&msg);
         return TgmError::InvalidArg;
     }
@@ -2040,6 +2436,84 @@ pub extern "C" fn tgm_object_strides(msg: *const TgmMessage, index: usize) -> *c
     }
 }
 
+/// An element type (cbindgen: `tgm_dtype`, variants `TGM_DTYPE_*`).
+///
+/// Mirrors [`tensogram::Dtype`] one-for-one, numbered densely from `0` in core
+/// declaration order.  The wire format stores the dtype as a **string** (see
+/// `plans/WIRE_FORMAT.md` §6.1), so these codes are an FFI convenience, not a
+/// wire value — but they are part of the C ABI and therefore frozen.
+/// [`tgm_object_dtype`] returns the same information as a string; this enum is
+/// what you want in a `switch`.
+///
+/// The `impl From<Dtype>` below is an exhaustive match, so a new core variant
+/// fails the build here rather than silently mapping to something wrong.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmDtype {
+    Float16 = 0,
+    Bfloat16 = 1,
+    Float32 = 2,
+    Float64 = 3,
+    Complex64 = 4,
+    Complex128 = 5,
+    Int8 = 6,
+    Int16 = 7,
+    Int32 = 8,
+    Int64 = 9,
+    Uint8 = 10,
+    Uint16 = 11,
+    Uint32 = 12,
+    Uint64 = 13,
+    /// Sub-byte packed bitmask; element width is 1 bit, so the byte width of
+    /// [`tensogram::Dtype::Bitmask`] is reported as 0.
+    Bitmask = 14,
+}
+
+impl From<tensogram::Dtype> for TgmDtype {
+    fn from(d: tensogram::Dtype) -> Self {
+        match d {
+            tensogram::Dtype::Float16 => TgmDtype::Float16,
+            tensogram::Dtype::Bfloat16 => TgmDtype::Bfloat16,
+            tensogram::Dtype::Float32 => TgmDtype::Float32,
+            tensogram::Dtype::Float64 => TgmDtype::Float64,
+            tensogram::Dtype::Complex64 => TgmDtype::Complex64,
+            tensogram::Dtype::Complex128 => TgmDtype::Complex128,
+            tensogram::Dtype::Int8 => TgmDtype::Int8,
+            tensogram::Dtype::Int16 => TgmDtype::Int16,
+            tensogram::Dtype::Int32 => TgmDtype::Int32,
+            tensogram::Dtype::Int64 => TgmDtype::Int64,
+            tensogram::Dtype::Uint8 => TgmDtype::Uint8,
+            tensogram::Dtype::Uint16 => TgmDtype::Uint16,
+            tensogram::Dtype::Uint32 => TgmDtype::Uint32,
+            tensogram::Dtype::Uint64 => TgmDtype::Uint64,
+            tensogram::Dtype::Bitmask => TgmDtype::Bitmask,
+        }
+    }
+}
+
+/// A payload's byte order (cbindgen: `tgm_byte_order`, variants
+/// `TGM_BYTE_ORDER_*`).
+///
+/// Mirrors [`tensogram::ByteOrder`].  Like [`TgmDtype`] these codes are an FFI
+/// convenience — the wire stores `"little"` / `"big"` as text — and are frozen
+/// as part of the C ABI.  [`tgm_object_byte_order`] returns the same
+/// information as a string.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmByteOrder {
+    Little = 0,
+    Big = 1,
+}
+
+impl From<tensogram::ByteOrder> for TgmByteOrder {
+    fn from(b: tensogram::ByteOrder) -> Self {
+        match b {
+            tensogram::ByteOrder::Little => TgmByteOrder::Little,
+            tensogram::ByteOrder::Big => TgmByteOrder::Big,
+        }
+    }
+}
+
 /// Returns the dtype as a null-terminated string (e.g. "float32").
 /// The pointer is valid until the message is freed.
 #[unsafe(no_mangle)]
@@ -2049,6 +2523,27 @@ pub extern "C" fn tgm_object_dtype(msg: *const TgmMessage, index: usize) -> *con
             .and_then(|m| m.dtype_strings.get(index))
             .map(|s| s.as_ptr())
             .unwrap_or(ptr::null())
+    }
+}
+
+/// Returns the object's dtype as a [`tgm_dtype`](TgmDtype) code — the typed
+/// companion to [`tgm_object_dtype`], for callers that want to `switch`
+/// instead of `strcmp`.
+///
+/// A NULL `msg` or an out-of-range `index` records the reason in
+/// [`tgm_last_error`] and returns the zero-valued variant
+/// (`TGM_DTYPE_FLOAT16`); an enum return has no spare code to signal
+/// failure.  To bounds-check unambiguously, compare `index` against
+/// [`tgm_message_num_objects`], or call [`tgm_object_dtype`], which returns
+/// NULL for exactly the same inputs.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_object_dtype_enum(msg: *const TgmMessage, index: usize) -> TgmDtype {
+    match unsafe { as_msg(msg) }.and_then(|m| m.objects.get(index)) {
+        Some((desc, _)) => desc.dtype.into(),
+        None => {
+            set_last_error("null message handle or object index out of range");
+            TgmDtype::Float16
+        }
     }
 }
 
@@ -2164,6 +2659,24 @@ pub extern "C" fn tgm_object_byte_order(msg: *const TgmMessage, index: usize) ->
             .and_then(|m| m.byte_order_strings.get(index))
             .map(|s| s.as_ptr())
             .unwrap_or(ptr::null())
+    }
+}
+
+/// Returns the object's byte order as a [`tgm_byte_order`](TgmByteOrder) code
+/// — the typed companion to [`tgm_object_byte_order`].
+///
+/// A NULL `msg` or an out-of-range `index` records the reason in
+/// [`tgm_last_error`] and returns the zero-valued variant
+/// (`TGM_BYTE_ORDER_LITTLE`); see [`tgm_object_dtype_enum`] for how to
+/// bounds-check unambiguously.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_object_byte_order_enum(msg: *const TgmMessage, index: usize) -> TgmByteOrder {
+    match unsafe { as_msg(msg) }.and_then(|m| m.objects.get(index)) {
+        Some((desc, _)) => desc.byte_order.into(),
+        None => {
+            set_last_error("null message handle or object index out of range");
+            TgmByteOrder::Little
+        }
     }
 }
 
@@ -3418,6 +3931,205 @@ pub extern "C" fn tgm_file_close(file: *mut TgmFile) {
 }
 
 // ---------------------------------------------------------------------------
+// Synchronous remote access (Cargo feature `remote`)
+// ---------------------------------------------------------------------------
+//
+// A remote `.tgm` is opened into an ordinary `tgm_file_t`, so every existing
+// reader entry point (`tgm_file_message_count`, `tgm_file_read_message`,
+// `tgm_file_decode_message`, `tgm_file_iter_*`, …) works unchanged on an S3 /
+// GCS / Azure / HTTP source.  This is the blocking counterpart to
+// `tgm_async_file_open_remote`; a C caller no longer has to adopt the whole
+// async ABI just to read a remote file.
+//
+// Both entry points are exported unconditionally so consumers linking the
+// cdylib never see an undefined symbol.  Without the `remote` feature they
+// report — through `tgm_last_error()` — that the build lacks the feature,
+// exactly like the async surface does.
+
+/// `true` when `source` is a URL this build can open remotely.
+///
+/// Mirrors [`tensogram::is_remote_url`]: the recognised schemes are `s3`,
+/// `s3a`, `gs`, `az`, `azure`, `http` and `https`, compared
+/// case-insensitively.  Plain paths and `file://` URLs are **not** remote —
+/// they belong to the local backend ([`tgm_file_open`]).
+///
+/// Returns `false` — with the reason in [`tgm_last_error`] — for a NULL or
+/// non-UTF-8 `source`, and for **every** input when this build was compiled
+/// without the `remote` Cargo feature (such a build genuinely cannot open any
+/// remote URL, so "not remote for me" is the honest answer; the error message
+/// says how to fix it).
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_is_remote_url(source: *const c_char) -> bool {
+    if source.is_null() {
+        set_last_error("null argument");
+        return false;
+    }
+    let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in source: {e}"));
+            return false;
+        }
+    };
+
+    #[cfg(not(feature = "remote"))]
+    {
+        let _ = source_str;
+        set_last_error(
+            "tgm_is_remote_url: this build of tensogram-ffi was compiled without \
+             the `remote` Cargo feature, so no URL can be opened remotely; \
+             rebuild with --features=remote to enable S3/GCS/Azure/HTTP support",
+        );
+        false
+    }
+
+    #[cfg(feature = "remote")]
+    {
+        tensogram::is_remote_url(source_str)
+    }
+}
+
+/// Reader-side scan-walker options for [`tgm_file_open_remote`].  Mirrors
+/// [`tensogram::RemoteScanOptions`] as a flat, C-visible POD so callers can
+/// build it on the stack.
+///
+/// Pass a `NULL` `TgmRemoteScanOptions*` to use the library defaults
+/// (`bidirectional = true`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TgmRemoteScanOptions {
+    /// Enable the meet-in-the-middle (bidirectional) remote walk, which
+    /// pairs forward preamble fetches with backward postamble fetches and
+    /// roughly halves wall-clock layout discovery on real networks.  `false`
+    /// forces a forward-only walk.
+    pub bidirectional: bool,
+}
+
+/// Marshal the parallel `keys` / `values` C arrays into the `BTreeMap` the
+/// core remote backend takes.  `n_options == 0` ignores both pointers (they
+/// may be NULL); otherwise both arrays — and every entry in them — must be
+/// non-NULL, valid UTF-8 strings.
+///
+/// # Safety
+///
+/// When `n_options > 0`, `keys` and `values` must each point to at least
+/// `n_options` readable `*const c_char`, each of which is NULL or a
+/// NUL-terminated string.
+unsafe fn collect_storage_options(
+    keys: *const *const c_char,
+    values: *const *const c_char,
+    n_options: usize,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut storage = BTreeMap::new();
+    if n_options == 0 {
+        return Ok(storage);
+    }
+    if keys.is_null() || values.is_null() {
+        return Err(format!(
+            "storage option arrays must both be non-NULL when n_options ({n_options}) > 0"
+        ));
+    }
+    for i in 0..n_options {
+        let kp = unsafe { *keys.add(i) };
+        let vp = unsafe { *values.add(i) };
+        if kp.is_null() || vp.is_null() {
+            return Err(format!("storage option {i} has a NULL key or value"));
+        }
+        let k = unsafe { CStr::from_ptr(kp) }
+            .to_str()
+            .map_err(|e| format!("invalid UTF-8 in storage key {i}: {e}"))?;
+        let v = unsafe { CStr::from_ptr(vp) }
+            .to_str()
+            .map_err(|e| format!("invalid UTF-8 in storage value {i}: {e}"))?;
+        storage.insert(k.to_string(), v.to_string());
+    }
+    Ok(storage)
+}
+
+/// Open a remote `.tgm` (S3 / GCS / Azure / HTTP) for **synchronous** reading.
+///
+/// The blocking counterpart to `tgm_async_file_open_remote`: on success `*out`
+/// receives an ordinary [`tgm_file_t`](TgmFile), so the whole existing file
+/// API — [`tgm_file_message_count`], [`tgm_file_read_message`],
+/// [`tgm_file_decode_message`], [`tgm_file_iter_create`], … — works unchanged
+/// against the remote source.  Close it with [`tgm_file_close`] as usual.
+///
+/// `keys` / `values` are parallel arrays of `n_options` backend storage
+/// options (credentials, region, endpoint, …) forwarded verbatim to the
+/// object-store backend; pass `0` / NULL for none.  `opts` configures the scan
+/// walker; NULL selects the library defaults (`bidirectional = true`).
+///
+/// Argument validation (NULL `source` / `out`, malformed option arrays) runs
+/// **before** the feature check, so every build answers
+/// `TGM_ERROR_INVALID_ARG` to the same mistakes.  Remote failures — an
+/// unparseable URL, a missing object, a rejected storage option, transport
+/// errors — map to `TGM_ERROR_REMOTE` with the detail in [`tgm_last_error`].
+///
+/// Always exported so consumers linking the cdylib never see an undefined
+/// symbol; a build without the `remote` Cargo feature returns
+/// `TGM_ERROR_REMOTE` and explains how to enable it.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_file_open_remote(
+    source: *const c_char,
+    keys: *const *const c_char,
+    values: *const *const c_char,
+    n_options: usize,
+    opts: *const TgmRemoteScanOptions,
+    out: *mut *mut TgmFile,
+) -> TgmError {
+    if source.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let source_str = match unsafe { CStr::from_ptr(source) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in source: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+    let storage = match unsafe { collect_storage_options(keys, values, n_options) } {
+        Ok(m) => m,
+        Err(msg) => {
+            set_last_error(&msg);
+            return TgmError::InvalidArg;
+        }
+    };
+
+    #[cfg(not(feature = "remote"))]
+    {
+        let _ = (source_str, storage, opts);
+        set_last_error(
+            "tgm_file_open_remote: this build of tensogram-ffi was compiled without \
+             the `remote` Cargo feature; rebuild with --features=remote to enable \
+             S3/GCS/Azure/HTTP support",
+        );
+        TgmError::Remote
+    }
+
+    #[cfg(feature = "remote")]
+    {
+        let scan_opts = unsafe { opts.as_ref() }.map(|o| tensogram::RemoteScanOptions {
+            bidirectional: o.bidirectional,
+        });
+        match TensogramFile::open_remote(source_str, &storage, scan_opts) {
+            Ok(file) => {
+                let path_string = CString::new(source_str).unwrap_or_default();
+                let handle = Box::new(TgmFile { file, path_string });
+                unsafe {
+                    *out = Box::into_raw(handle);
+                }
+                TgmError::Ok
+            }
+            Err(e) => {
+                set_last_error(&e.to_string());
+                to_error_code(&e)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Metadata key lookup helpers
 // ---------------------------------------------------------------------------
 //
@@ -4004,6 +4716,322 @@ pub extern "C" fn tgm_object_iter_free(iter: *mut TgmObjectIter) {
     if !iter.is_null() {
         unsafe {
             drop(Box::from_raw(iter));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame walker + message header
+// ---------------------------------------------------------------------------
+
+/// A frame's type identifier (cbindgen: `tgm_frame_type`, variants
+/// `TGM_FRAME_TYPE_*`).
+///
+/// Mirrors [`tensogram::FrameType`] value-for-value — these numbers are the
+/// wire's frame-type field (see `plans/WIRE_FORMAT.md` §2.2), not an FFI
+/// invention. **Type 4 is reserved** (it held the obsolete v2 data-object
+/// layout) and therefore has no variant, which is why the sequence skips from
+/// 3 to 5. `fortran/test/check_frame_type_enum.sh` guards the generated header
+/// against the core enum so the two can never drift.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmFrameType {
+    /// CBOR global metadata, written in the header (random-access mode).
+    HeaderMetadata = 1,
+    /// Object index, written in the header (random-access mode).
+    HeaderIndex = 2,
+    /// Aggregate hash frame, written in the header.
+    HeaderHash = 3,
+    /// Aggregate hash frame, written in the footer.
+    FooterHash = 5,
+    /// Object index, written in the footer (streaming mode).
+    FooterIndex = 6,
+    /// CBOR global metadata, written in the footer (streaming mode).
+    FooterMetadata = 7,
+    /// Per-object metadata frame immediately preceding a data-object frame.
+    PrecederMetadata = 8,
+    /// N-dimensional tensor data-object frame — the only data-object type in
+    /// v3, and the only frame type with a 20-byte footer.
+    Ntensor = 9,
+}
+
+impl From<tensogram::FrameType> for TgmFrameType {
+    fn from(t: tensogram::FrameType) -> Self {
+        match t {
+            tensogram::FrameType::HeaderMetadata => TgmFrameType::HeaderMetadata,
+            tensogram::FrameType::HeaderIndex => TgmFrameType::HeaderIndex,
+            tensogram::FrameType::HeaderHash => TgmFrameType::HeaderHash,
+            tensogram::FrameType::FooterHash => TgmFrameType::FooterHash,
+            tensogram::FrameType::FooterIndex => TgmFrameType::FooterIndex,
+            tensogram::FrameType::FooterMetadata => TgmFrameType::FooterMetadata,
+            tensogram::FrameType::PrecederMetadata => TgmFrameType::PrecederMetadata,
+            tensogram::FrameType::NTensorFrame => TgmFrameType::Ntensor,
+        }
+    }
+}
+
+/// One frame's structural description plus a **borrowed** view of its content.
+///
+/// Filled by [`tgm_frame_iter_next`] into caller-provided storage.
+///
+/// # Lifetime — read this before storing a `TgmFrame`
+///
+/// `payload` points **into the `msg` buffer the caller passed to
+/// [`tgm_frame_iter_create`]** — it is a view, never a copy, and there is
+/// nothing to free. It stays valid for exactly as long as `msg` does,
+/// independently of any later `tgm_frame_iter_next` call and of
+/// `tgm_frame_iter_free`. Copy the bytes out if you need them to outlive the
+/// message buffer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TgmFrame {
+    /// Which kind of frame this is.
+    pub frame_type: TgmFrameType,
+    /// Frame-type-specific version field from the frame header.
+    pub version: u16,
+    /// Raw 16-bit frame flags; bit 1 is `HASH_PRESENT` (see
+    /// [`tgm_frame_has_hash`]).
+    pub flags: u16,
+    /// Byte offset of the frame header, relative to the start of `msg`.
+    pub offset: usize,
+    /// Whole-frame span in bytes: frame header through `ENDF`, excluding any
+    /// alignment padding that follows.
+    pub length: usize,
+    /// Borrowed content bytes: everything between the 16-byte frame header and
+    /// the type-specific footer (20 bytes for `TGM_FRAME_TYPE_NTENSOR`, 12 for
+    /// every other type). Points into the caller's `msg` — never freed.
+    pub payload: *const u8,
+    /// Length of `payload` in bytes.
+    pub payload_len: usize,
+}
+
+/// Opaque lazy cursor over one message's frames (cbindgen:
+/// `tgm_frame_iter_t`). Created by [`tgm_frame_iter_create`], advanced with
+/// [`tgm_frame_iter_next`], released with [`tgm_frame_iter_free`].
+///
+/// # Soundness invariant
+///
+/// The handle stores the caller's message slice with a `'static` lifetime,
+/// which is a controlled fiction — exactly like the metadata value cursor's
+/// arena (see [`store_value`]). The C contract that makes it sound is stated
+/// on [`tgm_frame_iter_create`]: **`msg` must outlive the iterator**. Nothing
+/// inside the handle owns or copies the message bytes, so freeing the handle
+/// touches only the cursor; the caller's buffer is never read after
+/// [`tgm_frame_iter_free`] returns.
+pub struct TgmFrameIter {
+    /// The borrowed core cursor. Reconstructing it per call is impossible
+    /// (its position is private), so the borrow is carried in the handle.
+    inner: tensogram::FrameIter<'static>,
+}
+
+/// Start a lazy walk over the frames of one message.
+///
+/// `msg` must point at the start of a message (the `TENSOGRM` preamble magic)
+/// — typically a slice obtained from `tgm_scan`. Only the type 1–9 `FR` frames
+/// are yielded; the preamble and postamble are not frames, use
+/// [`tgm_message_header`] for the envelope.
+///
+/// Returns NULL — with the reason in `tgm_last_error` — if `msg` is NULL or
+/// the preamble does not parse (truncated buffer, wrong magic, unsupported
+/// version). Free the returned handle with [`tgm_frame_iter_free`].
+///
+/// # Lifetime contract
+///
+/// The iterator **borrows `msg`; `msg` must outlive the iterator** and must
+/// not be moved, reallocated, or mutated while the iterator lives. Each frame
+/// written by [`tgm_frame_iter_next`] carries a `payload` pointer **into
+/// `msg`**, which remains valid for as long as `msg` lives — later `next`
+/// calls and `tgm_frame_iter_free` do not invalidate it.
+///
+/// Binds [`tensogram::frames`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_frame_iter_create(msg: *const u8, msg_len: usize) -> *mut TgmFrameIter {
+    if msg.is_null() {
+        set_last_error("null argument");
+        return ptr::null_mut();
+    }
+    // SAFETY: `msg` is non-null and the caller guarantees `msg_len` readable
+    // bytes. Naming the borrow `'static` is the lifetime fiction documented on
+    // `TgmFrameIter`: the C contract requires `msg` to outlive the handle, and
+    // the handle never exposes the slice beyond the borrowed `payload`
+    // pointers it hands back, which carry the same contract.
+    let data: &'static [u8] = unsafe { slice::from_raw_parts(msg, msg_len) };
+    match tensogram::frames(data) {
+        Ok(inner) => Box::into_raw(Box::new(TgmFrameIter { inner })),
+        Err(e) => {
+            set_last_error(&e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Advance the frame cursor, filling `*out` with the next frame.
+///
+/// Returns `true` when a frame was written. Returns `false` in three cases,
+/// which `tgm_last_error` tells apart:
+///
+/// - **clean end** — every frame has been yielded; the last error is
+///   *cleared*, so `tgm_last_error()` returns NULL;
+/// - **malformed frame** — the frame chain is truncated or inconsistent; the
+///   reason is recorded in `tgm_last_error()` and iteration stops for good;
+/// - **invalid argument** — `it` or `out` is NULL; nothing is written.
+///
+/// Calling this again after any `false` is safe and keeps returning `false`.
+///
+/// `out->payload` borrows the caller's message buffer — see the lifetime
+/// contract on [`tgm_frame_iter_create`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_frame_iter_next(it: *mut TgmFrameIter, out: *mut TgmFrame) -> bool {
+    if it.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return false;
+    }
+    let iter = unsafe { &mut *it };
+    match iter.inner.next() {
+        Some(Ok(info)) => {
+            let frame = TgmFrame {
+                frame_type: info.frame_type.into(),
+                version: info.version,
+                flags: info.flags,
+                offset: info.offset,
+                length: info.length,
+                payload: info.payload.as_ptr(),
+                payload_len: info.payload.len(),
+            };
+            unsafe {
+                *out = frame;
+            }
+            true
+        }
+        Some(Err(e)) => {
+            set_last_error(&e.to_string());
+            false
+        }
+        None => {
+            // A clean end is not a failure: clear the thread-local error so
+            // callers can use `tgm_last_error() != NULL` to detect the
+            // malformed-frame case above.
+            clear_last_error();
+            false
+        }
+    }
+}
+
+/// Free a frame cursor. Releases only the cursor — the caller's message
+/// buffer and every `payload` pointer handed out by [`tgm_frame_iter_next`]
+/// are untouched and stay valid. NULL is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_frame_iter_free(it: *mut TgmFrameIter) {
+    if !it.is_null() {
+        unsafe {
+            drop(Box::from_raw(it));
+        }
+    }
+}
+
+/// `true` if this frame's `HASH_PRESENT` flag is set, i.e. its inline hash
+/// slot holds a meaningful digest (see `plans/WIRE_FORMAT.md` §2.5).
+///
+/// Convenience over `frame->flags` bit 1, and the authoritative answer for a
+/// single frame — `TgmMessageHeader::has_hashes_present` is only an advisory
+/// message-wide summary. Returns `false` for a NULL `frame`.
+///
+/// Binds [`tensogram::FrameInfo::has_hash`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_frame_has_hash(frame: *const TgmFrame) -> bool {
+    match unsafe { frame.as_ref() } {
+        Some(f) => f.flags & tensogram::wire::FrameFlags::HASH_PRESENT != 0,
+        None => {
+            set_last_error("null argument");
+            false
+        }
+    }
+}
+
+/// A message's envelope (the 24-byte preamble) as a flat C POD.
+///
+/// Filled by [`tgm_message_header`].  The eight `has_*` members are the
+/// preamble's structural flags decoded into named booleans, so callers never
+/// touch a raw bitset.  Together they say whether a message is *random-access*
+/// (metadata / index / hashes in the **header**) or *streaming* (in the
+/// **footer**) without reading a single frame.
+///
+/// `total_length` is the whole-message byte count, preamble through
+/// postamble.  It is `0` in a streaming message whose length was never
+/// back-filled — not an error, just "unknown at write time".
+#[repr(C)]
+pub struct TgmMessageHeader {
+    /// Wire-format version (`TGM_WIRE_VERSION` for messages this build writes).
+    pub version: u16,
+    /// Total message length in bytes, or `0` if a streaming writer never
+    /// back-filled it.
+    pub total_length: u64,
+    /// A `HeaderMetadata` frame is present (random-access mode).
+    pub has_header_metadata: bool,
+    /// A `FooterMetadata` frame is present (streaming mode).
+    pub has_footer_metadata: bool,
+    /// A `HeaderIndex` frame is present.
+    pub has_header_index: bool,
+    /// A `FooterIndex` frame is present.
+    pub has_footer_index: bool,
+    /// A `HeaderHash` frame is present.
+    pub has_header_hashes: bool,
+    /// A `FooterHash` frame is present.
+    pub has_footer_hashes: bool,
+    /// At least one `PrecederMetadata` frame appears in the body.  Advisory in
+    /// streaming mode: the encoder sets it before it knows whether any
+    /// preceder will be written, so `true` does not guarantee a frame.
+    pub has_preceder_metadata: bool,
+    /// Advisory: every frame in this message has its per-frame `HASH_PRESENT`
+    /// bit set.  For any single frame, `tgm_frame_has_hash` stays authoritative.
+    pub has_hashes_present: bool,
+}
+
+/// Read a message's envelope without walking its frames.
+///
+/// `msg` must point at the start of a message (the `TENSOGRM` preamble magic)
+/// — typically a slice obtained from `tgm_scan`.  On success writes the decoded
+/// preamble to `*out` and returns `TGM_ERROR_OK`.
+///
+/// Returns `TGM_ERROR_INVALID_ARG` if `msg` or `out` is NULL, or the mapped
+/// error code if the preamble does not parse (message truncated, wrong magic,
+/// unsupported version); the reason is available from `tgm_last_error` and
+/// `*out` is left untouched.
+///
+/// Binds [`tensogram::message_header`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_message_header(
+    msg: *const u8,
+    msg_len: usize,
+    out: *mut TgmMessageHeader,
+) -> TgmError {
+    if msg.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let data = unsafe { slice::from_raw_parts(msg, msg_len) };
+    match core_message_header(data) {
+        Ok(h) => {
+            let header = TgmMessageHeader {
+                version: h.version,
+                total_length: h.total_length,
+                has_header_metadata: h.has_header_metadata(),
+                has_footer_metadata: h.has_footer_metadata(),
+                has_header_index: h.has_header_index(),
+                has_footer_index: h.has_footer_index(),
+                has_header_hashes: h.has_header_hashes(),
+                has_footer_hashes: h.has_footer_hashes(),
+                has_preceder_metadata: h.has_preceder_metadata(),
+                has_hashes_present: h.has_hashes_present(),
+            };
+            unsafe {
+                *out = header;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
         }
     }
 }
@@ -8963,6 +9991,1684 @@ mod tests {
         // NULL key on map_get.
         let mars = tgm_metadata_get(hp, CString::new("mars").unwrap().as_ptr());
         assert!(tgm_value_map_get(mars, ptr::null()).is_null());
+    }
+
+    // =====================================================================
+    // Frame walker + message header (tgm_frame_iter_* / tgm_message_header)
+    // =====================================================================
+
+    /// One trivial float32 tensor: descriptor plus its raw little-endian bytes.
+    fn frame_walk_object() -> (DataObjectDescriptor, Vec<u8>) {
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: tensogram::Dtype::Float32,
+            byte_order: tensogram::ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|v| v.to_ne_bytes())
+            .collect();
+        (desc, data)
+    }
+
+    /// A buffered (random-access) message: metadata / index / hashes all live
+    /// in the header, so every preamble flag is an exact statement about the
+    /// frames that follow.
+    fn frame_walk_buffered_message(n_objects: usize) -> Vec<u8> {
+        let (desc, data) = frame_walk_object();
+        let objects: Vec<(&DataObjectDescriptor, &[u8])> =
+            (0..n_objects).map(|_| (&desc, data.as_slice())).collect();
+        encode(
+            &GlobalMetadata::default(),
+            &objects,
+            &EncodeOptions::default(),
+        )
+        .expect("buffered encode")
+    }
+
+    /// A streaming message: index / hashes land in the footer, `total_length`
+    /// stays 0 (never back-filled by the non-seeking `finish`), and
+    /// `PRECEDER_METADATA` is set advisorily even with no preceder frame.
+    fn frame_walk_streamed_message() -> Vec<u8> {
+        let (desc, data) = frame_walk_object();
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &GlobalMetadata::default(),
+            &EncodeOptions::default(),
+        )
+        .expect("streaming encoder");
+        enc.write_object(&desc, &data).expect("write object");
+        enc.finish().expect("finish").into_inner()
+    }
+
+    /// A `TgmMessageHeader` with every field cleared, so a test can tell an
+    /// untouched out-param from one the callee filled in.
+    fn blank_message_header() -> super::TgmMessageHeader {
+        super::TgmMessageHeader {
+            version: 0,
+            total_length: 0,
+            has_header_metadata: false,
+            has_footer_metadata: false,
+            has_header_index: false,
+            has_footer_index: false,
+            has_header_hashes: false,
+            has_footer_hashes: false,
+            has_preceder_metadata: false,
+            has_hashes_present: false,
+        }
+    }
+
+    #[test]
+    fn ffi_message_header_reads_a_buffered_preamble() {
+        let msg = frame_walk_buffered_message(2);
+        let mut h = blank_message_header();
+        let err = super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(h.version, super::TGM_WIRE_VERSION);
+        assert_eq!(h.total_length, msg.len() as u64);
+        // Random-access layout: metadata + index in the header, nothing in the
+        // footer, and no preceder frames were written.
+        assert!(h.has_header_metadata);
+        assert!(h.has_header_index);
+        assert!(!h.has_footer_metadata);
+        assert!(!h.has_footer_index);
+        assert!(!h.has_preceder_metadata);
+        assert!(h.has_hashes_present, "default encode hashes every frame");
+    }
+
+    #[test]
+    fn ffi_message_header_reads_a_streaming_preamble() {
+        let msg = frame_walk_streamed_message();
+        let mut h = blank_message_header();
+        let err = super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(h.version, super::TGM_WIRE_VERSION);
+        // Streaming mode cannot know the length up front and never seeks back.
+        assert_eq!(h.total_length, 0);
+        assert!(h.has_header_metadata);
+        assert!(h.has_footer_metadata);
+        assert!(h.has_footer_index);
+    }
+
+    #[test]
+    fn ffi_message_header_null_safety() {
+        let msg = frame_walk_buffered_message(1);
+        let mut h = blank_message_header();
+        assert!(matches!(
+            super::tgm_message_header(ptr::null(), 0, &mut h),
+            super::TgmError::InvalidArg
+        ));
+        assert!(matches!(
+            super::tgm_message_header(msg.as_ptr(), msg.len(), ptr::null_mut()),
+            super::TgmError::InvalidArg
+        ));
+        // A rejected call must not have written anything.
+        assert_eq!(h.version, 0);
+    }
+
+    #[test]
+    fn ffi_message_header_rejects_a_buffer_that_is_not_a_message() {
+        let junk = b"not a tensogram message at all!!!!!!!!!!";
+        let mut h = blank_message_header();
+        let err = super::tgm_message_header(junk.as_ptr(), junk.len(), &mut h);
+        assert!(!matches!(err, super::TgmError::Ok));
+        assert!(!super::tgm_last_error().is_null(), "reason is reported");
+        assert_eq!(h.version, 0, "a failed parse leaves the out-param alone");
+
+        // A truncated preamble is rejected the same way.
+        let msg = frame_walk_buffered_message(1);
+        let err = super::tgm_message_header(msg.as_ptr(), 8, &mut h);
+        assert!(!matches!(err, super::TgmError::Ok));
+    }
+
+    /// A `TgmFrame` with every field cleared, so a test can tell an untouched
+    /// out-param from one the callee filled in (`payload` stays NULL).
+    fn blank_frame() -> super::TgmFrame {
+        super::TgmFrame {
+            frame_type: super::TgmFrameType::HeaderMetadata,
+            version: 0,
+            flags: 0,
+            offset: 0,
+            length: 0,
+            payload: ptr::null(),
+            payload_len: 0,
+        }
+    }
+
+    /// Walk `msg` to exhaustion through the C API and collect every frame.
+    /// Asserts the clean-end contract: an exhausted walk records no error.
+    fn ffi_collect_frames(msg: &[u8]) -> Vec<super::TgmFrame> {
+        let it = super::tgm_frame_iter_create(msg.as_ptr(), msg.len());
+        assert!(!it.is_null(), "iterator create failed");
+        let mut frames = Vec::new();
+        let mut f = blank_frame();
+        while super::tgm_frame_iter_next(it, &mut f) {
+            frames.push(f);
+        }
+        assert!(
+            super::tgm_last_error().is_null(),
+            "a clean end must not look like a malformed frame"
+        );
+        super::tgm_frame_iter_free(it);
+        frames
+    }
+
+    #[test]
+    fn ffi_frame_type_discriminants_match_the_core_wire_types() {
+        // The C enum carries the wire's frame-type value; drift would silently
+        // mislabel frames. `fortran/test/check_frame_type_enum.sh` guards the
+        // generated header against the same source of truth.
+        for (c, core) in [
+            (
+                super::TgmFrameType::HeaderMetadata,
+                tensogram::FrameType::HeaderMetadata,
+            ),
+            (
+                super::TgmFrameType::HeaderIndex,
+                tensogram::FrameType::HeaderIndex,
+            ),
+            (
+                super::TgmFrameType::HeaderHash,
+                tensogram::FrameType::HeaderHash,
+            ),
+            (
+                super::TgmFrameType::FooterHash,
+                tensogram::FrameType::FooterHash,
+            ),
+            (
+                super::TgmFrameType::FooterIndex,
+                tensogram::FrameType::FooterIndex,
+            ),
+            (
+                super::TgmFrameType::FooterMetadata,
+                tensogram::FrameType::FooterMetadata,
+            ),
+            (
+                super::TgmFrameType::PrecederMetadata,
+                tensogram::FrameType::PrecederMetadata,
+            ),
+            (
+                super::TgmFrameType::Ntensor,
+                tensogram::FrameType::NTensorFrame,
+            ),
+        ] {
+            assert_eq!(c as u16, core as u16, "{c:?} must mirror {core:?}");
+        }
+        assert_eq!(super::TgmFrameType::HeaderMetadata as u16, 1);
+        assert_eq!(super::TgmFrameType::Ntensor as u16, 9);
+        // 4 is reserved (the obsolete v2 data-object frame) — no variant here.
+        assert!(tensogram::FrameType::from_u16(4).is_err());
+    }
+
+    #[test]
+    fn ffi_frame_iter_mirrors_the_core_walk_exactly() {
+        let msg = frame_walk_buffered_message(2);
+        let ffi = ffi_collect_frames(&msg);
+        let core: Vec<_> = tensogram::frames(&msg)
+            .expect("core frames")
+            .map(|r| r.expect("core frame"))
+            .collect();
+        assert_eq!(ffi.len(), core.len(), "same number of frames");
+        for (f, c) in ffi.iter().zip(&core) {
+            assert_eq!(f.frame_type as u16, c.frame_type as u16);
+            assert_eq!(f.version, c.version);
+            assert_eq!(f.flags, c.flags);
+            assert_eq!(f.offset, c.offset);
+            assert_eq!(f.length, c.length);
+            assert_eq!(f.payload_len, c.payload.len());
+            assert_eq!(f.payload, c.payload.as_ptr(), "payload borrows the caller");
+        }
+    }
+
+    #[test]
+    fn ffi_frame_iter_yields_the_expected_frame_sequence() {
+        let msg = frame_walk_buffered_message(3);
+        let fs = ffi_collect_frames(&msg);
+        assert!(!fs.is_empty(), "expected frames");
+        assert_eq!(
+            fs[0].frame_type,
+            super::TgmFrameType::HeaderMetadata,
+            "a random-access message opens with its metadata frame"
+        );
+        let data_objects = fs
+            .iter()
+            .filter(|f| f.frame_type == super::TgmFrameType::Ntensor)
+            .count();
+        assert_eq!(data_objects, 3, "one data-object frame per encoded object");
+        // The preamble and the postamble are NOT frames.
+        assert!(fs[0].offset >= tensogram::wire::PREAMBLE_SIZE);
+        let last = fs.last().expect("at least one frame");
+        assert!(last.offset + last.length <= msg.len() - tensogram::wire::POSTAMBLE_SIZE);
+    }
+
+    #[test]
+    fn ffi_frame_offsets_and_lengths_tile_the_message_in_bounds() {
+        let msg = frame_walk_buffered_message(2);
+        let mut prev_end = tensogram::wire::PREAMBLE_SIZE;
+        for f in ffi_collect_frames(&msg) {
+            assert!(f.offset >= prev_end, "frames must not overlap");
+            assert!(f.offset + f.length <= msg.len(), "frame stays in bounds");
+            assert!(f.length >= tensogram::wire::FRAME_HEADER_SIZE);
+            // The whole-frame span always ends on the ENDF sentinel.
+            let end = f.offset + f.length;
+            assert_eq!(&msg[end - 4..end], b"ENDF", "length spans the footer");
+            prev_end = end;
+        }
+        assert!(
+            prev_end > tensogram::wire::PREAMBLE_SIZE,
+            "walked at least one frame"
+        );
+    }
+
+    #[test]
+    fn ffi_frame_payload_excludes_the_frame_header_and_footer() {
+        let msg = frame_walk_buffered_message(1);
+        let fs = ffi_collect_frames(&msg);
+        assert!(!fs.is_empty());
+        for f in fs {
+            let core_type =
+                tensogram::FrameType::from_u16(f.frame_type as u16).expect("known frame type");
+            // 20 bytes for a data-object frame, 12 for every other type.
+            let footer = tensogram::wire::footer_size_for(core_type);
+            assert_eq!(
+                f.payload_len,
+                f.length - tensogram::wire::FRAME_HEADER_SIZE - footer,
+                "payload_len excludes the 16-byte header and the footer"
+            );
+            let content_start = f.offset + tensogram::wire::FRAME_HEADER_SIZE;
+            assert_eq!(f.payload, unsafe { msg.as_ptr().add(content_start) });
+            let payload = unsafe { slice::from_raw_parts(f.payload, f.payload_len) };
+            assert_eq!(payload, &msg[content_start..f.offset + f.length - footer]);
+        }
+    }
+
+    #[test]
+    fn ffi_frame_payload_stays_valid_after_the_iterator_is_freed() {
+        // Documented contract: `out->payload` points INTO the caller's `msg`
+        // and lives as long as `msg` does — freeing the cursor does not
+        // invalidate it.
+        let msg = frame_walk_buffered_message(1);
+        let fs = ffi_collect_frames(&msg); // frees the iterator before returning
+        let f = fs[0];
+        assert!(f.payload_len > 0);
+        let payload = unsafe { slice::from_raw_parts(f.payload, f.payload_len) };
+        let content_start = f.offset + tensogram::wire::FRAME_HEADER_SIZE;
+        assert_eq!(payload, &msg[content_start..content_start + f.payload_len]);
+    }
+
+    #[test]
+    fn ffi_buffered_frame_set_matches_the_message_header_exactly() {
+        // Buffered mode: the encoder knows the whole message up front, so every
+        // preamble flag is an exact statement about the frames present.
+        let msg = frame_walk_buffered_message(2);
+        let mut h = blank_message_header();
+        assert!(matches!(
+            super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h),
+            super::TgmError::Ok
+        ));
+        let types: Vec<super::TgmFrameType> = ffi_collect_frames(&msg)
+            .iter()
+            .map(|f| f.frame_type)
+            .collect();
+        let has = |t: super::TgmFrameType| types.contains(&t);
+        assert_eq!(
+            h.has_header_metadata,
+            has(super::TgmFrameType::HeaderMetadata)
+        );
+        assert_eq!(
+            h.has_footer_metadata,
+            has(super::TgmFrameType::FooterMetadata)
+        );
+        assert_eq!(h.has_header_index, has(super::TgmFrameType::HeaderIndex));
+        assert_eq!(h.has_footer_index, has(super::TgmFrameType::FooterIndex));
+        assert_eq!(h.has_header_hashes, has(super::TgmFrameType::HeaderHash));
+        assert_eq!(h.has_footer_hashes, has(super::TgmFrameType::FooterHash));
+        assert_eq!(
+            h.has_preceder_metadata,
+            has(super::TgmFrameType::PrecederMetadata)
+        );
+    }
+
+    #[test]
+    fn ffi_streaming_message_header_never_understates_its_frames() {
+        // Streaming mode writes the preamble before any object, so it sets
+        // PRECEDER_METADATA advisorily even with no preceder frame. Only
+        // "frame present => flag set" holds in that direction.
+        let msg = frame_walk_streamed_message();
+        let mut h = blank_message_header();
+        assert!(matches!(
+            super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h),
+            super::TgmError::Ok
+        ));
+        let types: Vec<super::TgmFrameType> = ffi_collect_frames(&msg)
+            .iter()
+            .map(|f| f.frame_type)
+            .collect();
+        let has = |t: super::TgmFrameType| types.contains(&t);
+        let implies = |present: bool, flag: bool| !present || flag;
+        assert!(implies(
+            has(super::TgmFrameType::HeaderMetadata),
+            h.has_header_metadata
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::FooterMetadata),
+            h.has_footer_metadata
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::HeaderIndex),
+            h.has_header_index
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::FooterIndex),
+            h.has_footer_index
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::HeaderHash),
+            h.has_header_hashes
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::FooterHash),
+            h.has_footer_hashes
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::PrecederMetadata),
+            h.has_preceder_metadata
+        ));
+        // The walk still stops cleanly at the postamble even though
+        // `total_length` was never back-filled.
+        assert!(
+            has(super::TgmFrameType::FooterIndex),
+            "footer frames are reachable"
+        );
+    }
+
+    #[test]
+    fn ffi_frame_iter_is_safe_past_exhaustion() {
+        let msg = frame_walk_buffered_message(1);
+        let it = super::tgm_frame_iter_create(msg.as_ptr(), msg.len());
+        assert!(!it.is_null());
+        let mut f = blank_frame();
+        let mut n = 0usize;
+        while super::tgm_frame_iter_next(it, &mut f) {
+            n += 1;
+        }
+        assert!(n > 0, "walked at least one frame");
+        // Calling next past the end is safe, stays false, and records no error.
+        assert!(!super::tgm_frame_iter_next(it, &mut f));
+        assert!(!super::tgm_frame_iter_next(it, &mut f));
+        assert!(super::tgm_last_error().is_null());
+        super::tgm_frame_iter_free(it);
+    }
+
+    #[test]
+    fn ffi_frame_iter_reports_a_malformed_frame_chain() {
+        let msg = frame_walk_buffered_message(2);
+        let last = *ffi_collect_frames(&msg).last().expect("at least one frame");
+        // Cut *inside* the last frame: the preamble still parses, the chain does not.
+        let truncated = &msg[..last.offset + 8];
+        let it = super::tgm_frame_iter_create(truncated.as_ptr(), truncated.len());
+        assert!(!it.is_null(), "the preamble still parses");
+        let mut f = blank_frame();
+        let mut n = 0usize;
+        while super::tgm_frame_iter_next(it, &mut f) {
+            n += 1;
+        }
+        assert!(n > 0, "the frames before the cut are still yielded");
+        // Stopping on a malformed frame is distinguishable from a clean end.
+        assert!(
+            !super::tgm_last_error().is_null(),
+            "a malformed frame must record why"
+        );
+        // The cursor stays safe afterwards.
+        assert!(!super::tgm_frame_iter_next(it, &mut f));
+        super::tgm_frame_iter_free(it);
+    }
+
+    #[test]
+    fn ffi_frame_iter_rejects_a_buffer_that_is_not_a_message() {
+        let junk = b"not a tensogram message at all!!!!!!!!!!";
+        let it = super::tgm_frame_iter_create(junk.as_ptr(), junk.len());
+        assert!(it.is_null(), "a bad preamble yields no iterator");
+        assert!(!super::tgm_last_error().is_null());
+
+        // A message truncated inside its preamble is rejected the same way.
+        let msg = frame_walk_buffered_message(1);
+        assert!(super::tgm_frame_iter_create(msg.as_ptr(), 8).is_null());
+    }
+
+    #[test]
+    fn ffi_frame_iter_null_safety() {
+        assert!(super::tgm_frame_iter_create(ptr::null(), 0).is_null());
+        assert!(!super::tgm_last_error().is_null());
+
+        let mut f = blank_frame();
+        assert!(!super::tgm_frame_iter_next(ptr::null_mut(), &mut f));
+        assert!(f.payload.is_null(), "a rejected call writes nothing");
+
+        let msg = frame_walk_buffered_message(1);
+        let it = super::tgm_frame_iter_create(msg.as_ptr(), msg.len());
+        assert!(!it.is_null());
+        assert!(!super::tgm_frame_iter_next(it, ptr::null_mut()));
+        // The rejected call did not consume a frame.
+        assert!(super::tgm_frame_iter_next(it, &mut f));
+        assert!(!f.payload.is_null());
+        super::tgm_frame_iter_free(it);
+
+        // free(NULL) is a no-op.
+        super::tgm_frame_iter_free(ptr::null_mut());
+    }
+
+    #[test]
+    fn ffi_frame_has_hash_mirrors_the_per_frame_flag() {
+        let msg = frame_walk_buffered_message(1);
+        let fs = ffi_collect_frames(&msg);
+        assert!(
+            fs.iter().any(|f| super::tgm_frame_has_hash(f)),
+            "default encode hashes every frame"
+        );
+        for f in &fs {
+            // HASH_PRESENT is bit 1 of the raw frame flags.
+            assert_eq!(super::tgm_frame_has_hash(f), f.flags & (1 << 1) != 0);
+        }
+    }
+
+    #[test]
+    fn ffi_frame_has_hash_null_safety() {
+        assert!(!super::tgm_frame_has_hash(ptr::null()));
+    }
+
+    // =====================================================================
+    // Synchronous remote access (tgm_is_remote_url / tgm_file_open_remote)
+    //
+    // Every test here runs in both builds.  The ones whose *answer* depends
+    // on the `remote` Cargo feature say so with `cfg!(feature = "remote")`
+    // rather than being compiled out, so the feature-off stub path is
+    // covered by the default `cargo test -p tensogram-ffi --lib` run.
+    // =====================================================================
+
+    #[test]
+    fn ffi_is_remote_url_recognises_every_object_store_scheme() {
+        for url in [
+            "s3://bucket/key.tgm",
+            "s3a://bucket/key.tgm",
+            "gs://bucket/key.tgm",
+            "az://container/blob.tgm",
+            "azure://container/blob.tgm",
+            "http://host/file.tgm",
+            "https://host/file.tgm",
+            // Scheme matching is case-insensitive in the core predicate.
+            "S3://BUCKET/KEY.TGM",
+            "HTTPS://HOST/FILE.TGM",
+        ] {
+            let c = CString::new(url).unwrap();
+            assert_eq!(
+                super::tgm_is_remote_url(c.as_ptr()),
+                cfg!(feature = "remote"),
+                "{url}: a remote-capable build recognises it, a stub build cannot"
+            );
+        }
+    }
+
+    #[test]
+    fn ffi_is_remote_url_rejects_local_paths_in_every_build() {
+        for source in [
+            "/tmp/local.tgm",
+            "relative/path.tgm",
+            "local.tgm",
+            // `file://` is a URL but not one of the remote schemes: the
+            // local backend already handles it.
+            "file:///tmp/local.tgm",
+            "s3:/one-slash-is-not-a-url",
+            "",
+            "not a url at all",
+        ] {
+            let c = CString::new(source).unwrap();
+            assert!(
+                !super::tgm_is_remote_url(c.as_ptr()),
+                "{source} must not be treated as remote"
+            );
+        }
+    }
+
+    #[test]
+    fn ffi_is_remote_url_null_and_non_utf8_are_false_with_a_reason() {
+        assert!(!super::tgm_is_remote_url(ptr::null()));
+        let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(!msg.is_empty(), "a NULL source is reported");
+
+        // Invalid UTF-8 cannot be a URL either — reported, never a panic.
+        let bad = [0xffu8, 0xfe, 0x00];
+        assert!(!super::tgm_is_remote_url(bad.as_ptr() as *const c_char));
+        assert!(!super::tgm_last_error().is_null());
+    }
+
+    #[cfg(not(feature = "remote"))]
+    #[test]
+    fn ffi_is_remote_url_without_the_feature_explains_itself() {
+        let c = CString::new("s3://bucket/key.tgm").unwrap();
+        assert!(!super::tgm_is_remote_url(c.as_ptr()));
+        let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(msg.contains("remote"), "{msg}");
+        assert!(msg.contains("--features"), "names the fix: {msg}");
+    }
+
+    /// Two encoded messages on disk plus the `file://` URL that addresses
+    /// them.  The `TempDir` is returned so the caller keeps it alive — it
+    /// deletes the directory on drop.  `file://` goes through the same
+    /// object-store code path as `s3://` & friends, so it exercises the real
+    /// remote backend without a network.
+    #[cfg(feature = "remote")]
+    fn remote_fixture_file(values: &[f32]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("remote_fixture.tgm");
+        let mut bytes = ffi_encode_single_f32_tensor(values, "");
+        bytes.extend_from_slice(&ffi_encode_single_f32_tensor(values, ""));
+        std::fs::write(&path, &bytes).expect("write fixture");
+        let url = format!("file://{}", path.display());
+        (dir, url)
+    }
+
+    #[test]
+    fn ffi_file_open_remote_rejects_null_source_and_out() {
+        // Argument validation runs before the feature check, so a C caller
+        // (and the C++ / Fortran wrappers) get the same answer from every
+        // build of the library.
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open_remote(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        assert!(file.is_null(), "the out-param is left alone");
+
+        let src = CString::new("s3://bucket/key.tgm").unwrap();
+        let err = super::tgm_file_open_remote(
+            src.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            ptr::null_mut(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_file_open_remote_rejects_mismatched_option_arrays() {
+        let src = CString::new("s3://bucket/key.tgm").unwrap();
+        let key = CString::new("aws_region").unwrap();
+        let value = CString::new("eu-west-1").unwrap();
+        let keys = [key.as_ptr()];
+        let values = [value.as_ptr()];
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+
+        // n_options > 0 but the key array is missing.
+        let err = super::tgm_file_open_remote(
+            src.as_ptr(),
+            ptr::null(),
+            values.as_ptr(),
+            1,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // …or the value array is missing.
+        let err = super::tgm_file_open_remote(
+            src.as_ptr(),
+            keys.as_ptr(),
+            ptr::null(),
+            1,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // …or an individual entry is NULL.
+        let null_entry: [*const c_char; 1] = [ptr::null()];
+        let err = super::tgm_file_open_remote(
+            src.as_ptr(),
+            null_entry.as_ptr(),
+            values.as_ptr(),
+            1,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        let err = super::tgm_file_open_remote(
+            src.as_ptr(),
+            keys.as_ptr(),
+            null_entry.as_ptr(),
+            1,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // …or `n_options` overruns the arrays the caller actually built:
+        // entry 1 of a 1-element array is out of bounds, which the caller
+        // must not do — but a *shorter* declared count is always safe.
+        let err = super::tgm_file_open_remote(
+            src.as_ptr(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            0,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(
+            !matches!(err, super::TgmError::InvalidArg),
+            "n_options = 0 ignores the arrays entirely"
+        );
+        assert!(file.is_null(), "no handle is produced by a failed open");
+    }
+
+    #[cfg(not(feature = "remote"))]
+    #[test]
+    fn ffi_file_open_remote_without_the_feature_is_a_clear_remote_error() {
+        let src = CString::new("s3://bucket/key.tgm").unwrap();
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open_remote(
+            src.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::Remote));
+        assert!(file.is_null());
+        let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(msg.contains("tgm_file_open_remote"), "{msg}");
+        assert!(msg.contains("remote"), "{msg}");
+        assert!(msg.contains("--features"), "names the fix: {msg}");
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn ffi_file_open_remote_round_trips_through_the_ordinary_file_api() {
+        let values = [1.5f32, 2.5, 3.5];
+        let (_dir, url) = remote_fixture_file(&values);
+        let c_url = CString::new(url.clone()).unwrap();
+
+        // NULL options => library defaults.
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open_remote(
+            c_url.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::Ok), "open {url} failed");
+        assert!(!file.is_null());
+
+        // The handle is a plain `tgm_file_t`: the whole sync reader API works.
+        let mut count: usize = 0;
+        assert!(matches!(
+            super::tgm_file_message_count(file, &mut count),
+            super::TgmError::Ok
+        ));
+        assert_eq!(count, 2);
+
+        let mut raw = zeroed_bytes();
+        assert!(matches!(
+            super::tgm_file_read_message(file, 1, &mut raw),
+            super::TgmError::Ok
+        ));
+        assert!(take_bytes(raw).len() > tensogram::wire::PREAMBLE_SIZE);
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut msg),
+            super::TgmError::Ok
+        ));
+        assert_eq!(super::tgm_message_num_objects(msg), 1);
+        let mut len = 0usize;
+        let data = super::tgm_object_data(msg, 0, &mut len);
+        let decoded: Vec<f32> = unsafe { slice::from_raw_parts(data, len) }
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded, values);
+        super::tgm_message_free(msg);
+
+        assert_eq!(
+            unsafe { CStr::from_ptr(super::tgm_file_path(file)) }
+                .to_str()
+                .unwrap(),
+            url,
+            "the handle remembers the source it was opened from"
+        );
+        super::tgm_file_close(file);
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn ffi_file_open_remote_accepts_scan_options_and_storage_options() {
+        let values = [7.0f32, 8.0];
+        let (_dir, url) = remote_fixture_file(&values);
+        let c_url = CString::new(url).unwrap();
+        let key = CString::new("some_storage_key").unwrap();
+        let value = CString::new("some_value").unwrap();
+        let keys = [key.as_ptr()];
+        let vals = [value.as_ptr()];
+
+        for bidirectional in [true, false] {
+            let opts = super::TgmRemoteScanOptions { bidirectional };
+            let mut file: *mut super::TgmFile = ptr::null_mut();
+            let err = super::tgm_file_open_remote(
+                c_url.as_ptr(),
+                keys.as_ptr(),
+                vals.as_ptr(),
+                1,
+                &opts,
+                &mut file,
+            );
+            assert!(
+                matches!(err, super::TgmError::Ok),
+                "bidirectional = {bidirectional}"
+            );
+            let mut count: usize = 0;
+            assert!(matches!(
+                super::tgm_file_message_count(file, &mut count),
+                super::TgmError::Ok
+            ));
+            assert_eq!(count, 2, "both walkers discover the same messages");
+            super::tgm_file_close(file);
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn ffi_file_open_remote_maps_failures_to_remote_error() {
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+
+        // A URL that parses but addresses nothing.
+        let missing = CString::new("file:///nonexistent/definitely/not/here.tgm").unwrap();
+        let err = super::tgm_file_open_remote(
+            missing.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::Remote), "{err:?}");
+        assert!(file.is_null(), "no handle on failure");
+        assert!(!super::tgm_last_error().is_null());
+
+        // A source that is not a URL at all.
+        let not_a_url = CString::new("/tmp/plain/path.tgm").unwrap();
+        let err = super::tgm_file_open_remote(
+            not_a_url.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::Remote), "{err:?}");
+
+        // The storage options really do reach the backend: a known key with
+        // an unparseable value is rejected before any network I/O happens.
+        let s3 = CString::new("s3://bucket/key.tgm").unwrap();
+        let key = CString::new("aws_virtual_hosted_style_request").unwrap();
+        let value = CString::new("not-a-bool").unwrap();
+        let keys = [key.as_ptr()];
+        let vals = [value.as_ptr()];
+        let err = super::tgm_file_open_remote(
+            s3.as_ptr(),
+            keys.as_ptr(),
+            vals.as_ptr(),
+            1,
+            ptr::null(),
+            &mut file,
+        );
+        assert!(matches!(err, super::TgmError::Remote), "{err:?}");
+        let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(
+            msg.contains("not-a-bool"),
+            "the option was forwarded: {msg}"
+        );
+    }
+
+    // =====================================================================
+    // Typed enums: tgm_dtype, tgm_byte_order, tgm_aggregate_hash_policy,
+    // tgm_compression_backend.
+    //
+    // Every mirror test maps its core enum through an *exhaustive* `match`
+    // with no wildcard arm, so adding a variant to the core type stops this
+    // crate compiling until the C enum, its conversion and the mirror all
+    // learn about it.  That is a stronger drift guard than grepping the
+    // generated header: it fails at build time, on the commit that
+    // introduces the variant.
+    // =====================================================================
+
+    #[test]
+    fn ffi_dtype_enum_mirrors_every_core_dtype_variant() {
+        use tensogram::Dtype;
+        const ALL: [Dtype; 15] = [
+            Dtype::Float16,
+            Dtype::Bfloat16,
+            Dtype::Float32,
+            Dtype::Float64,
+            Dtype::Complex64,
+            Dtype::Complex128,
+            Dtype::Int8,
+            Dtype::Int16,
+            Dtype::Int32,
+            Dtype::Int64,
+            Dtype::Uint8,
+            Dtype::Uint16,
+            Dtype::Uint32,
+            Dtype::Uint64,
+            Dtype::Bitmask,
+        ];
+        for core in ALL {
+            let expected = match core {
+                Dtype::Float16 => super::TgmDtype::Float16,
+                Dtype::Bfloat16 => super::TgmDtype::Bfloat16,
+                Dtype::Float32 => super::TgmDtype::Float32,
+                Dtype::Float64 => super::TgmDtype::Float64,
+                Dtype::Complex64 => super::TgmDtype::Complex64,
+                Dtype::Complex128 => super::TgmDtype::Complex128,
+                Dtype::Int8 => super::TgmDtype::Int8,
+                Dtype::Int16 => super::TgmDtype::Int16,
+                Dtype::Int32 => super::TgmDtype::Int32,
+                Dtype::Int64 => super::TgmDtype::Int64,
+                Dtype::Uint8 => super::TgmDtype::Uint8,
+                Dtype::Uint16 => super::TgmDtype::Uint16,
+                Dtype::Uint32 => super::TgmDtype::Uint32,
+                Dtype::Uint64 => super::TgmDtype::Uint64,
+                Dtype::Bitmask => super::TgmDtype::Bitmask,
+            };
+            assert_eq!(super::TgmDtype::from(core), expected, "{core}");
+        }
+
+        // The mapping is injective: 15 core variants, 15 distinct C codes,
+        // densely numbered from 0 in core declaration order.
+        let codes: Vec<i32> = ALL
+            .iter()
+            .map(|d| super::TgmDtype::from(*d) as i32)
+            .collect();
+        assert_eq!(codes, (0..15).collect::<Vec<i32>>());
+        // Frozen ABI values — the C++ / Fortran mirrors hard-code them.
+        assert_eq!(super::TgmDtype::Float16 as i32, 0);
+        assert_eq!(super::TgmDtype::Bitmask as i32, 14);
+    }
+
+    #[test]
+    fn ffi_byte_order_enum_mirrors_every_core_variant() {
+        use tensogram::ByteOrder;
+        for core in [ByteOrder::Little, ByteOrder::Big] {
+            let expected = match core {
+                ByteOrder::Little => super::TgmByteOrder::Little,
+                ByteOrder::Big => super::TgmByteOrder::Big,
+            };
+            assert_eq!(super::TgmByteOrder::from(core), expected, "{core:?}");
+        }
+        assert_eq!(super::TgmByteOrder::Little as i32, 0);
+        assert_eq!(super::TgmByteOrder::Big as i32, 1);
+    }
+
+    #[test]
+    fn ffi_aggregate_hash_policy_enum_mirrors_every_core_variant() {
+        use tensogram::AggregateHashPolicy as Core;
+        for core in [
+            Core::Auto,
+            Core::None,
+            Core::Header,
+            Core::Footer,
+            Core::Both,
+        ] {
+            let c = match core {
+                Core::Auto => super::TgmAggregateHashPolicy::Auto,
+                Core::None => super::TgmAggregateHashPolicy::None,
+                Core::Header => super::TgmAggregateHashPolicy::Header,
+                Core::Footer => super::TgmAggregateHashPolicy::Footer,
+                Core::Both => super::TgmAggregateHashPolicy::Both,
+            };
+            assert_eq!(Core::from(c), core, "{core:?} must round-trip");
+        }
+        assert_eq!(super::TgmAggregateHashPolicy::Auto as i32, 0);
+        assert_eq!(super::TgmAggregateHashPolicy::Both as i32, 4);
+        // `Auto` is the zero value, so a zero-initialised C struct means
+        // "let the encoder decide" — the same default the Rust API has.
+        assert_eq!(
+            Core::from(super::TgmAggregateHashPolicy::Auto),
+            Core::default()
+        );
+    }
+
+    #[test]
+    fn ffi_compression_backend_enum_mirrors_every_core_variant() {
+        use tensogram::CompressionBackend as Core;
+        for core in [Core::Auto, Core::Ffi, Core::Pure] {
+            let c = match core {
+                Core::Auto => super::TgmCompressionBackend::Auto,
+                Core::Ffi => super::TgmCompressionBackend::Ffi,
+                Core::Pure => super::TgmCompressionBackend::Pure,
+            };
+            assert_eq!(Core::from(c), core, "{core:?} must round-trip");
+        }
+        assert_eq!(super::TgmCompressionBackend::Auto as i32, 0);
+        assert_eq!(super::TgmCompressionBackend::Pure as i32, 2);
+        assert_eq!(
+            Core::from(super::TgmCompressionBackend::Auto),
+            Core::default(),
+            "zero-initialised C structs get the library default"
+        );
+    }
+
+    // ── typed accessors: tgm_object_dtype_enum / tgm_object_byte_order_enum ──
+
+    /// Encode one 8-element object per supplied descriptor spec and decode
+    /// the message back through the C API, so the typed accessors are
+    /// exercised against a real decoded message.
+    fn decode_objects_via_ffi(
+        specs: &[(tensogram::Dtype, tensogram::ByteOrder)],
+    ) -> *mut super::TgmMessage {
+        const N: usize = 8;
+        let descs: Vec<DataObjectDescriptor> = specs
+            .iter()
+            .map(|(dtype, byte_order)| DataObjectDescriptor {
+                obj_type: "ntensor".to_string(),
+                ndim: 1,
+                shape: vec![N as u64],
+                strides: vec![1],
+                dtype: *dtype,
+                byte_order: *byte_order,
+                encoding: "none".to_string(),
+                filter: "none".to_string(),
+                compression: "none".to_string(),
+                params: BTreeMap::new(),
+                masks: None,
+            })
+            .collect();
+        // A bitmask packs one bit per element; everything else is dense.
+        let datas: Vec<Vec<u8>> = specs
+            .iter()
+            .map(|(dtype, _)| match dtype {
+                tensogram::Dtype::Bitmask => vec![0u8; N.div_ceil(8)],
+                other => vec![0u8; N * other.byte_width()],
+            })
+            .collect();
+        let pairs: Vec<(&DataObjectDescriptor, &[u8])> = descs
+            .iter()
+            .zip(datas.iter())
+            .map(|(d, v)| (d, v.as_slice()))
+            .collect();
+        let msg = encode(
+            &GlobalMetadata::default(),
+            &pairs,
+            &EncodeOptions::default(),
+        )
+        .expect("encode fixture");
+
+        let mut out: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(msg.as_ptr(), msg.len(), 0, 0, 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok), "decode fixture");
+        out
+    }
+
+    /// The string a getter returned, or `None` for the NULL that marks an
+    /// invalid handle / index.
+    fn cstr_opt(p: *const c_char) -> Option<String> {
+        if p.is_null() {
+            None
+        } else {
+            Some(
+                unsafe { CStr::from_ptr(p) }
+                    .to_str()
+                    .expect("valid UTF-8")
+                    .to_string(),
+            )
+        }
+    }
+
+    #[test]
+    fn ffi_object_dtype_enum_agrees_with_the_string_getter_for_every_dtype() {
+        use tensogram::Dtype;
+        let all = [
+            Dtype::Float16,
+            Dtype::Bfloat16,
+            Dtype::Float32,
+            Dtype::Float64,
+            Dtype::Complex64,
+            Dtype::Complex128,
+            Dtype::Int8,
+            Dtype::Int16,
+            Dtype::Int32,
+            Dtype::Int64,
+            Dtype::Uint8,
+            Dtype::Uint16,
+            Dtype::Uint32,
+            Dtype::Uint64,
+            Dtype::Bitmask,
+        ];
+        let specs: Vec<_> = all
+            .iter()
+            .map(|d| (*d, tensogram::ByteOrder::native()))
+            .collect();
+        let msg = decode_objects_via_ffi(&specs);
+        assert_eq!(super::tgm_message_num_objects(msg), all.len());
+
+        for (i, dtype) in all.iter().enumerate() {
+            let via_enum = super::tgm_object_dtype_enum(msg, i);
+            let via_string = cstr_opt(super::tgm_object_dtype(msg, i)).expect("string getter");
+            assert_eq!(
+                via_enum,
+                super::TgmDtype::from(*dtype),
+                "object {i}: {dtype} decoded to the wrong code"
+            );
+            // The two getters describe the same object: the string getter
+            // is `Dtype::to_string()`, so it must name the enum's variant.
+            assert_eq!(
+                via_string,
+                dtype.to_string(),
+                "object {i}: string getter drifted"
+            );
+        }
+        super::tgm_message_free(msg);
+    }
+
+    #[test]
+    fn ffi_object_byte_order_enum_agrees_with_the_string_getter() {
+        use tensogram::{ByteOrder, Dtype};
+        let specs = [
+            (Dtype::Uint8, ByteOrder::Little),
+            (Dtype::Uint8, ByteOrder::Big),
+        ];
+        let msg = decode_objects_via_ffi(&specs);
+        for (i, (_, order)) in specs.iter().enumerate() {
+            let via_enum = super::tgm_object_byte_order_enum(msg, i);
+            let via_string = cstr_opt(super::tgm_object_byte_order(msg, i)).expect("string getter");
+            assert_eq!(via_enum, super::TgmByteOrder::from(*order), "object {i}");
+            let expected_string = match order {
+                ByteOrder::Little => "little",
+                ByteOrder::Big => "big",
+            };
+            assert_eq!(via_string, expected_string, "object {i}");
+        }
+        super::tgm_message_free(msg);
+    }
+
+    #[test]
+    fn ffi_object_enum_accessors_are_null_and_out_of_bounds_safe() {
+        let specs = [(tensogram::Dtype::Float32, tensogram::ByteOrder::native())];
+        let msg = decode_objects_via_ffi(&specs);
+        let n = super::tgm_message_num_objects(msg);
+        assert_eq!(n, 1);
+
+        let msg_const: *const super::TgmMessage = msg;
+        for (handle, index) in [
+            (msg_const, n),          // first out-of-range index
+            (msg_const, usize::MAX), // wildly out of range
+            (ptr::null(), 0),        // NULL handle
+            (ptr::null(), 4_096),    // both wrong
+        ] {
+            // The documented fallback is the zero-valued variant …
+            assert_eq!(
+                super::tgm_object_dtype_enum(handle, index),
+                super::TgmDtype::Float16
+            );
+            assert_eq!(
+                super::tgm_object_byte_order_enum(handle, index),
+                super::TgmByteOrder::Little
+            );
+            // … and the reason is always reported, while the paired string
+            // getter returns NULL — the unambiguous way to bounds-check.
+            assert!(!super::tgm_last_error().is_null());
+            assert!(cstr_opt(super::tgm_object_dtype(handle, index)).is_none());
+            assert!(cstr_opt(super::tgm_object_byte_order(handle, index)).is_none());
+        }
+        super::tgm_message_free(msg);
+    }
+
+    // =====================================================================
+    // TgmEncodeOptions and the entry points that take it.
+    //
+    // Encoded messages embed a fresh UUID and timestamp in their reserved
+    // provenance metadata, so "same options ⇒ same output" is asserted
+    // structurally — identical frame sequences and identical decoded
+    // payloads — never by byte equality.
+    // =====================================================================
+
+    /// A `TgmEncodeOptions` holding nothing but defaults: no hash, `AUTO`
+    /// placement, `AUTO` backend, non-finite values rejected, every method
+    /// string NULL and the negative "use the library default" threshold.
+    fn blank_encode_options() -> super::TgmEncodeOptions {
+        super::TgmEncodeOptions {
+            hash: ptr::null(),
+            aggregate_hash: super::TgmAggregateHashPolicy::Auto,
+            compression_backend: super::TgmCompressionBackend::Auto,
+            allow_nan: false,
+            allow_inf: false,
+            nan_mask_method: ptr::null(),
+            pos_inf_mask_method: ptr::null(),
+            neg_inf_mask_method: ptr::null(),
+            small_mask_threshold_bytes: -1,
+        }
+    }
+
+    /// One-object encode JSON with a caller-chosen compression stage.
+    fn encode_json_with_compression(n: usize, compression: &str) -> CString {
+        CString::new(format!(
+            r#"{{"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{n}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"{compression}"}}]}}"#,
+            bo = if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        ))
+        .unwrap()
+    }
+
+    /// Encode `values` through `tgm_encode_with_encode_options`, returning
+    /// the raw error code and (on success) the message bytes.
+    fn encode_with_encode_options(
+        values: &[f32],
+        compression: &str,
+        opts: *const super::TgmEncodeOptions,
+    ) -> (super::TgmError, Vec<u8>) {
+        let json = encode_json_with_compression(values.len(), compression);
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+        let mut out = zeroed_bytes();
+        let err = super::tgm_encode_with_encode_options(
+            json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            0,
+            opts,
+            &mut out,
+        );
+        if matches!(err, super::TgmError::Ok) {
+            (err, take_bytes(out))
+        } else {
+            (err, Vec::new())
+        }
+    }
+
+    /// The frame types of `msg`, in order, via the C frame walker.
+    fn ffi_frame_type_sequence(msg: &[u8]) -> Vec<super::TgmFrameType> {
+        ffi_collect_frames(msg)
+            .iter()
+            .map(|f| f.frame_type)
+            .collect()
+    }
+
+    /// The single object's decoded f32 payload, via the C decode API.
+    fn ffi_decode_f32s(msg: &[u8]) -> Vec<f32> {
+        let mut handle: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(msg.as_ptr(), msg.len(), 1, 0, 0, &mut handle);
+        assert!(matches!(err, super::TgmError::Ok), "decode failed: {err:?}");
+        let mut len = 0usize;
+        let data = super::tgm_object_data(handle, 0, &mut len);
+        let out: Vec<f32> = unsafe { slice::from_raw_parts(data, len) }
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        super::tgm_message_free(handle);
+        out
+    }
+
+    #[test]
+    fn ffi_encode_with_encode_options_null_matches_the_existing_default_encode() {
+        let values = [1.0f32, 2.0, 3.0, 4.0];
+        let baseline = ffi_encode_single_f32_tensor(&values, "");
+        let (err, with_opts) = encode_with_encode_options(&values, "none", ptr::null());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        assert_eq!(
+            ffi_frame_type_sequence(&with_opts),
+            ffi_frame_type_sequence(&baseline),
+            "NULL options must reproduce tgm_encode's default frame layout"
+        );
+        assert_eq!(ffi_decode_f32s(&with_opts), values.to_vec());
+
+        // An all-defaults struct is the same thing as NULL.
+        let blank = blank_encode_options();
+        let (err, explicit) = encode_with_encode_options(&values, "none", &blank);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(
+            ffi_frame_type_sequence(&explicit),
+            ffi_frame_type_sequence(&baseline)
+        );
+    }
+
+    #[test]
+    fn ffi_encode_with_encode_options_hash_field_turns_hashing_on() {
+        let values = [1.0f32, 2.0];
+        let mut opts = blank_encode_options();
+        let (err, unhashed) = encode_with_encode_options(&values, "none", &opts);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let algo = CString::new("xxh3").unwrap();
+        opts.hash = algo.as_ptr();
+        let (err, hashed) = encode_with_encode_options(&values, "none", &opts);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let header_of = |msg: &[u8]| {
+            let mut h = blank_message_header();
+            assert!(matches!(
+                super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h),
+                super::TgmError::Ok
+            ));
+            h
+        };
+        assert!(!header_of(&unhashed).has_hashes_present, "NULL hash is off");
+        assert!(
+            header_of(&hashed).has_hashes_present,
+            "\"xxh3\" turns it on"
+        );
+        assert_eq!(ffi_decode_f32s(&hashed), values.to_vec());
+    }
+
+    #[test]
+    fn ffi_encode_with_encode_options_aggregate_policy_places_the_hash_frames() {
+        use super::TgmAggregateHashPolicy as Policy;
+        use super::TgmFrameType::{FooterHash, HeaderHash};
+        let values = [1.0f32, 2.0, 3.0];
+        let algo = CString::new("xxh3").unwrap();
+
+        // (policy, expects a header hash frame, expects a footer hash frame)
+        for (policy, want_header, want_footer) in [
+            (Policy::Auto, true, false),
+            (Policy::None, false, false),
+            (Policy::Header, true, false),
+            (Policy::Footer, false, true),
+            (Policy::Both, true, true),
+        ] {
+            let mut opts = blank_encode_options();
+            opts.hash = algo.as_ptr();
+            opts.aggregate_hash = policy;
+            let (err, msg) = encode_with_encode_options(&values, "none", &opts);
+            assert!(matches!(err, super::TgmError::Ok), "{policy:?}");
+
+            // Verified with the frame walker: the aggregate hash frames are
+            // exactly where the policy says they should be.
+            let frames = ffi_frame_type_sequence(&msg);
+            assert_eq!(
+                frames.contains(&HeaderHash),
+                want_header,
+                "{policy:?}: header hash frame, got {frames:?}"
+            );
+            assert_eq!(
+                frames.contains(&FooterHash),
+                want_footer,
+                "{policy:?}: footer hash frame, got {frames:?}"
+            );
+            assert_eq!(ffi_decode_f32s(&msg), values.to_vec(), "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn ffi_encode_with_encode_options_carries_the_mask_fields() {
+        let values = [1.0f32, f32::NAN, 3.0];
+
+        // The default reject policy is unchanged.
+        let (err, _) = encode_with_encode_options(&values, "none", ptr::null());
+        assert!(
+            matches!(err, super::TgmError::Encoding),
+            "NaN is rejected by default, got {err:?}"
+        );
+
+        // allow_nan + an explicit mask method get through to the encoder.
+        let method = CString::new("rle").unwrap();
+        let mut opts = blank_encode_options();
+        opts.allow_nan = true;
+        opts.nan_mask_method = method.as_ptr();
+        opts.small_mask_threshold_bytes = 0; // disable the small-mask fallback
+        let (err, msg) = encode_with_encode_options(&values, "none", &opts);
+        assert!(matches!(err, super::TgmError::Ok), "{err:?}");
+        let decoded = ffi_decode_f32s(&msg);
+        assert!(decoded[1].is_nan(), "the NaN came back: {decoded:?}");
+        assert_eq!([decoded[0], decoded[2]], [1.0, 3.0]);
+    }
+
+    #[test]
+    fn ffi_encode_with_encode_options_selects_the_compression_backend() {
+        use super::TgmCompressionBackend as Backend;
+        let values = [1.0f32, 2.0, 3.0, 4.0];
+        for backend in [Backend::Auto, Backend::Ffi, Backend::Pure] {
+            let mut opts = blank_encode_options();
+            opts.compression_backend = backend;
+            let (err, msg) = encode_with_encode_options(&values, "zstd", &opts);
+            assert!(matches!(err, super::TgmError::Ok), "{backend:?}: {err:?}");
+            assert_eq!(
+                ffi_decode_f32s(&msg),
+                values.to_vec(),
+                "{backend:?} must produce a decodable message"
+            );
+        }
+    }
+
+    #[test]
+    fn ffi_encode_with_encode_options_rejects_bad_names_and_null_args() {
+        let values = [1.0f32];
+
+        let bad_hash = CString::new("md5").unwrap();
+        let mut opts = blank_encode_options();
+        opts.hash = bad_hash.as_ptr();
+        let (err, _) = encode_with_encode_options(&values, "none", &opts);
+        assert!(matches!(err, super::TgmError::InvalidArg), "{err:?}");
+
+        let bad_method = CString::new("definitely-not-a-method").unwrap();
+        let mut opts = blank_encode_options();
+        opts.nan_mask_method = bad_method.as_ptr();
+        let (err, _) = encode_with_encode_options(&values, "none", &opts);
+        assert!(matches!(err, super::TgmError::InvalidArg), "{err:?}");
+        assert!(!super::tgm_last_error().is_null());
+
+        // NULL metadata / out are rejected exactly like tgm_encode's.
+        let mut out = zeroed_bytes();
+        let err = super::tgm_encode_with_encode_options(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        let json = encode_json_with_compression(1, "none");
+        let err = super::tgm_encode_with_encode_options(
+            json.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            ptr::null(),
+            ptr::null_mut(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    /// Read message `index` out of an open file and return its raw bytes.
+    fn ffi_read_message(file: *mut super::TgmFile, index: usize) -> Vec<u8> {
+        let mut raw = zeroed_bytes();
+        let err = super::tgm_file_read_message(file, index, &mut raw);
+        assert!(matches!(err, super::TgmError::Ok), "read {index}: {err:?}");
+        take_bytes(raw)
+    }
+
+    #[test]
+    fn ffi_file_append_with_encode_options_round_trips_and_places_frames() {
+        use super::TgmFrameType::{FooterHash, HeaderHash};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("append_encode_options.tgm");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_file_create(c_path.as_ptr(), &mut file),
+            super::TgmError::Ok
+        ));
+
+        let values = [5.0f32, 6.0, 7.0];
+        let json = encode_json_with_compression(values.len(), "none");
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+
+        // Message 0: NULL options => the current defaults (no hashing).
+        let err = super::tgm_file_append_with_encode_options(
+            file,
+            json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            0,
+            ptr::null(),
+        );
+        assert!(matches!(err, super::TgmError::Ok), "{err:?}");
+
+        // Message 1: hashed, with the aggregate frame written at both ends.
+        let algo = CString::new("xxh3").unwrap();
+        let mut opts = blank_encode_options();
+        opts.hash = algo.as_ptr();
+        opts.aggregate_hash = super::TgmAggregateHashPolicy::Both;
+        let err = super::tgm_file_append_with_encode_options(
+            file,
+            json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            0,
+            &opts,
+        );
+        assert!(matches!(err, super::TgmError::Ok), "{err:?}");
+        super::tgm_file_close(file);
+
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_file_open(c_path.as_ptr(), &mut file),
+            super::TgmError::Ok
+        ));
+        let mut count = 0usize;
+        assert!(matches!(
+            super::tgm_file_message_count(file, &mut count),
+            super::TgmError::Ok
+        ));
+        assert_eq!(count, 2);
+
+        let defaults = ffi_frame_type_sequence(&ffi_read_message(file, 0));
+        assert!(!defaults.contains(&HeaderHash), "{defaults:?}");
+        assert!(!defaults.contains(&FooterHash), "{defaults:?}");
+
+        let both = ffi_frame_type_sequence(&ffi_read_message(file, 1));
+        assert!(both.contains(&HeaderHash), "{both:?}");
+        assert!(both.contains(&FooterHash), "{both:?}");
+
+        for index in 0..2 {
+            assert_eq!(
+                ffi_decode_f32s(&ffi_read_message(file, index)),
+                values.to_vec(),
+                "message {index}"
+            );
+        }
+        super::tgm_file_close(file);
+    }
+
+    #[test]
+    fn ffi_file_append_with_encode_options_rejects_null_args() {
+        let err = super::tgm_file_append_with_encode_options(
+            ptr::null_mut(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            ptr::null(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("append_null_json.tgm");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_file_create(c_path.as_ptr(), &mut file),
+            super::TgmError::Ok
+        ));
+        let err = super::tgm_file_append_with_encode_options(
+            file,
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            ptr::null(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        super::tgm_file_close(file);
+    }
+
+    /// Stream `values` as one object into `path` with the given options.
+    fn stream_one_object(
+        path: &std::path::Path,
+        values: &[f32],
+        opts: *const super::TgmEncodeOptions,
+    ) -> super::TgmError {
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta = CString::new(r#"{"descriptors":[]}"#).unwrap();
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create_with_encode_options(
+            c_path.as_ptr(),
+            meta.as_ptr(),
+            0,
+            opts,
+            &mut enc,
+        );
+        if !matches!(err, super::TgmError::Ok) {
+            assert!(enc.is_null(), "no handle on failure");
+            return err;
+        }
+        let desc = CString::new(format!(
+            r#"{{"type":"ntensor","ndim":1,"shape":[{n}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}"#,
+            n = values.len(),
+            bo = if cfg!(target_endian = "little") { "little" } else { "big" },
+        ))
+        .unwrap();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        assert!(matches!(
+            super::tgm_streaming_encoder_write(enc, desc.as_ptr(), data.as_ptr(), data.len()),
+            super::TgmError::Ok
+        ));
+        assert!(matches!(
+            super::tgm_streaming_encoder_finish(enc),
+            super::TgmError::Ok
+        ));
+        super::tgm_streaming_encoder_free(enc);
+        super::TgmError::Ok
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_create_with_encode_options_round_trips() {
+        use super::TgmFrameType::{FooterHash, HeaderHash};
+        let dir = tempfile::tempdir().unwrap();
+        let values = [11.0f32, 22.0];
+
+        // NULL options => today's defaults.
+        let defaults_path = dir.path().join("stream_defaults.tgm");
+        assert!(matches!(
+            stream_one_object(&defaults_path, &values, ptr::null()),
+            super::TgmError::Ok
+        ));
+        let raw = std::fs::read(&defaults_path).unwrap();
+        let frames = ffi_frame_type_sequence(&raw);
+        assert!(!frames.contains(&HeaderHash), "{frames:?}");
+        assert!(!frames.contains(&FooterHash), "{frames:?}");
+        assert_eq!(ffi_decode_f32s(&raw), values.to_vec());
+
+        // Explicit footer placement is what streaming supports.
+        let algo = CString::new("xxh3").unwrap();
+        let mut opts = blank_encode_options();
+        opts.hash = algo.as_ptr();
+        opts.aggregate_hash = super::TgmAggregateHashPolicy::Footer;
+        let footer_path = dir.path().join("stream_footer.tgm");
+        assert!(matches!(
+            stream_one_object(&footer_path, &values, &opts),
+            super::TgmError::Ok
+        ));
+        let raw = std::fs::read(&footer_path).unwrap();
+        let frames = ffi_frame_type_sequence(&raw);
+        assert!(frames.contains(&FooterHash), "{frames:?}");
+        assert!(
+            !frames.contains(&HeaderHash),
+            "streaming never writes a header hash: {frames:?}"
+        );
+        assert_eq!(ffi_decode_f32s(&raw), values.to_vec());
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_create_with_encode_options_rejects_header_placements() {
+        let dir = tempfile::tempdir().unwrap();
+        let algo = CString::new("xxh3").unwrap();
+        for policy in [
+            super::TgmAggregateHashPolicy::Header,
+            super::TgmAggregateHashPolicy::Both,
+        ] {
+            let mut opts = blank_encode_options();
+            opts.hash = algo.as_ptr();
+            opts.aggregate_hash = policy;
+            let path = dir.path().join(format!("stream_reject_{policy:?}.tgm"));
+            let err = stream_one_object(&path, &[1.0f32], &opts);
+            assert!(
+                matches!(err, super::TgmError::Encoding),
+                "{policy:?} must be rejected, got {err:?}"
+            );
+            let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+                .to_str()
+                .unwrap();
+            assert!(msg.contains("streaming"), "{policy:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_create_with_encode_options_rejects_null_args() {
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let meta = CString::new(r#"{"descriptors":[]}"#).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = CString::new(dir.path().join("nope.tgm").to_str().unwrap()).unwrap();
+
+        assert!(matches!(
+            super::tgm_streaming_encoder_create_with_encode_options(
+                ptr::null(),
+                meta.as_ptr(),
+                0,
+                ptr::null(),
+                &mut enc
+            ),
+            super::TgmError::InvalidArg
+        ));
+        assert!(matches!(
+            super::tgm_streaming_encoder_create_with_encode_options(
+                path.as_ptr(),
+                ptr::null(),
+                0,
+                ptr::null(),
+                &mut enc
+            ),
+            super::TgmError::InvalidArg
+        ));
+        assert!(matches!(
+            super::tgm_streaming_encoder_create_with_encode_options(
+                path.as_ptr(),
+                meta.as_ptr(),
+                0,
+                ptr::null(),
+                ptr::null_mut()
+            ),
+            super::TgmError::InvalidArg
+        ));
+        assert!(enc.is_null());
     }
 }
 

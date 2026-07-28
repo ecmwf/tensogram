@@ -75,6 +75,119 @@ typedef enum {
 } tgm_error;
 
 /**
+ * Where to place the aggregate hash frame (cbindgen:
+ * `tgm_aggregate_hash_policy`, variants `TGM_AGGREGATE_HASH_POLICY_*`).
+ *
+ * Mirrors [`tensogram::AggregateHashPolicy`].  `AUTO` is the zero value, so a
+ * zero-initialised [`TgmEncodeOptions`] asks the encoder to choose
+ * (`HEADER` when buffering, `FOOTER` when streaming) — the same default the
+ * Rust API has.
+ *
+ * `HEADER` and `BOTH` are **buffered-mode only**: a streaming encoder writes
+ * its header before any data object exists, so the per-object hashes are not
+ * yet known.  [`tgm_streaming_encoder_create_with_encode_options`] rejects
+ * them with `TGM_ERROR_ENCODING` and an explanatory
+ * [`tgm_last_error`] message.
+ */
+typedef enum {
+  /**
+   * Encoder picks: buffered → header, streaming → footer.
+   */
+  TGM_AGGREGATE_HASH_POLICY_AUTO = 0,
+  /**
+   * Emit no aggregate hash frame.  Per-frame inline hash slots are
+   * unaffected.
+   */
+  TGM_AGGREGATE_HASH_POLICY_NONE = 1,
+  /**
+   * Emit a `TGM_FRAME_TYPE_HEADER_HASH` frame.  Buffered mode only.
+   */
+  TGM_AGGREGATE_HASH_POLICY_HEADER = 2,
+  /**
+   * Emit a `TGM_FRAME_TYPE_FOOTER_HASH` frame.  Valid in both modes.
+   */
+  TGM_AGGREGATE_HASH_POLICY_FOOTER = 3,
+  /**
+   * Emit both a header and a footer hash frame carrying identical hash
+   * lists.  Buffered mode only.
+   */
+  TGM_AGGREGATE_HASH_POLICY_BOTH = 4,
+} tgm_aggregate_hash_policy;
+
+/**
+ * Which codec implementation to use where both are compiled in (cbindgen:
+ * `tgm_compression_backend`, variants `TGM_COMPRESSION_BACKEND_*`).
+ *
+ * Mirrors [`tensogram::CompressionBackend`].  `AUTO` is the zero value:
+ * consult `TENSOGRAM_COMPRESSION_BACKEND`, else the platform default (FFI on
+ * native, pure-Rust on wasm32).  `FFI` and `PURE` are explicit overrides that
+ * always win over the environment.
+ */
+typedef enum {
+  /**
+   * Consult the environment, then the platform default.
+   */
+  TGM_COMPRESSION_BACKEND_AUTO = 0,
+  /**
+   * Use the C FFI codecs (libaec for szip, libzstd for zstd).
+   */
+  TGM_COMPRESSION_BACKEND_FFI = 1,
+  /**
+   * Use the pure-Rust codecs (tensogram-szip, ruzstd).
+   */
+  TGM_COMPRESSION_BACKEND_PURE = 2,
+} tgm_compression_backend;
+
+/**
+ * An element type (cbindgen: `tgm_dtype`, variants `TGM_DTYPE_*`).
+ *
+ * Mirrors [`tensogram::Dtype`] one-for-one, numbered densely from `0` in core
+ * declaration order.  The wire format stores the dtype as a **string** (see
+ * `plans/WIRE_FORMAT.md` §6.1), so these codes are an FFI convenience, not a
+ * wire value — but they are part of the C ABI and therefore frozen.
+ * [`tgm_object_dtype`] returns the same information as a string; this enum is
+ * what you want in a `switch`.
+ *
+ * The `impl From<Dtype>` below is an exhaustive match, so a new core variant
+ * fails the build here rather than silently mapping to something wrong.
+ */
+typedef enum {
+  TGM_DTYPE_FLOAT16 = 0,
+  TGM_DTYPE_BFLOAT16 = 1,
+  TGM_DTYPE_FLOAT32 = 2,
+  TGM_DTYPE_FLOAT64 = 3,
+  TGM_DTYPE_COMPLEX64 = 4,
+  TGM_DTYPE_COMPLEX128 = 5,
+  TGM_DTYPE_INT8 = 6,
+  TGM_DTYPE_INT16 = 7,
+  TGM_DTYPE_INT32 = 8,
+  TGM_DTYPE_INT64 = 9,
+  TGM_DTYPE_UINT8 = 10,
+  TGM_DTYPE_UINT16 = 11,
+  TGM_DTYPE_UINT32 = 12,
+  TGM_DTYPE_UINT64 = 13,
+  /**
+   * Sub-byte packed bitmask; element width is 1 bit, so the byte width of
+   * [`tensogram::Dtype::Bitmask`] is reported as 0.
+   */
+  TGM_DTYPE_BITMASK = 14,
+} tgm_dtype;
+
+/**
+ * A payload's byte order (cbindgen: `tgm_byte_order`, variants
+ * `TGM_BYTE_ORDER_*`).
+ *
+ * Mirrors [`tensogram::ByteOrder`].  Like [`TgmDtype`] these codes are an FFI
+ * convenience — the wire stores `"little"` / `"big"` as text — and are frozen
+ * as part of the C ABI.  [`tgm_object_byte_order`] returns the same
+ * information as a string.
+ */
+typedef enum {
+  TGM_BYTE_ORDER_LITTLE = 0,
+  TGM_BYTE_ORDER_BIG = 1,
+} tgm_byte_order;
+
+/**
  * Which non-finite bitmask kind to fetch from a mask-aware decode.
  *
  * Passed to [`tgm_object_mask`].  Mirrors the three slots of
@@ -115,6 +228,53 @@ typedef enum {
   TGM_VALUE_TYPE_ARRAY,
   TGM_VALUE_TYPE_MAP,
 } tgm_value_type;
+
+/**
+ * A frame's type identifier (cbindgen: `tgm_frame_type`, variants
+ * `TGM_FRAME_TYPE_*`).
+ *
+ * Mirrors [`tensogram::FrameType`] value-for-value — these numbers are the
+ * wire's frame-type field (see `plans/WIRE_FORMAT.md` §2.2), not an FFI
+ * invention. **Type 4 is reserved** (it held the obsolete v2 data-object
+ * layout) and therefore has no variant, which is why the sequence skips from
+ * 3 to 5. `fortran/test/check_frame_type_enum.sh` guards the generated header
+ * against the core enum so the two can never drift.
+ */
+typedef enum {
+  /**
+   * CBOR global metadata, written in the header (random-access mode).
+   */
+  TGM_FRAME_TYPE_HEADER_METADATA = 1,
+  /**
+   * Object index, written in the header (random-access mode).
+   */
+  TGM_FRAME_TYPE_HEADER_INDEX = 2,
+  /**
+   * Aggregate hash frame, written in the header.
+   */
+  TGM_FRAME_TYPE_HEADER_HASH = 3,
+  /**
+   * Aggregate hash frame, written in the footer.
+   */
+  TGM_FRAME_TYPE_FOOTER_HASH = 5,
+  /**
+   * Object index, written in the footer (streaming mode).
+   */
+  TGM_FRAME_TYPE_FOOTER_INDEX = 6,
+  /**
+   * CBOR global metadata, written in the footer (streaming mode).
+   */
+  TGM_FRAME_TYPE_FOOTER_METADATA = 7,
+  /**
+   * Per-object metadata frame immediately preceding a data-object frame.
+   */
+  TGM_FRAME_TYPE_PRECEDER_METADATA = 8,
+  /**
+   * N-dimensional tensor data-object frame — the only data-object type in
+   * v3, and the only frame type with a 20-byte footer.
+   */
+  TGM_FRAME_TYPE_NTENSOR = 9,
+} tgm_frame_type;
 
 /**
  * Status returned by `tgm_async_streaming_encoder_try_object_count`.
@@ -189,6 +349,23 @@ typedef struct tgm_file_t tgm_file_t;
 typedef struct tgm_file_iter_t tgm_file_iter_t;
 
 /**
+ * Opaque lazy cursor over one message's frames (cbindgen:
+ * `tgm_frame_iter_t`). Created by [`tgm_frame_iter_create`], advanced with
+ * [`tgm_frame_iter_next`], released with [`tgm_frame_iter_free`].
+ *
+ * # Soundness invariant
+ *
+ * The handle stores the caller's message slice with a `'static` lifetime,
+ * which is a controlled fiction — exactly like the metadata value cursor's
+ * arena (see [`store_value`]). The C contract that makes it sound is stated
+ * on [`tgm_frame_iter_create`]: **`msg` must outlive the iterator**. Nothing
+ * inside the handle owns or copies the message bytes, so freeing the handle
+ * touches only the cursor; the caller's buffer is never read after
+ * [`tgm_frame_iter_free`] returns.
+ */
+typedef struct tgm_frame_iter_t tgm_frame_iter_t;
+
+/**
  * Decoded message: global metadata + decoded (descriptor, payload) pairs.
  */
 typedef struct tgm_message_t tgm_message_t;
@@ -260,6 +437,74 @@ typedef struct {
 } TgmEncodeMaskOptions;
 
 /**
+ * The full encode-side option set (cbindgen: `TgmEncodeOptions`).
+ *
+ * Supersedes [`TgmEncodeMaskOptions`], which stays for source compatibility:
+ * it carries the same six mask fields **plus** the three knobs that
+ * previously had no C surface at all — the hash algorithm, where the
+ * aggregate hash frame goes, and which codec backend to use.
+ *
+ * Pass `NULL` to any `*_with_encode_options` entry point for the library
+ * defaults; a zero-initialised struct means the same thing, because every
+ * field's zero value *is* the default:
+ *
+ * | field | `NULL` / zero | meaning |
+ * |---|---|---|
+ * | `hash` | NULL | no hashing (the FFI convention: name it to get it) |
+ * | `aggregate_hash` | `TGM_AGGREGATE_HASH_POLICY_AUTO` | encoder picks the placement |
+ * | `compression_backend` | `TGM_COMPRESSION_BACKEND_AUTO` | env, then platform default |
+ * | `allow_nan` / `allow_inf` | `false` | non-finite input is a hard error |
+ * | `*_mask_method` | NULL | the library default (`"roaring"`) |
+ * | `small_mask_threshold_bytes` | negative | the library default (128) |
+ *
+ * `hash` is `"xxh3"` (v3's only algorithm), `"none"`, or NULL; anything else
+ * is [`TgmError::InvalidArg`].  Each `*_mask_method` is one of `"none"`,
+ * `"rle"`, `"roaring"`, `"lz4"`, `"zstd"`, `"blosc2"`.
+ * `small_mask_threshold_bytes` is the byte count below which mask blobs are
+ * stored raw regardless of the requested method; `0` disables that
+ * auto-fallback, negative values select the library default.
+ */
+typedef struct {
+  /**
+   * Hash algorithm name (`"xxh3"`, `"none"`) or NULL for no hashing.
+   */
+  const char *hash;
+  /**
+   * Where to write the aggregate hash frame.  Ignored when `hash` is NULL
+   * or `"none"` — there is nothing to aggregate.
+   */
+  tgm_aggregate_hash_policy aggregate_hash;
+  /**
+   * Which codec implementation to prefer for szip / zstd.
+   */
+  tgm_compression_backend compression_backend;
+  /**
+   * Substitute NaN with `0.0` and record a bitmask companion frame.
+   */
+  bool allow_nan;
+  /**
+   * Substitute `±Inf` with `0.0` and record per-sign bitmask companions.
+   */
+  bool allow_inf;
+  /**
+   * Compression method for the NaN mask, or NULL for the default.
+   */
+  const char *nan_mask_method;
+  /**
+   * Compression method for the `+Inf` mask, or NULL for the default.
+   */
+  const char *pos_inf_mask_method;
+  /**
+   * Compression method for the `-Inf` mask, or NULL for the default.
+   */
+  const char *neg_inf_mask_method;
+  /**
+   * Raw-storage threshold for mask blobs; `0` disables, negative = default.
+   */
+  ptrdiff_t small_mask_threshold_bytes;
+} TgmEncodeOptions;
+
+/**
  * Decode-side companion to [`TgmEncodeMaskOptions`].  Pass a pointer
  * to opt out of canonical NaN / Inf restoration.  Pass `NULL` for
  * the default `restore_non_finite = true`.
@@ -299,6 +544,133 @@ typedef struct {
    */
   uint64_t max_message_size;
 } TgmScanOptions;
+
+/**
+ * Reader-side scan-walker options for [`tgm_file_open_remote`].  Mirrors
+ * [`tensogram::RemoteScanOptions`] as a flat, C-visible POD so callers can
+ * build it on the stack.
+ *
+ * Pass a `NULL` `TgmRemoteScanOptions*` to use the library defaults
+ * (`bidirectional = true`).
+ */
+typedef struct {
+  /**
+   * Enable the meet-in-the-middle (bidirectional) remote walk, which
+   * pairs forward preamble fetches with backward postamble fetches and
+   * roughly halves wall-clock layout discovery on real networks.  `false`
+   * forces a forward-only walk.
+   */
+  bool bidirectional;
+} TgmRemoteScanOptions;
+
+/**
+ * One frame's structural description plus a **borrowed** view of its content.
+ *
+ * Filled by [`tgm_frame_iter_next`] into caller-provided storage.
+ *
+ * # Lifetime — read this before storing a `TgmFrame`
+ *
+ * `payload` points **into the `msg` buffer the caller passed to
+ * [`tgm_frame_iter_create`]** — it is a view, never a copy, and there is
+ * nothing to free. It stays valid for exactly as long as `msg` does,
+ * independently of any later `tgm_frame_iter_next` call and of
+ * `tgm_frame_iter_free`. Copy the bytes out if you need them to outlive the
+ * message buffer.
+ */
+typedef struct {
+  /**
+   * Which kind of frame this is.
+   */
+  tgm_frame_type frame_type;
+  /**
+   * Frame-type-specific version field from the frame header.
+   */
+  uint16_t version;
+  /**
+   * Raw 16-bit frame flags; bit 1 is `HASH_PRESENT` (see
+   * [`tgm_frame_has_hash`]).
+   */
+  uint16_t flags;
+  /**
+   * Byte offset of the frame header, relative to the start of `msg`.
+   */
+  size_t offset;
+  /**
+   * Whole-frame span in bytes: frame header through `ENDF`, excluding any
+   * alignment padding that follows.
+   */
+  size_t length;
+  /**
+   * Borrowed content bytes: everything between the 16-byte frame header and
+   * the type-specific footer (20 bytes for `TGM_FRAME_TYPE_NTENSOR`, 12 for
+   * every other type). Points into the caller's `msg` — never freed.
+   */
+  const uint8_t *payload;
+  /**
+   * Length of `payload` in bytes.
+   */
+  size_t payload_len;
+} TgmFrame;
+
+/**
+ * A message's envelope (the 24-byte preamble) as a flat C POD.
+ *
+ * Filled by [`tgm_message_header`].  The eight `has_*` members are the
+ * preamble's structural flags decoded into named booleans, so callers never
+ * touch a raw bitset.  Together they say whether a message is *random-access*
+ * (metadata / index / hashes in the **header**) or *streaming* (in the
+ * **footer**) without reading a single frame.
+ *
+ * `total_length` is the whole-message byte count, preamble through
+ * postamble.  It is `0` in a streaming message whose length was never
+ * back-filled — not an error, just "unknown at write time".
+ */
+typedef struct {
+  /**
+   * Wire-format version (`TGM_WIRE_VERSION` for messages this build writes).
+   */
+  uint16_t version;
+  /**
+   * Total message length in bytes, or `0` if a streaming writer never
+   * back-filled it.
+   */
+  uint64_t total_length;
+  /**
+   * A `HeaderMetadata` frame is present (random-access mode).
+   */
+  bool has_header_metadata;
+  /**
+   * A `FooterMetadata` frame is present (streaming mode).
+   */
+  bool has_footer_metadata;
+  /**
+   * A `HeaderIndex` frame is present.
+   */
+  bool has_header_index;
+  /**
+   * A `FooterIndex` frame is present.
+   */
+  bool has_footer_index;
+  /**
+   * A `HeaderHash` frame is present.
+   */
+  bool has_header_hashes;
+  /**
+   * A `FooterHash` frame is present.
+   */
+  bool has_footer_hashes;
+  /**
+   * At least one `PrecederMetadata` frame appears in the body.  Advisory in
+   * streaming mode: the encoder sets it before it knows whether any
+   * preceder will be written, so `true` does not guarantee a frame.
+   */
+  bool has_preceder_metadata;
+  /**
+   * Advisory: every frame in this message has its per-frame `HASH_PRESENT`
+   * bit set.  For any single frame, `tgm_frame_has_hash` stays authoritative.
+   */
+  bool has_hashes_present;
+} TgmMessageHeader;
 
 /**
  * Returns a pointer to the last error message, or NULL if no error.
@@ -369,6 +741,27 @@ tgm_error tgm_encode_with_options(const char *metadata_json,
                                   tgm_bytes_t *out);
 
 /**
+ * Encode with the full [`TgmEncodeOptions`] set.
+ *
+ * Like [`tgm_encode_with_options`], but the option struct also carries the
+ * hash algorithm, the aggregate-hash placement and the compression backend —
+ * so there is no separate `hash_algo` argument here; put the algorithm name
+ * in `options->hash`.  `NULL` options behave exactly like [`tgm_encode`] with
+ * a NULL `hash_algo`: no hashing, `AUTO` placement, `AUTO` backend,
+ * non-finite input rejected.
+ *
+ * On success returns `TGM_ERROR_OK` and fills `out` with the encoded bytes,
+ * which the caller frees with [`tgm_bytes_free`].
+ */
+tgm_error tgm_encode_with_encode_options(const char *metadata_json,
+                                         const uint8_t *const *data_ptrs,
+                                         const size_t *data_lens,
+                                         size_t num_objects,
+                                         uint32_t threads,
+                                         const TgmEncodeOptions *options,
+                                         tgm_bytes_t *out);
+
+/**
  * Decode with explicit NaN / Inf restoration options.
  *
  * Like [`tgm_decode`] but takes a [`TgmDecodeMaskOptions`] pointer
@@ -398,6 +791,26 @@ tgm_error tgm_streaming_encoder_create_with_options(const char *path,
                                                     tgm_streaming_encoder_t **out);
 
 /**
+ * Streaming-encoder constructor taking the full [`TgmEncodeOptions`] set.
+ *
+ * Like [`tgm_streaming_encoder_create_with_options`], but the option struct
+ * also carries the hash algorithm, the aggregate-hash placement and the
+ * compression backend, so there is no separate `hash_algo` argument.  `NULL`
+ * options behave like [`tgm_streaming_encoder_create`] with a NULL
+ * `hash_algo`.
+ *
+ * `TGM_AGGREGATE_HASH_POLICY_HEADER` and `..._BOTH` are rejected here with
+ * `TGM_ERROR_ENCODING`: a streaming writer emits its header before any data
+ * object exists, so the per-object hashes are not yet known.  Use `AUTO`
+ * (which resolves to the footer when streaming) or `FOOTER`.
+ */
+tgm_error tgm_streaming_encoder_create_with_encode_options(const char *path,
+                                                           const char *metadata_json,
+                                                           uint32_t threads,
+                                                           const TgmEncodeOptions *options,
+                                                           tgm_streaming_encoder_t **out);
+
+/**
  * Append a message to a file with explicit NaN / Inf mask-companion options.
  *
  * Like [`tgm_file_append`] but takes a [`TgmEncodeMaskOptions`]
@@ -411,6 +824,22 @@ tgm_error tgm_file_append_with_options(tgm_file_t *file,
                                        const char *hash_algo,
                                        uint32_t threads,
                                        const TgmEncodeMaskOptions *mask_options);
+
+/**
+ * Append a message to a file with the full [`TgmEncodeOptions`] set.
+ *
+ * Like [`tgm_file_append_with_options`], but the option struct also carries
+ * the hash algorithm, the aggregate-hash placement and the compression
+ * backend, so there is no separate `hash_algo` argument.  `NULL` options
+ * behave like [`tgm_file_append`] with a NULL `hash_algo`.
+ */
+tgm_error tgm_file_append_with_encode_options(tgm_file_t *file,
+                                              const char *metadata_json,
+                                              const uint8_t *const *data_ptrs,
+                                              const size_t *data_lens,
+                                              size_t num_objects,
+                                              uint32_t threads,
+                                              const TgmEncodeOptions *options);
 
 /**
  * Encode a Tensogram message from JSON metadata and pre-encoded payload bytes.
@@ -668,6 +1097,20 @@ const uint64_t *tgm_object_strides(const tgm_message_t *msg, size_t index);
 const char *tgm_object_dtype(const tgm_message_t *msg, size_t index);
 
 /**
+ * Returns the object's dtype as a [`tgm_dtype`](TgmDtype) code — the typed
+ * companion to [`tgm_object_dtype`], for callers that want to `switch`
+ * instead of `strcmp`.
+ *
+ * A NULL `msg` or an out-of-range `index` records the reason in
+ * [`tgm_last_error`] and returns the zero-valued variant
+ * (`TGM_DTYPE_FLOAT16`); an enum return has no spare code to signal
+ * failure.  To bounds-check unambiguously, compare `index` against
+ * [`tgm_message_num_objects`], or call [`tgm_object_dtype`], which returns
+ * NULL for exactly the same inputs.
+ */
+tgm_dtype tgm_object_dtype_enum(const tgm_message_t *msg, size_t index);
+
+/**
  * Returns a pointer to the decoded payload bytes for a decoded object.
  * `decoded_index` is the index into the decoded objects array (0 for the
  * first decoded object, regardless of the original object index).
@@ -720,6 +1163,17 @@ const char *tgm_object_type(const tgm_message_t *msg, size_t index);
  * Returns the byte order string ("big" or "little"). Valid until message freed.
  */
 const char *tgm_object_byte_order(const tgm_message_t *msg, size_t index);
+
+/**
+ * Returns the object's byte order as a [`tgm_byte_order`](TgmByteOrder) code
+ * — the typed companion to [`tgm_object_byte_order`].
+ *
+ * A NULL `msg` or an out-of-range `index` records the reason in
+ * [`tgm_last_error`] and returns the zero-valued variant
+ * (`TGM_BYTE_ORDER_LITTLE`); see [`tgm_object_dtype_enum`] for how to
+ * bounds-check unambiguously.
+ */
+tgm_byte_order tgm_object_byte_order_enum(const tgm_message_t *msg, size_t index);
 
 /**
  * Returns the filter string (e.g. "none", "shuffle"). Valid until message freed.
@@ -1172,6 +1626,53 @@ tgm_error tgm_file_append(tgm_file_t *file,
 void tgm_file_close(tgm_file_t *file);
 
 /**
+ * `true` when `source` is a URL this build can open remotely.
+ *
+ * Mirrors [`tensogram::is_remote_url`]: the recognised schemes are `s3`,
+ * `s3a`, `gs`, `az`, `azure`, `http` and `https`, compared
+ * case-insensitively.  Plain paths and `file://` URLs are **not** remote —
+ * they belong to the local backend ([`tgm_file_open`]).
+ *
+ * Returns `false` — with the reason in [`tgm_last_error`] — for a NULL or
+ * non-UTF-8 `source`, and for **every** input when this build was compiled
+ * without the `remote` Cargo feature (such a build genuinely cannot open any
+ * remote URL, so "not remote for me" is the honest answer; the error message
+ * says how to fix it).
+ */
+bool tgm_is_remote_url(const char *source);
+
+/**
+ * Open a remote `.tgm` (S3 / GCS / Azure / HTTP) for **synchronous** reading.
+ *
+ * The blocking counterpart to `tgm_async_file_open_remote`: on success `*out`
+ * receives an ordinary [`tgm_file_t`](TgmFile), so the whole existing file
+ * API — [`tgm_file_message_count`], [`tgm_file_read_message`],
+ * [`tgm_file_decode_message`], [`tgm_file_iter_create`], … — works unchanged
+ * against the remote source.  Close it with [`tgm_file_close`] as usual.
+ *
+ * `keys` / `values` are parallel arrays of `n_options` backend storage
+ * options (credentials, region, endpoint, …) forwarded verbatim to the
+ * object-store backend; pass `0` / NULL for none.  `opts` configures the scan
+ * walker; NULL selects the library defaults (`bidirectional = true`).
+ *
+ * Argument validation (NULL `source` / `out`, malformed option arrays) runs
+ * **before** the feature check, so every build answers
+ * `TGM_ERROR_INVALID_ARG` to the same mistakes.  Remote failures — an
+ * unparseable URL, a missing object, a rejected storage option, transport
+ * errors — map to `TGM_ERROR_REMOTE` with the detail in [`tgm_last_error`].
+ *
+ * Always exported so consumers linking the cdylib never see an undefined
+ * symbol; a build without the `remote` Cargo feature returns
+ * `TGM_ERROR_REMOTE` and explains how to enable it.
+ */
+tgm_error tgm_file_open_remote(const char *source,
+                               const char *const *keys,
+                               const char *const *values,
+                               size_t n_options,
+                               const TgmRemoteScanOptions *opts,
+                               tgm_file_t **out);
+
+/**
  * Compute simple_packing parameters for a set of f64 values.
  *
  * Returns TgmError::Ok on success, filling the out-params.
@@ -1303,6 +1804,84 @@ tgm_error tgm_object_iter_next(tgm_object_iter_t *iter, tgm_message_t **out);
  * Free an object iterator handle.
  */
 void tgm_object_iter_free(tgm_object_iter_t *iter);
+
+/**
+ * Start a lazy walk over the frames of one message.
+ *
+ * `msg` must point at the start of a message (the `TENSOGRM` preamble magic)
+ * — typically a slice obtained from `tgm_scan`. Only the type 1–9 `FR` frames
+ * are yielded; the preamble and postamble are not frames, use
+ * [`tgm_message_header`] for the envelope.
+ *
+ * Returns NULL — with the reason in `tgm_last_error` — if `msg` is NULL or
+ * the preamble does not parse (truncated buffer, wrong magic, unsupported
+ * version). Free the returned handle with [`tgm_frame_iter_free`].
+ *
+ * # Lifetime contract
+ *
+ * The iterator **borrows `msg`; `msg` must outlive the iterator** and must
+ * not be moved, reallocated, or mutated while the iterator lives. Each frame
+ * written by [`tgm_frame_iter_next`] carries a `payload` pointer **into
+ * `msg`**, which remains valid for as long as `msg` lives — later `next`
+ * calls and `tgm_frame_iter_free` do not invalidate it.
+ *
+ * Binds [`tensogram::frames`].
+ */
+tgm_frame_iter_t *tgm_frame_iter_create(const uint8_t *msg, size_t msg_len);
+
+/**
+ * Advance the frame cursor, filling `*out` with the next frame.
+ *
+ * Returns `true` when a frame was written. Returns `false` in three cases,
+ * which `tgm_last_error` tells apart:
+ *
+ * - **clean end** — every frame has been yielded; the last error is
+ *   *cleared*, so `tgm_last_error()` returns NULL;
+ * - **malformed frame** — the frame chain is truncated or inconsistent; the
+ *   reason is recorded in `tgm_last_error()` and iteration stops for good;
+ * - **invalid argument** — `it` or `out` is NULL; nothing is written.
+ *
+ * Calling this again after any `false` is safe and keeps returning `false`.
+ *
+ * `out->payload` borrows the caller's message buffer — see the lifetime
+ * contract on [`tgm_frame_iter_create`].
+ */
+bool tgm_frame_iter_next(tgm_frame_iter_t *it, TgmFrame *out);
+
+/**
+ * Free a frame cursor. Releases only the cursor — the caller's message
+ * buffer and every `payload` pointer handed out by [`tgm_frame_iter_next`]
+ * are untouched and stay valid. NULL is a no-op.
+ */
+void tgm_frame_iter_free(tgm_frame_iter_t *it);
+
+/**
+ * `true` if this frame's `HASH_PRESENT` flag is set, i.e. its inline hash
+ * slot holds a meaningful digest (see `plans/WIRE_FORMAT.md` §2.5).
+ *
+ * Convenience over `frame->flags` bit 1, and the authoritative answer for a
+ * single frame — `TgmMessageHeader::has_hashes_present` is only an advisory
+ * message-wide summary. Returns `false` for a NULL `frame`.
+ *
+ * Binds [`tensogram::FrameInfo::has_hash`].
+ */
+bool tgm_frame_has_hash(const TgmFrame *frame);
+
+/**
+ * Read a message's envelope without walking its frames.
+ *
+ * `msg` must point at the start of a message (the `TENSOGRM` preamble magic)
+ * — typically a slice obtained from `tgm_scan`.  On success writes the decoded
+ * preamble to `*out` and returns `TGM_ERROR_OK`.
+ *
+ * Returns `TGM_ERROR_INVALID_ARG` if `msg` or `out` is NULL, or the mapped
+ * error code if the preamble does not parse (message truncated, wrong magic,
+ * unsupported version); the reason is available from `tgm_last_error` and
+ * `*out` is left untouched.
+ *
+ * Binds [`tensogram::message_header`].
+ */
+tgm_error tgm_message_header(const uint8_t *msg, size_t msg_len, TgmMessageHeader *out);
 
 /**
  * Convert an error code to a human-readable string.

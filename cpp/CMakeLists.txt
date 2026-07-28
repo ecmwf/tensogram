@@ -19,10 +19,33 @@ if(TENSOGRAM_ASYNC_REMOTE AND NOT TENSOGRAM_ASYNC)
     message(STATUS "TENSOGRAM_ASYNC_REMOTE=ON -> forcing TENSOGRAM_ASYNC=ON")
     set(TENSOGRAM_ASYNC ON)
 endif()
+
+# ---------------------------------------------------------------------------
+# Synchronous remote surface
+# ---------------------------------------------------------------------------
+# TENSOGRAM_REMOTE builds the FFI with --features=remote, which backs
+# tensogram::is_remote_url and tensogram::file::open_remote with a real
+# object-store client.  Deliberately independent of the async options: a
+# caller reading an S3 / GCS / Azure / HTTP `.tgm` through the ordinary
+# blocking file API should not have to pull in the async runtime.  The FFI
+# symbols always link, so with this OFF (the default, keeping the common
+# build lean) those entry points still exist and report that this build
+# cannot open a remote source.
+option(TENSOGRAM_REMOTE
+    "Build the synchronous object-store backend (tgm_file_open_remote)" OFF)
+
+set(CARGO_FEATURE_LIST "")
 if(TENSOGRAM_ASYNC_REMOTE)
-    set(CARGO_FEATURES "--features=async-remote")
+    list(APPEND CARGO_FEATURE_LIST "async-remote")
 elseif(TENSOGRAM_ASYNC)
-    set(CARGO_FEATURES "--features=async")
+    list(APPEND CARGO_FEATURE_LIST "async")
+endif()
+if(TENSOGRAM_REMOTE)
+    list(APPEND CARGO_FEATURE_LIST "remote")
+endif()
+if(CARGO_FEATURE_LIST)
+    list(JOIN CARGO_FEATURE_LIST "," CARGO_FEATURE_CSV)
+    set(CARGO_FEATURES "--features=${CARGO_FEATURE_CSV}")
 else()
     set(CARGO_FEATURES "")
 endif()
@@ -79,6 +102,9 @@ if(TENSOGRAM_ASYNC)
 endif()
 if(TENSOGRAM_ASYNC_REMOTE)
     target_compile_definitions(tensogram INTERFACE TENSOGRAM_ASYNC_REMOTE=1)
+endif()
+if(TENSOGRAM_REMOTE)
+    target_compile_definitions(tensogram INTERFACE TENSOGRAM_REMOTE=1)
 endif()
 
 # Platform-specific system libraries required by the Rust static library

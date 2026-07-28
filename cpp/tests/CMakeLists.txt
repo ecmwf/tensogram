@@ -28,6 +28,10 @@ set(TENSOGRAM_TEST_SOURCES
     test_canonical_cbor.cpp
     test_scan_family.cpp
     test_doctor.cpp
+    test_frame_walk.cpp
+    test_typed_enums.cpp
+    test_encode_options.cpp
+    test_remote.cpp
 )
 
 if(TENSOGRAM_ASYNC)

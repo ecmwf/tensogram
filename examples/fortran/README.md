@@ -11,6 +11,7 @@ by `cargo cinstall -p tensogram-ffi` or the release tarballs).
 | `streaming.f90` | Stream a multi-object message progressively (one object at a time), then reopen and decode every object |
 | `validate.f90` | Scan a multi-message buffer for boundaries, read each message's wire version, and validate the buffer + a `.tgm` file (JSON reports) |
 | `masks.f90` | Wave-C reader/writer helpers: mask-aware decode (`decode_with_masks` + `object_mask`), `validate_buffer` + inline hashes, `scan_file` / `scan_with_options`, `compute_common`, and `verify_canonical_cbor` |
+| `frame_walker.f90` | Look inside a message without decoding it: the typed message header (`message_header_read`), a lazy walk over every frame (`tensogram_frames` + `%next`, with copied payload bytes), and `encode_with_options(aggregate_hash = BOTH)` verified with the walker itself |
 
 ## Build & run
 

@@ -39,6 +39,8 @@ arr = result.objects[0][1]   # numpy array
 - Sync and async file APIs (`TensogramFile` / `AsyncTensogramFile`)
 - GIL-free parallel encode / decode on free-threaded Python
 - Partial-range decode (`decode_range`)
+- Structural introspection without decoding: the frame walker
+  (`tensogram.frames`) and the typed preamble (`tensogram.message_header`)
 - Full codec support: szip, zstd, lz4, blosc2, zfp, sz3
 - Validation (`tensogram.validate`, `tensogram.validate_file`)
 - GRIB / NetCDF conversion (when the wheel is built with the matching

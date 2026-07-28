@@ -90,13 +90,17 @@ if(TENSOGRAM_FORTRAN_EXAMPLES)
   add_executable(fortran_masks
     ${CMAKE_CURRENT_SOURCE_DIR}/../examples/fortran/masks.f90)
   target_link_libraries(fortran_masks PRIVATE tensogram_f)
+
+  add_executable(fortran_frame_walker
+    ${CMAKE_CURRENT_SOURCE_DIR}/../examples/fortran/frame_walker.f90)
+  target_link_libraries(fortran_frame_walker PRIVATE tensogram_f)
 endif()
 
 if(TENSOGRAM_FORTRAN_TESTS)
   enable_testing()
 
   # Positive tests: succeed (exit 0).
-  foreach(t test_roundtrip test_dtype_rank test_ranks test_file_api test_metadata test_metadata_value test_streaming test_edge_cases test_errors test_symmetry test_wave_c)
+  foreach(t test_roundtrip test_dtype_rank test_ranks test_file_api test_metadata test_metadata_value test_streaming test_edge_cases test_errors test_symmetry test_wave_c test_frames test_remote test_typed_enums test_encode_options)
     add_executable(${t} test/${t}.f90)
     target_link_libraries(${t} PRIVATE tensogram_f)
     add_test(NAME ${t} COMMAND ${t})
@@ -105,7 +109,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   # Run the examples as smoke tests when they are built — otherwise they are
   # only compile-checked, never executed. Each must exit 0.
   if(TENSOGRAM_FORTRAN_EXAMPLES)
-    foreach(ex fortran_encode_decode fortran_file_api fortran_streaming fortran_validate fortran_masks)
+    foreach(ex fortran_encode_decode fortran_file_api fortran_streaming fortran_validate fortran_masks fortran_frame_walker)
       add_test(NAME smoke_${ex} COMMAND ${ex})
     endforeach()
   endif()
@@ -128,7 +132,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   # mode, each asserting the intended abort fired.
   add_executable(test_guards test/test_guards.f90)
   target_link_libraries(test_guards PRIVATE tensogram_f)
-  foreach(mode buffer message file metadata stream check_ctx check_noctx)
+  foreach(mode buffer message file metadata stream frames check_ctx check_noctx)
     add_test(NAME guard_${mode} COMMAND test_guards ${mode})
   endforeach()
   set_tests_properties(guard_buffer    PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_buffer is non-copyable")
@@ -136,6 +140,7 @@ if(TENSOGRAM_FORTRAN_TESTS)
   set_tests_properties(guard_file      PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_file is non-copyable")
   set_tests_properties(guard_metadata  PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_metadata is non-copyable")
   set_tests_properties(guard_stream    PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_streaming_encoder is non-copyable")
+  set_tests_properties(guard_frames    PROPERTIES PASS_REGULAR_EXPRESSION "tensogram_frame_iterator is non-copyable")
   set_tests_properties(guard_check_ctx   PROPERTIES PASS_REGULAR_EXPRESSION "tensogram: guard-context")
   set_tests_properties(guard_check_noctx PROPERTIES PASS_REGULAR_EXPRESSION "tensogram: ")
 
@@ -210,5 +215,37 @@ if(TENSOGRAM_FORTRAN_TESTS)
     add_test(NAME value_type_enum_consistency
       COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_value_type_enum.sh
               ${CMAKE_CURRENT_SOURCE_DIR}/src/tensogram.F90 ${_tgm_header})
+    # The C `tgm_frame_type` enum carries the wire format's frame-type field,
+    # so its source of truth is the Rust core `FrameType` rather than a
+    # binding-side mirror; guard the generated header directly against it.
+    set(_tgm_wire ${CMAKE_CURRENT_SOURCE_DIR}/../rust/tensogram/src/wire.rs)
+    if(EXISTS ${_tgm_wire})
+      add_test(NAME frame_type_enum_consistency
+        COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_frame_type_enum.sh
+                ${_tgm_wire} ${_tgm_header})
+    endif()
+    # The C `tgm_dtype` enum must cover exactly the core `Dtype` variants.
+    # tensogram.h is a checked-in generated artefact the bindings mirror by
+    # hand, so a stale or hand-edited copy is what this catches; the Rust
+    # exhaustive-match unit tests already guard the crate-internal mapping.
+    set(_tgm_dtype ${CMAKE_CURRENT_SOURCE_DIR}/../rust/tensogram/src/dtype.rs)
+    if(EXISTS ${_tgm_dtype})
+      add_test(NAME dtype_enum_consistency
+        COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_dtype_enum.sh
+                ${_tgm_dtype} ${_tgm_header})
+    endif()
+    # Same single-source-of-truth guard, one test per VALUED C enum the
+    # binding mirrors by hand (deferred Wave B: the frame walker's frame
+    # types, the typed dtype / byte-order codes, and the two encode-option
+    # policies). check_enum_mirror.sh is check_error_enum.sh generalised over
+    # the enum prefix — the extraction is identical, only the name differs.
+    foreach(_enum TGM_FRAME_TYPE TGM_DTYPE TGM_BYTE_ORDER
+                  TGM_AGGREGATE_HASH_POLICY TGM_COMPRESSION_BACKEND)
+      string(TOLOWER ${_enum} _enum_lc)
+      string(REGEX REPLACE "^tgm_" "" _enum_lc ${_enum_lc})
+      add_test(NAME ${_enum_lc}_mirror_consistency
+        COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_enum_mirror.sh
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/tensogram.F90 ${_tgm_header} ${_enum})
+    endforeach()
   endif()
 endif()

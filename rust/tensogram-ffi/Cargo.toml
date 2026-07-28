@@ -31,6 +31,12 @@ async = [
 # Enables the remote-aware async surface (open_remote etc.).  Implies
 # `async`.
 async-remote = ["async", "tensogram/remote"]
+# Enables the *synchronous* remote surface (tgm_is_remote_url,
+# tgm_file_open_remote).  Deliberately independent of `async`: a C caller
+# reading an S3 / GCS / Azure / HTTP `.tgm` through the ordinary blocking
+# file API should not have to adopt the async ABI.  `async-remote` does not
+# imply it either — each surface is switched on explicitly.
+remote = ["tensogram/remote"]
 
 [dependencies]
 tensogram = { path = "../tensogram", version = "=0.24.0" }

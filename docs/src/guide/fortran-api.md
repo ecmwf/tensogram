@@ -9,8 +9,9 @@ The library compiles clean under `-std=f2008 -Wall -Wextra -Werror`; see
 
 > **Status.** Emerging. The synchronous surface is complete: generic
 > encode/decode, the multi-message file API, application metadata, the
-> encoding pipeline, and the streaming encoder. Only the async surface is
-> deferred.
+> encoding pipeline, the streaming encoder, the frame walker + message
+> header, synchronous remote reads, and the typed dtype / byte-order /
+> option enums. Only the async surface is deferred.
 
 ## The memory-order contract (read this first)
 
@@ -353,6 +354,167 @@ object out with `tensogram_to_array`. See
 
 Planned next: the async surface (deferred).
 
+## Frame walker and message header
+
+Two procedures describe a message's *structure* without decoding a
+payload or a byte of CBOR — `tensogram_message_header_read` for the
+24-byte envelope and `tensogram_frames` for a lazy walk over its frames.
+Both take the bytes of **one** message (use `tensogram_scan` on a
+multi-message buffer and pass each slice):
+
+```fortran
+type(tensogram_message_header) :: hdr
+type(tensogram_frame_iterator) :: it
+type(tensogram_frame)          :: fr
+integer(c_int8_t), allocatable :: payload(:)
+integer(c_int) :: err
+logical :: found
+
+call tensogram_message_header_read(wire, hdr, err)
+call tensogram_check(err, 'message_header_read')
+print *, hdr%version(), hdr%total_length(), hdr%has_header_index()
+
+call tensogram_frames(wire, it, err)         ! takes its own copy of `wire`
+call tensogram_check(err, 'frames')
+do
+   call it%next(fr, found, err)
+   if (.not. found) exit
+   payload = fr%payload()                    ! an independent copy
+   print *, fr%frame_type(), fr%offset(), fr%length(), size(payload), &
+            fr%has_hash()
+end do
+if (err /= TGM_ERROR_OK) print *, 'malformed: ', tensogram_last_error()
+call it%free()
+```
+
+- `tensogram_frame` is a plain **value**: freely copyable, owns nothing to
+  release, and readable after both the iterator and the message buffer are
+  gone (its `%payload()` bytes were copied out).
+- `tensogram_frame_iterator` is a **non-copyable handle** like every other
+  handle in this binding. It keeps a private copy of the message, so your
+  array may be modified or deallocated while the walk continues. Release
+  it with `%free()` (the finalizer does the same at scope exit).
+- `%offset()` is a **1-based** index, matching `tensogram_scan`: the frame
+  occupies `wire(offset : offset + length - 1)`. `%payload()` is the
+  frame's *content*, with the 16-byte frame header and the type-specific
+  footer (20 bytes for `TGM_FRAME_TYPE_NTENSOR`, 12 otherwise) stripped.
+- A `.false.` `found` ends the loop for both of the C ABI's stop
+  conditions; the optional `err` is the only place they differ —
+  `TGM_ERROR_OK` for a clean end, `TGM_ERROR_FRAMING` for a malformed
+  chain, `TGM_ERROR_INVALID_ARG` for a dead cursor (`%next` after
+  `%free`).
+- The eight `hdr%has_*()` predicates name the optional frames. They are
+  exact for a buffered message; for a streaming one only
+  "frame present ⇒ flag set" holds, and `%total_length()` may be `0`.
+
+`TGM_FRAME_TYPE_HEADER_METADATA` … `TGM_FRAME_TYPE_NTENSOR` are exported
+for `SELECT CASE` on `fr%frame_type()` (there is no parameter for the
+reserved type 4). The full cross-language contract is in
+[Frame Introspection](frame-introspection.md); see
+[`examples/fortran/frame_walker.f90`](https://github.com/ecmwf/tensogram/blob/main/examples/fortran/frame_walker.f90)
+for a runnable tour.
+
+## Reading a remote `.tgm`
+
+`tensogram_file_open_remote` opens an S3 / GCS / Azure / HTTP source
+**synchronously** and hands back an ordinary `tensogram_file`, so the
+whole file API above works unchanged and `file%close()` closes it as
+usual:
+
+```fortran
+type(tensogram_file) :: f
+integer(c_int) :: err
+
+if (tensogram_is_remote_url(source)) then
+   ! No storage options: the short form.
+   call tensogram_file_open_remote(source, f, err)
+   ! With backend options — parallel key / value arrays:
+   call tensogram_file_open_remote(source, ['aws_region'], ['eu-west-1'], &
+                                   f, err, bidirectional = .true.)
+else
+   call tensogram_file_open(source, f, err)
+end if
+call tensogram_check(err, 'open')
+```
+
+`tensogram_is_remote_url` recognises `s3`, `s3a`, `gs`, `az`, `azure`,
+`http` and `https` (case-insensitively); plain paths and `file://` URLs
+belong to `tensogram_file_open`. `bidirectional` (default `.true.`)
+selects the meet-in-the-middle remote scan.
+
+`err` is `TGM_ERROR_INVALID_ARG` when `keys` and `values` have different
+lengths (the C ABI takes one option count for both), and
+`TGM_ERROR_REMOTE` for an unparseable URL, a missing object, a rejected
+storage option, or a transport failure.
+
+> **The C library must be built with the opt-in `remote` Cargo feature**
+> — it is **not** in the published C-API tarballs. Without it,
+> `tensogram_is_remote_url` answers `.false.` for *every* input and
+> `tensogram_file_open_remote` returns `TGM_ERROR_REMOTE` with a
+> `tensogram_last_error()` message naming `--features=remote`. Argument
+> validation runs before that check, so a genuine mistake is reported as
+> a mistake in either build. See
+> [C API — synchronous remote access](c-api.md#synchronous-remote-access-opt-in-remote-feature).
+
+## Typed enums and the full encode options
+
+The dtype / byte-order **string** getters are unchanged; each now has a
+`SELECT CASE`-able companion returning a `TGM_DTYPE_*` /
+`TGM_BYTE_ORDER_*` code:
+
+```fortran
+integer(c_int) :: dt, err
+
+dt = tensogram_object_dtype_enum(msg, 1, err)      ! `err` is optional
+select case (dt)
+case (TGM_DTYPE_FLOAT32) ; print *, '4 bytes per element'
+case (TGM_DTYPE_FLOAT64) ; print *, '8 bytes per element'
+end select
+```
+
+An enum result has no spare code for failure, so an out-of-range `iobj`
+yields the **zero variant** (`TGM_DTYPE_FLOAT16` /
+`TGM_BYTE_ORDER_LITTLE`) and sets the optional `err` to
+`TGM_ERROR_INVALID_ARG` — pass `err` (or check
+`tensogram_num_objects`) when the index is not already known good.
+
+Three `*_with_options` procedures expose the full encode-side option set,
+including the two knobs that previously had no Fortran surface — where the
+aggregate hash frame goes, and which codec backend to use. Every argument
+after `err` is optional and defaults to the library default:
+
+```fortran
+integer(c_int8_t), allocatable :: data(:)
+integer(c_size_t) :: lens(1)
+type(tensogram_buffer) :: buf
+integer(c_int) :: err
+
+data    = transfer(field, [0_c_int8_t], size(field) * 4)
+lens(1) = int(size(field) * 4, c_size_t)
+call tensogram_encode_with_options(descriptors_json, data, lens, buf, err, &
+        hash = 'xxh3',                                                     &
+        aggregate_hash = TGM_AGGREGATE_HASH_POLICY_BOTH,                   &
+        compression_backend = TGM_COMPRESSION_BACKEND_PURE)
+```
+
+| Procedure | Target |
+|---|---|
+| `tensogram_encode_with_options(metadata_json, data, lens, buf, err, …)` | a buffer |
+| `tensogram_file_append_with_options(file, metadata_json, data, lens, err, …)` | an open file |
+| `tensogram_streaming_encoder_create_with_options(path, enc, err, …)` | a streaming encoder |
+
+These take raw bytes rather than a typed array: `metadata_json` is the
+full `{"descriptors":[…]}` envelope, `data` is every object's element
+bytes **concatenated**, and `lens(k)` is object *k*'s byte length (so
+`num_objects == size(lens)` and `sum(lens) == size(data)`). The generic
+`tensogram_encode` / `tensogram_file_append` remain the convenient path
+when you do not need these knobs.
+
+`TGM_AGGREGATE_HASH_POLICY_HEADER` and `..._BOTH` are **buffered-mode
+only**: the streaming constructor rejects them with `TGM_ERROR_ENCODING`,
+because a streaming writer emits its header before any data object exists.
+Verify where the frame actually landed with the frame walker above.
+
 ## Edge cases
 
 The binding fails gracefully rather than crashing:
@@ -388,4 +550,6 @@ NumPy (when a Python with the `tensogram` package is present).
 ## See also
 
 - [C API](c-api.md) — the ABI the binding sits on.
+- [Frame Introspection](frame-introspection.md) — the language-neutral
+  contract behind `tensogram_frames` / `tensogram_message_header_read`.
 - [Objects and Dtypes](../concepts/objects.md) — strides and layout.

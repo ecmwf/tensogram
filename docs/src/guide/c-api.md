@@ -2,10 +2,12 @@
 
 Tensogram exposes a flat C ABI through the `tensogram-ffi` crate. The
 generated header is `tensogram.h`; all public functions are prefixed
-`tgm_`, most public types follow the `tgm_*_t` pattern (the option
-structs `TgmEncodeMaskOptions` and `TgmDecodeMaskOptions` are PascalCase
-exceptions inherited from the underlying Rust types), and all error
-codes are members of the `tgm_error` enum.
+`tgm_`, most public types follow the `tgm_*_t` pattern (the PODs
+`TgmEncodeMaskOptions`, `TgmDecodeMaskOptions`, `TgmEncodeOptions`,
+`TgmScanOptions`, `TgmRemoteScanOptions`, `TgmFrame`, and
+`TgmMessageHeader` are PascalCase exceptions inherited from the
+underlying Rust types), and all error codes are members of the
+`tgm_error` enum.
 
 The C++ wrapper at `cpp/include/tensogram.hpp` is built directly on top
 of this C API; see [C++ API](cpp-api.md) for the higher-level
@@ -214,6 +216,163 @@ int main(void) {
 }
 ```
 
+## Synchronous remote access (opt-in `remote` feature)
+
+A remote `.tgm` (S3, GCS, Azure, HTTP) can be read through the ordinary
+**blocking** file API — no async ABI required:
+
+```c
+const char *keys[]   = { "aws_region", "aws_access_key_id" };
+const char *values[] = { "eu-west-1",  "AKIA..." };
+TgmRemoteScanOptions opts = { .bidirectional = true };  /* NULL = defaults */
+
+tgm_file_t *file = NULL;
+tgm_error rc = tgm_file_open_remote("s3://bucket/forecast.tgm",
+                                    keys, values, 2, &opts, &file);
+if (rc != TGM_ERROR_OK) {
+    fprintf(stderr, "open_remote failed: %s\n", tgm_last_error());
+    return 1;
+}
+
+/* `file` is a PLAIN tgm_file_t — every existing file function works. */
+size_t n = 0;
+tgm_file_message_count(file, &n);
+tgm_file_close(file);
+```
+
+`keys` / `values` are parallel arrays of `n_options` backend storage
+options (credentials, region, endpoint, …) forwarded verbatim to the
+object-store backend; pass `0` / `NULL` for none. `tgm_is_remote_url`
+tells the two backends apart before you open anything — the recognised
+schemes are `s3`, `s3a`, `gs`, `az`, `azure`, `http`, `https` (compared
+case-insensitively). Plain paths and `file://` URLs are **not** remote;
+they belong to `tgm_file_open`.
+
+> **This is an opt-in Cargo feature and is NOT in the published
+> tarballs.** The prebuilt `tensogram-ffi-<VERSION>-<PLATFORM>.tar.gz`
+> assets are built with default features, exactly like the existing
+> `async` surface. To get a library that can actually open a remote
+> source, build it yourself:
+>
+> ```bash
+> cargo cinstall --release -p tensogram-ffi --features=remote \
+>     --prefix="$HOME/.local" --libdir=lib
+> # in-tree / C++ wrapper builds:
+> cargo build --release -p tensogram-ffi --features=remote
+> cmake -S cpp -B build -DTENSOGRAM_REMOTE=ON     # default OFF
+> ```
+>
+> Both symbols are exported **either way**, so you never hit an
+> undefined symbol at link time. In a build without the feature:
+>
+> - `tgm_is_remote_url` returns `false` for *every* input — such a build
+>   genuinely cannot open any URL, so "not remote for me" is the honest
+>   answer;
+> - `tgm_file_open_remote` returns `TGM_ERROR_REMOTE` with a
+>   `tgm_last_error()` message naming `--features=remote`.
+>
+> Argument validation (NULL `source` / `out`, mismatched option arrays)
+> runs **before** the feature check, so a genuine mistake is reported as
+> `TGM_ERROR_INVALID_ARG` in both builds.
+
+The `remote` feature is independent of `async` — neither implies the
+other. For the async equivalent see
+[C++ Async API](cpp-async.md#remote-reads-open_remote); for the transport
+behaviour (request budget, bidirectional scan, limitations) see
+[Remote Access](remote-access.md).
+
+## Frame introspection
+
+`tgm_message_header` reads a message's 24-byte envelope into a
+`TgmMessageHeader` POD (wire version, `total_length`, and eight `has_*`
+booleans), and `tgm_frame_iter_create` / `_next` / `_free` walk that
+message's frames, filling a caller-provided `TgmFrame` per step:
+
+```c
+TgmMessageHeader h;
+tgm_message_header(msg, msg_len, &h);   /* 24 bytes; walks nothing */
+
+tgm_frame_iter_t *it = tgm_frame_iter_create(msg, msg_len);
+TgmFrame f;
+while (tgm_frame_iter_next(it, &f)) {
+    /* f.frame_type is a tgm_frame_type; f.payload borrows msg */
+    if (tgm_frame_has_hash(&f)) { /* the inline slot holds a digest */ }
+}
+const char *err = tgm_last_error();   /* NULL => clean end, else framing */
+tgm_frame_iter_free(it);
+```
+
+`f.payload` / `f.payload_len` are the frame **content** (the 16-byte
+frame header and the type-specific footer are stripped) and point
+**into** `msg`: nothing to free, valid for as long as `msg` lives, and
+unaffected by later `_next` calls or by `tgm_frame_iter_free`. The
+iterator borrows `msg` for its whole lifetime, so `msg` must outlive it.
+
+Both entry points take **one** message — use `tgm_scan` to locate the
+boundaries in a multi-message buffer and pass each slice. The full
+contract (frame types, offsets, payload boundaries, the streaming-flag
+nuance) is in [Frame Introspection](frame-introspection.md).
+
+## Typed enums and the full encode options
+
+Four new enums make descriptor and option values `switch`-able instead of
+`strcmp`-able. Each one's **zero value is the library default**, so a
+zero-initialised option struct asks for exactly the previous behaviour:
+
+| Enum | Variants | Notes |
+|---|---|---|
+| `tgm_dtype` | `TGM_DTYPE_FLOAT16` … `TGM_DTYPE_BITMASK` (15) | FFI convenience — the wire stores the dtype as a *string* |
+| `tgm_byte_order` | `TGM_BYTE_ORDER_LITTLE` / `_BIG` | likewise a string on the wire |
+| `tgm_aggregate_hash_policy` | `AUTO` / `NONE` / `HEADER` / `FOOTER` / `BOTH` | where the aggregate hash frame goes |
+| `tgm_compression_backend` | `AUTO` / `FFI` / `PURE` | which szip / zstd implementation to use |
+
+`tgm_frame_type` (above) follows the same pattern, except that *its*
+numbers really are wire values.
+
+Two typed accessors join the existing string getters, which are
+unchanged and still supported:
+
+```c
+switch (tgm_object_dtype_enum(msg, 0)) {          /* vs tgm_object_dtype  */
+    case TGM_DTYPE_FLOAT32: /* 4 bytes per element */ break;
+    default: break;
+}
+tgm_byte_order bo = tgm_object_byte_order_enum(msg, 0);
+```
+
+An enum return has no spare code for failure: a NULL handle or an
+out-of-range index records the reason in `tgm_last_error()` and returns
+the **zero variant** (`TGM_DTYPE_FLOAT16`, `TGM_BYTE_ORDER_LITTLE`). To
+bounds-check unambiguously, compare the index against
+`tgm_message_num_objects`, or call the paired string getter, which
+returns `NULL` for exactly the same inputs.
+
+`TgmEncodeOptions` supersedes `TgmEncodeMaskOptions` (which stays for
+source compatibility): it carries the same six mask fields **plus** the
+three knobs that previously had no C surface at all — the hash algorithm,
+the aggregate-hash placement, and the codec backend:
+
+```c
+TgmEncodeOptions opts = {0};          /* every zero IS the default */
+opts.hash = "xxh3";                   /* NULL / omitted = no hashing */
+opts.aggregate_hash = TGM_AGGREGATE_HASH_POLICY_BOTH;
+opts.compression_backend = TGM_COMPRESSION_BACKEND_PURE;
+
+tgm_bytes_t enc = {0};
+tgm_encode_with_encode_options(meta_json, ptrs, lens, 1, 0, &opts, &enc);
+```
+
+There is one `*_with_encode_options` entry point per encode target —
+`tgm_encode_with_encode_options`,
+`tgm_file_append_with_encode_options`, and
+`tgm_streaming_encoder_create_with_encode_options` — and passing `NULL`
+options means the library defaults. Note that the algorithm name lives
+in `options->hash`, so these functions have no separate `hash_algo`
+argument. `TGM_AGGREGATE_HASH_POLICY_HEADER` and `..._BOTH` are
+**buffered-mode only**: the streaming constructor rejects them with
+`TGM_ERROR_ENCODING`, because a streaming writer emits its header before
+any data object exists.
+
 ## Memory ownership
 
 - Handles returned by `tgm_*` constructors (e.g. `tgm_decode` returns
@@ -222,6 +381,9 @@ int main(void) {
 - Pointers returned by accessor functions (e.g. `tgm_object_data`,
   `tgm_object_shape`) are *borrowed* from the parent handle and are
   valid only until the parent is freed.
+- `TgmFrame::payload` borrows the caller's *message buffer*, not the
+  iterator: it stays valid for as long as that buffer lives, and
+  `tgm_frame_iter_free` does not invalidate it.
 - `tgm_bytes_t` returned by encode functions must be freed with
   `tgm_bytes_free`.
 - `tgm_last_error()` returns a thread-local pointer to the most recent
@@ -275,6 +437,10 @@ release for now. The Rust API has the same caveat.
 ## See also
 
 - [C++ API](cpp-api.md) — RAII / exceptions wrapper over the C API.
+- [Frame Introspection](frame-introspection.md) — the language-neutral
+  contract behind `tgm_frame_iter_*` / `tgm_message_header`.
+- [Remote Access](remote-access.md) — transport behaviour of the
+  object-store backend behind `tgm_file_open_remote`.
 - [Error Handling](error-handling.md) — taxonomy of `tgm_error`
   variants and what each one means.
 - [Internals](../internals.md) — wire format, encoding pipeline.
