@@ -189,6 +189,31 @@ streaming encoder.  See the *Asynchronous C++ API* entry in
     - Standalone CI job; does not block the main `@ecmwf.int/tensogram`
       pipeline.
 
+  - [ ] **`tensogram-convert-ffi` — opt-in C ABI for GRIB/NetCDF convert**
+    (escalation path from the accepted convert asymmetry — see
+    `plans/INTERFACE_SYMMETRY.md` and `plans/DESIGN.md` § *Documented
+    exceptions* `[A]`). Rationale: the core C ABI (`tensogram-ffi`) is
+    deliberately **lean — it links no system C libraries** — and lowering
+    `libeccodes` / `libnetcdf` / `libhdf5` into it would break the
+    self-contained C-API tarball and force native-lib linkage on every
+    C-family build (`cargo-c`, `cpp`, `fortran`, `publish-ffi`). Instead,
+    expose convert through a **separate, opt-in** cdylib + header that isolates
+    the native deps and leaves the default C API untouched.
+    - [ ] New feature-gated crate `rust/tensogram-convert-ffi` (own `capi`
+      cargo-c target, own `tensogram_convert.h`, own `tensogram_convert.pc`),
+      depending on `tensogram-grib` / `tensogram-netcdf`.
+    - [ ] C functions `tgm_convert_grib` / `tgm_to_grib` / `tgm_convert_netcdf`
+      / `tgm_to_netcdf`, with `ConvertOptions` / `SplitBy` / `Grouping` as C
+      structs or JSON-string options mirroring the CLI pipeline flags.
+    - [ ] Thin C++ (`tensogram/convert.hpp`) + Fortran wrappers, degrading
+      gracefully when the extra library is absent.
+    - [ ] A dedicated, separately-published release artifact
+      `tensogram-convert-ffi-<ver>-<plat>` that documents its
+      `libeccodes`/`libnetcdf`/`libhdf5` runtime requirement; the lean
+      `tensogram-ffi` tarball stays unchanged.
+    - **Trigger:** build this only if a concrete C/C++/Fortran convert consumer
+      appears; until then convert stays CLI + Python (option 1, accepted).
+
 ## Integration with other software
 
 - [ ] **earthkit-data-integration follow-ups** — scope notes carried
