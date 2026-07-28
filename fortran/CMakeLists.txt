@@ -219,5 +219,15 @@ if(TENSOGRAM_FORTRAN_TESTS)
         COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_frame_type_enum.sh
                 ${_tgm_wire} ${_tgm_header})
     endif()
+    # The C `tgm_dtype` enum must cover exactly the core `Dtype` variants.
+    # tensogram.h is a checked-in generated artefact the bindings mirror by
+    # hand, so a stale or hand-edited copy is what this catches; the Rust
+    # exhaustive-match unit tests already guard the crate-internal mapping.
+    set(_tgm_dtype ${CMAKE_CURRENT_SOURCE_DIR}/../rust/tensogram/src/dtype.rs)
+    if(EXISTS ${_tgm_dtype})
+      add_test(NAME dtype_enum_consistency
+        COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_dtype_enum.sh
+                ${_tgm_dtype} ${_tgm_header})
+    endif()
   endif()
 endif()

@@ -75,6 +75,119 @@ typedef enum {
 } tgm_error;
 
 /**
+ * Where to place the aggregate hash frame (cbindgen:
+ * `tgm_aggregate_hash_policy`, variants `TGM_AGGREGATE_HASH_POLICY_*`).
+ *
+ * Mirrors [`tensogram::AggregateHashPolicy`].  `AUTO` is the zero value, so a
+ * zero-initialised [`TgmEncodeOptions`] asks the encoder to choose
+ * (`HEADER` when buffering, `FOOTER` when streaming) — the same default the
+ * Rust API has.
+ *
+ * `HEADER` and `BOTH` are **buffered-mode only**: a streaming encoder writes
+ * its header before any data object exists, so the per-object hashes are not
+ * yet known.  [`tgm_streaming_encoder_create_with_encode_options`] rejects
+ * them with `TGM_ERROR_ENCODING` and an explanatory
+ * [`tgm_last_error`] message.
+ */
+typedef enum {
+  /**
+   * Encoder picks: buffered → header, streaming → footer.
+   */
+  TGM_AGGREGATE_HASH_POLICY_AUTO = 0,
+  /**
+   * Emit no aggregate hash frame.  Per-frame inline hash slots are
+   * unaffected.
+   */
+  TGM_AGGREGATE_HASH_POLICY_NONE = 1,
+  /**
+   * Emit a `TGM_FRAME_TYPE_HEADER_HASH` frame.  Buffered mode only.
+   */
+  TGM_AGGREGATE_HASH_POLICY_HEADER = 2,
+  /**
+   * Emit a `TGM_FRAME_TYPE_FOOTER_HASH` frame.  Valid in both modes.
+   */
+  TGM_AGGREGATE_HASH_POLICY_FOOTER = 3,
+  /**
+   * Emit both a header and a footer hash frame carrying identical hash
+   * lists.  Buffered mode only.
+   */
+  TGM_AGGREGATE_HASH_POLICY_BOTH = 4,
+} tgm_aggregate_hash_policy;
+
+/**
+ * Which codec implementation to use where both are compiled in (cbindgen:
+ * `tgm_compression_backend`, variants `TGM_COMPRESSION_BACKEND_*`).
+ *
+ * Mirrors [`tensogram::CompressionBackend`].  `AUTO` is the zero value:
+ * consult `TENSOGRAM_COMPRESSION_BACKEND`, else the platform default (FFI on
+ * native, pure-Rust on wasm32).  `FFI` and `PURE` are explicit overrides that
+ * always win over the environment.
+ */
+typedef enum {
+  /**
+   * Consult the environment, then the platform default.
+   */
+  TGM_COMPRESSION_BACKEND_AUTO = 0,
+  /**
+   * Use the C FFI codecs (libaec for szip, libzstd for zstd).
+   */
+  TGM_COMPRESSION_BACKEND_FFI = 1,
+  /**
+   * Use the pure-Rust codecs (tensogram-szip, ruzstd).
+   */
+  TGM_COMPRESSION_BACKEND_PURE = 2,
+} tgm_compression_backend;
+
+/**
+ * An element type (cbindgen: `tgm_dtype`, variants `TGM_DTYPE_*`).
+ *
+ * Mirrors [`tensogram::Dtype`] one-for-one, numbered densely from `0` in core
+ * declaration order.  The wire format stores the dtype as a **string** (see
+ * `plans/WIRE_FORMAT.md` §6.1), so these codes are an FFI convenience, not a
+ * wire value — but they are part of the C ABI and therefore frozen.
+ * [`tgm_object_dtype`] returns the same information as a string; this enum is
+ * what you want in a `switch`.
+ *
+ * The `impl From<Dtype>` below is an exhaustive match, so a new core variant
+ * fails the build here rather than silently mapping to something wrong.
+ */
+typedef enum {
+  TGM_DTYPE_FLOAT16 = 0,
+  TGM_DTYPE_BFLOAT16 = 1,
+  TGM_DTYPE_FLOAT32 = 2,
+  TGM_DTYPE_FLOAT64 = 3,
+  TGM_DTYPE_COMPLEX64 = 4,
+  TGM_DTYPE_COMPLEX128 = 5,
+  TGM_DTYPE_INT8 = 6,
+  TGM_DTYPE_INT16 = 7,
+  TGM_DTYPE_INT32 = 8,
+  TGM_DTYPE_INT64 = 9,
+  TGM_DTYPE_UINT8 = 10,
+  TGM_DTYPE_UINT16 = 11,
+  TGM_DTYPE_UINT32 = 12,
+  TGM_DTYPE_UINT64 = 13,
+  /**
+   * Sub-byte packed bitmask; element width is 1 bit, so the byte width of
+   * [`tensogram::Dtype::Bitmask`] is reported as 0.
+   */
+  TGM_DTYPE_BITMASK = 14,
+} tgm_dtype;
+
+/**
+ * A payload's byte order (cbindgen: `tgm_byte_order`, variants
+ * `TGM_BYTE_ORDER_*`).
+ *
+ * Mirrors [`tensogram::ByteOrder`].  Like [`TgmDtype`] these codes are an FFI
+ * convenience — the wire stores `"little"` / `"big"` as text — and are frozen
+ * as part of the C ABI.  [`tgm_object_byte_order`] returns the same
+ * information as a string.
+ */
+typedef enum {
+  TGM_BYTE_ORDER_LITTLE = 0,
+  TGM_BYTE_ORDER_BIG = 1,
+} tgm_byte_order;
+
+/**
  * Which non-finite bitmask kind to fetch from a mask-aware decode.
  *
  * Passed to [`tgm_object_mask`].  Mirrors the three slots of
@@ -324,6 +437,74 @@ typedef struct {
 } TgmEncodeMaskOptions;
 
 /**
+ * The full encode-side option set (cbindgen: `TgmEncodeOptions`).
+ *
+ * Supersedes [`TgmEncodeMaskOptions`], which stays for source compatibility:
+ * it carries the same six mask fields **plus** the three knobs that
+ * previously had no C surface at all — the hash algorithm, where the
+ * aggregate hash frame goes, and which codec backend to use.
+ *
+ * Pass `NULL` to any `*_with_encode_options` entry point for the library
+ * defaults; a zero-initialised struct means the same thing, because every
+ * field's zero value *is* the default:
+ *
+ * | field | `NULL` / zero | meaning |
+ * |---|---|---|
+ * | `hash` | NULL | no hashing (the FFI convention: name it to get it) |
+ * | `aggregate_hash` | `TGM_AGGREGATE_HASH_POLICY_AUTO` | encoder picks the placement |
+ * | `compression_backend` | `TGM_COMPRESSION_BACKEND_AUTO` | env, then platform default |
+ * | `allow_nan` / `allow_inf` | `false` | non-finite input is a hard error |
+ * | `*_mask_method` | NULL | the library default (`"roaring"`) |
+ * | `small_mask_threshold_bytes` | negative | the library default (128) |
+ *
+ * `hash` is `"xxh3"` (v3's only algorithm), `"none"`, or NULL; anything else
+ * is [`TgmError::InvalidArg`].  Each `*_mask_method` is one of `"none"`,
+ * `"rle"`, `"roaring"`, `"lz4"`, `"zstd"`, `"blosc2"`.
+ * `small_mask_threshold_bytes` is the byte count below which mask blobs are
+ * stored raw regardless of the requested method; `0` disables that
+ * auto-fallback, negative values select the library default.
+ */
+typedef struct {
+  /**
+   * Hash algorithm name (`"xxh3"`, `"none"`) or NULL for no hashing.
+   */
+  const char *hash;
+  /**
+   * Where to write the aggregate hash frame.  Ignored when `hash` is NULL
+   * or `"none"` — there is nothing to aggregate.
+   */
+  tgm_aggregate_hash_policy aggregate_hash;
+  /**
+   * Which codec implementation to prefer for szip / zstd.
+   */
+  tgm_compression_backend compression_backend;
+  /**
+   * Substitute NaN with `0.0` and record a bitmask companion frame.
+   */
+  bool allow_nan;
+  /**
+   * Substitute `±Inf` with `0.0` and record per-sign bitmask companions.
+   */
+  bool allow_inf;
+  /**
+   * Compression method for the NaN mask, or NULL for the default.
+   */
+  const char *nan_mask_method;
+  /**
+   * Compression method for the `+Inf` mask, or NULL for the default.
+   */
+  const char *pos_inf_mask_method;
+  /**
+   * Compression method for the `-Inf` mask, or NULL for the default.
+   */
+  const char *neg_inf_mask_method;
+  /**
+   * Raw-storage threshold for mask blobs; `0` disables, negative = default.
+   */
+  ptrdiff_t small_mask_threshold_bytes;
+} TgmEncodeOptions;
+
+/**
  * Decode-side companion to [`TgmEncodeMaskOptions`].  Pass a pointer
  * to opt out of canonical NaN / Inf restoration.  Pass `NULL` for
  * the default `restore_non_finite = true`.
@@ -363,6 +544,24 @@ typedef struct {
    */
   uint64_t max_message_size;
 } TgmScanOptions;
+
+/**
+ * Reader-side scan-walker options for [`tgm_file_open_remote`].  Mirrors
+ * [`tensogram::RemoteScanOptions`] as a flat, C-visible POD so callers can
+ * build it on the stack.
+ *
+ * Pass a `NULL` `TgmRemoteScanOptions*` to use the library defaults
+ * (`bidirectional = true`).
+ */
+typedef struct {
+  /**
+   * Enable the meet-in-the-middle (bidirectional) remote walk, which
+   * pairs forward preamble fetches with backward postamble fetches and
+   * roughly halves wall-clock layout discovery on real networks.  `false`
+   * forces a forward-only walk.
+   */
+  bool bidirectional;
+} TgmRemoteScanOptions;
 
 /**
  * One frame's structural description plus a **borrowed** view of its content.
@@ -542,6 +741,27 @@ tgm_error tgm_encode_with_options(const char *metadata_json,
                                   tgm_bytes_t *out);
 
 /**
+ * Encode with the full [`TgmEncodeOptions`] set.
+ *
+ * Like [`tgm_encode_with_options`], but the option struct also carries the
+ * hash algorithm, the aggregate-hash placement and the compression backend —
+ * so there is no separate `hash_algo` argument here; put the algorithm name
+ * in `options->hash`.  `NULL` options behave exactly like [`tgm_encode`] with
+ * a NULL `hash_algo`: no hashing, `AUTO` placement, `AUTO` backend,
+ * non-finite input rejected.
+ *
+ * On success returns `TGM_ERROR_OK` and fills `out` with the encoded bytes,
+ * which the caller frees with [`tgm_bytes_free`].
+ */
+tgm_error tgm_encode_with_encode_options(const char *metadata_json,
+                                         const uint8_t *const *data_ptrs,
+                                         const size_t *data_lens,
+                                         size_t num_objects,
+                                         uint32_t threads,
+                                         const TgmEncodeOptions *options,
+                                         tgm_bytes_t *out);
+
+/**
  * Decode with explicit NaN / Inf restoration options.
  *
  * Like [`tgm_decode`] but takes a [`TgmDecodeMaskOptions`] pointer
@@ -571,6 +791,26 @@ tgm_error tgm_streaming_encoder_create_with_options(const char *path,
                                                     tgm_streaming_encoder_t **out);
 
 /**
+ * Streaming-encoder constructor taking the full [`TgmEncodeOptions`] set.
+ *
+ * Like [`tgm_streaming_encoder_create_with_options`], but the option struct
+ * also carries the hash algorithm, the aggregate-hash placement and the
+ * compression backend, so there is no separate `hash_algo` argument.  `NULL`
+ * options behave like [`tgm_streaming_encoder_create`] with a NULL
+ * `hash_algo`.
+ *
+ * `TGM_AGGREGATE_HASH_POLICY_HEADER` and `..._BOTH` are rejected here with
+ * `TGM_ERROR_ENCODING`: a streaming writer emits its header before any data
+ * object exists, so the per-object hashes are not yet known.  Use `AUTO`
+ * (which resolves to the footer when streaming) or `FOOTER`.
+ */
+tgm_error tgm_streaming_encoder_create_with_encode_options(const char *path,
+                                                           const char *metadata_json,
+                                                           uint32_t threads,
+                                                           const TgmEncodeOptions *options,
+                                                           tgm_streaming_encoder_t **out);
+
+/**
  * Append a message to a file with explicit NaN / Inf mask-companion options.
  *
  * Like [`tgm_file_append`] but takes a [`TgmEncodeMaskOptions`]
@@ -584,6 +824,22 @@ tgm_error tgm_file_append_with_options(tgm_file_t *file,
                                        const char *hash_algo,
                                        uint32_t threads,
                                        const TgmEncodeMaskOptions *mask_options);
+
+/**
+ * Append a message to a file with the full [`TgmEncodeOptions`] set.
+ *
+ * Like [`tgm_file_append_with_options`], but the option struct also carries
+ * the hash algorithm, the aggregate-hash placement and the compression
+ * backend, so there is no separate `hash_algo` argument.  `NULL` options
+ * behave like [`tgm_file_append`] with a NULL `hash_algo`.
+ */
+tgm_error tgm_file_append_with_encode_options(tgm_file_t *file,
+                                              const char *metadata_json,
+                                              const uint8_t *const *data_ptrs,
+                                              const size_t *data_lens,
+                                              size_t num_objects,
+                                              uint32_t threads,
+                                              const TgmEncodeOptions *options);
 
 /**
  * Encode a Tensogram message from JSON metadata and pre-encoded payload bytes.
@@ -841,6 +1097,20 @@ const uint64_t *tgm_object_strides(const tgm_message_t *msg, size_t index);
 const char *tgm_object_dtype(const tgm_message_t *msg, size_t index);
 
 /**
+ * Returns the object's dtype as a [`tgm_dtype`](TgmDtype) code — the typed
+ * companion to [`tgm_object_dtype`], for callers that want to `switch`
+ * instead of `strcmp`.
+ *
+ * A NULL `msg` or an out-of-range `index` records the reason in
+ * [`tgm_last_error`] and returns the zero-valued variant
+ * (`TGM_DTYPE_FLOAT16`); an enum return has no spare code to signal
+ * failure.  To bounds-check unambiguously, compare `index` against
+ * [`tgm_message_num_objects`], or call [`tgm_object_dtype`], which returns
+ * NULL for exactly the same inputs.
+ */
+tgm_dtype tgm_object_dtype_enum(const tgm_message_t *msg, size_t index);
+
+/**
  * Returns a pointer to the decoded payload bytes for a decoded object.
  * `decoded_index` is the index into the decoded objects array (0 for the
  * first decoded object, regardless of the original object index).
@@ -893,6 +1163,17 @@ const char *tgm_object_type(const tgm_message_t *msg, size_t index);
  * Returns the byte order string ("big" or "little"). Valid until message freed.
  */
 const char *tgm_object_byte_order(const tgm_message_t *msg, size_t index);
+
+/**
+ * Returns the object's byte order as a [`tgm_byte_order`](TgmByteOrder) code
+ * — the typed companion to [`tgm_object_byte_order`].
+ *
+ * A NULL `msg` or an out-of-range `index` records the reason in
+ * [`tgm_last_error`] and returns the zero-valued variant
+ * (`TGM_BYTE_ORDER_LITTLE`); see [`tgm_object_dtype_enum`] for how to
+ * bounds-check unambiguously.
+ */
+tgm_byte_order tgm_object_byte_order_enum(const tgm_message_t *msg, size_t index);
 
 /**
  * Returns the filter string (e.g. "none", "shuffle"). Valid until message freed.
@@ -1343,6 +1624,53 @@ tgm_error tgm_file_append(tgm_file_t *file,
  * Close a file handle and release resources.
  */
 void tgm_file_close(tgm_file_t *file);
+
+/**
+ * `true` when `source` is a URL this build can open remotely.
+ *
+ * Mirrors [`tensogram::is_remote_url`]: the recognised schemes are `s3`,
+ * `s3a`, `gs`, `az`, `azure`, `http` and `https`, compared
+ * case-insensitively.  Plain paths and `file://` URLs are **not** remote —
+ * they belong to the local backend ([`tgm_file_open`]).
+ *
+ * Returns `false` — with the reason in [`tgm_last_error`] — for a NULL or
+ * non-UTF-8 `source`, and for **every** input when this build was compiled
+ * without the `remote` Cargo feature (such a build genuinely cannot open any
+ * remote URL, so "not remote for me" is the honest answer; the error message
+ * says how to fix it).
+ */
+bool tgm_is_remote_url(const char *source);
+
+/**
+ * Open a remote `.tgm` (S3 / GCS / Azure / HTTP) for **synchronous** reading.
+ *
+ * The blocking counterpart to `tgm_async_file_open_remote`: on success `*out`
+ * receives an ordinary [`tgm_file_t`](TgmFile), so the whole existing file
+ * API — [`tgm_file_message_count`], [`tgm_file_read_message`],
+ * [`tgm_file_decode_message`], [`tgm_file_iter_create`], … — works unchanged
+ * against the remote source.  Close it with [`tgm_file_close`] as usual.
+ *
+ * `keys` / `values` are parallel arrays of `n_options` backend storage
+ * options (credentials, region, endpoint, …) forwarded verbatim to the
+ * object-store backend; pass `0` / NULL for none.  `opts` configures the scan
+ * walker; NULL selects the library defaults (`bidirectional = true`).
+ *
+ * Argument validation (NULL `source` / `out`, malformed option arrays) runs
+ * **before** the feature check, so every build answers
+ * `TGM_ERROR_INVALID_ARG` to the same mistakes.  Remote failures — an
+ * unparseable URL, a missing object, a rejected storage option, transport
+ * errors — map to `TGM_ERROR_REMOTE` with the detail in [`tgm_last_error`].
+ *
+ * Always exported so consumers linking the cdylib never see an undefined
+ * symbol; a build without the `remote` Cargo feature returns
+ * `TGM_ERROR_REMOTE` and explains how to enable it.
+ */
+tgm_error tgm_file_open_remote(const char *source,
+                               const char *const *keys,
+                               const char *const *values,
+                               size_t n_options,
+                               const TgmRemoteScanOptions *opts,
+                               tgm_file_t **out);
 
 /**
  * Compute simple_packing parameters for a set of f64 values.
