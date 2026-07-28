@@ -87,8 +87,26 @@ await init({ wasmInput: new URL('...', import.meta.url) });  // custom location
 | `metadata` | `GlobalMetadata` | Free-form metadata; only `base`, `_reserved_`, `_extra_` are library-interpreted. An empty `{}` is valid. The wire-format version lives in the preamble — see [`WIRE_VERSION`](#wire_version). |
 | `objects` | `Array<{ descriptor, data }>` | Each `data` is a `TypedArray` or `Uint8Array` |
 | `opts.hash` | `'xxh3' \| false` | Hash algorithm. Default `'xxh3'`. Pass `false` to disable. |
+| `opts.aggregateHash` | `AggregateHashPolicy` | Where the aggregate hash frame goes: `'auto'` (default; this buffered encoder writes a `HeaderHash` frame), `'none'`, `'header'`, `'footer'`, `'both'`. Ignored when `hash: false`. |
+| `opts.compressionBackend` | `CompressionBackend` | `'auto'` (default), `'ffi'`, `'pure'`. **No-op on WASM** — see below. |
 
 Returns: `Uint8Array` containing the complete wire-format message.
+
+`aggregateHash` decides where the redundant list of per-object digests is
+written; the per-frame inline hash slots stay authoritative either way.
+Use [`frames()`](#framesbuf) to observe the resulting placement.
+
+`compressionBackend` is accepted and validated (an unrecognised name
+throws `InvalidArgumentError`) but never changes behaviour here: this
+bundle is compiled with the pure-Rust codecs only, because there is no C
+library to link against in a browser or in Node's WASM sandbox. The knob
+exists for source symmetry with the Rust, Python, and C bindings — code
+written against one binding reads the same against another. The same
+accepted asymmetry applies to the core's `threads` knob, which the
+single-threaded WASM build does not expose at all.
+
+Both options are also accepted by `TensogramFile#append`.
+`StreamingEncoder` and `encodePreEncoded` do not take them.
 
 ### `decode(buf, opts?)`
 
@@ -112,6 +130,59 @@ O(1) seek to object `index`, decoding only that object.
 Returns `Array<{ offset: number; length: number }>` for each
 Tensogram message found in a (potentially multi-message) buffer.
 Garbage between messages is silently skipped.
+
+### `frames(buf)`
+
+Returns `Frame[]` — one entry per frame of **one** message, in wire
+order, without decoding any payload or CBOR. The preamble and postamble
+are not frames and never appear.
+
+```ts
+for (const f of frames(msg)) {
+  f.frameType;      // 'HeaderMetadata' | 'HeaderIndex' | … | 'NTensorFrame'
+  f.frameTypeCode;  // the numeric wire code (1–3, 5–9)
+  f.version;
+  f.flags;          // bit 1 is HASH_PRESENT, surfaced as f.hasHash
+  f.offset;         // start of the frame, relative to `buf`
+  f.length;         // whole-frame span: frame header through `ENDF`
+  f.payload;        // content only: frame header + footer stripped
+  f.hasHash;
+}
+```
+
+The array is materialised eagerly — a message holds only a handful of
+frames, and the underlying WASM call already builds the whole walk, so a
+lazy generator would promise a laziness this binding cannot deliver. The
+consequence is that a malformed frame chain **throws** `FramingError`
+rather than returning a short array; corruption is never silently
+rendered as "fewer frames". Each `payload` is a copy on the JS heap
+(never a view into WASM linear memory), so it stays valid across later
+WASM calls and can be mutated freely.
+
+For a multi-message buffer, slice with `scan()` first — frame offsets are
+relative to the message you pass in:
+
+```ts
+for (const { offset, length } of scan(fileBytes)) {
+  const chain = frames(fileBytes.subarray(offset, offset + length));
+}
+```
+
+### `messageHeader(buf)`
+
+Returns the `MessageHeader` of **one** message: `version`,
+`totalLength`, and eight `has*` predicates (`hasHeaderMetadata`,
+`hasFooterMetadata`, `hasHeaderIndex`, `hasFooterIndex`,
+`hasHeaderHashes`, `hasFooterHashes`, `hasPrecederMetadata`,
+`hasHashesPresent`). It parses 24 bytes and walks nothing, so it is the
+cheapest way to tell a random-access message (metadata / index / hashes
+in the *header*) from a streaming one (in the *footer*).
+
+The predicates are exact for a message produced by `encode()`. For one
+produced by `StreamingEncoder` they are advisory — only
+`frame present ⇒ flag set` holds, and `totalLength` may stay `0` — see
+[Frame Introspection](frame-introspection.md) for the full contract and
+`examples/typescript/21_frame_walker.ts` for a runnable tour.
 
 ### `DecodedObject` / `DecodedFrame`
 
@@ -671,6 +742,7 @@ See `examples/typescript/` in the repository for runnable scripts:
 - `12_streaming_encoder.ts` — frame-at-a-time encoder with preceders
 - `13_range_access.ts` — lazy `TensogramFile.fromUrl` over HTTP Range
 - `14_streaming_callback.ts` — `StreamingEncoder` with `onBytes` callback sink
+- `21_frame_walker.ts` — `frames()` / `messageHeader()` structural introspection
 
 Run them with:
 

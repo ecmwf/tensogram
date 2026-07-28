@@ -35,6 +35,7 @@
 - [Remote Access (S3, GCS, Azure, HTTP)](guide/remote-access.md)
 - [Iterators](guide/iterators.md)
 - [Reading Metadata](guide/metadata.md)
+- [Frame Introspection](guide/frame-introspection.md)
 - [Python API](guide/python-api.md)
 - [C API](guide/c-api.md)
 - [C++ API](guide/cpp-api.md)

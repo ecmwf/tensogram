@@ -5,6 +5,134 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — structural introspection of a message in every binding
+
+A message's *structure* can now be read without decoding a payload or a byte
+of CBOR, in **Rust, C, C++, Python, TypeScript, and Fortran**. Two entry
+points, both taking the bytes of one message: a **message header** that
+decodes the 24-byte preamble into typed values (wire version, `total_length`,
+and eight `has_*` predicates naming the optional frames — so a random-access
+layout is distinguishable from a streaming one after 24 bytes), and a **frame
+walk** that reports each frame's type, frame-header version and flags, its
+`offset` / `length` within the message, its content bytes, and whether its
+inline hash slot holds a real digest. The preamble and postamble are *not*
+frames and are never yielded; inter-frame alignment padding belongs to no
+frame. `payload` is the frame **content**, with the 16-byte frame header and
+the type-specific footer (20 bytes for the data-object type, 12 otherwise)
+stripped.
+
+- **Core (Rust)** — `tensogram::frames(message)`, a lazy `FrameIter` yielding
+  `FrameInfo { frame_type, version, flags, offset, length, payload }` plus
+  `has_hash()` (one `Err` item on a malformed chain, then it stops), and
+  `tensogram::message_header(message) -> MessageHeader`, both in the new
+  `frame_walk` module. Every binding mirrors this one.
+- **C** — the `tgm_frame_type` enum, the `TgmFrame` / `TgmMessageHeader` PODs,
+  `tgm_frame_iter_create` / `_next` / `_free`, `tgm_frame_has_hash`, and
+  `tgm_message_header`. `TgmFrame::payload` borrows the caller's message
+  buffer: nothing to free, valid for as long as that buffer lives, and
+  unaffected by later `_next` calls or by freeing the cursor.
+- **C++** — `enum class frame_type`, a `frame` value type, a lazy move-only
+  `frame_range` usable in a range-for, `frames()`, and
+  `read_message_header()`. Payload views borrow the buffer like the C ones; a
+  malformed chain throws `framing_error` from the increment that finds it,
+  after the intact frames have been yielded.
+- **Python** — `frames(buf) -> FrameIter` yielding `Frame` (`.frame_type`
+  name, `.frame_type_code`, `.version`, `.flags`, `.offset`, `.length`,
+  `.payload`, `.has_hash`, `.is_data_object`) and `message_header(buf) ->
+  MessageHeader`.
+- **TypeScript** — `frames(buf) -> Frame[]` and `messageHeader(buf) ->
+  MessageHeader`. The array is eager, so a malformed chain throws rather than
+  silently returning fewer frames.
+- **Fortran** — `tensogram_frames()` returning a non-copyable
+  `tensogram_frame_iterator` (`%next`), the `tensogram_frame` value type
+  (`%frame_type()`, `%offset()`, `%length()`, `%payload()`, `%has_hash()`),
+  and `tensogram_message_header_read()`.
+
+Python, TypeScript, and Fortran **copy** the payload bytes (Fortran also
+copies the whole message into the iterator), so frames there outlive both the
+walk and the caller's buffer. Both entry points describe exactly one message —
+use `scan()` to locate boundaries in a multi-message buffer and slice — and
+frame offsets are relative to that message (**1-based in Fortran**, 0-based
+elsewhere). One documented asymmetry: in *streaming* mode the encoder writes
+the preamble before the first object exists, so its flags only guarantee
+"frame present ⇒ flag set" (`PRECEDER_METADATA` is set advisorily) and
+`total_length` may stay `0`; for a buffered message the flags are exact. The
+contract is documented in the new *Frame Introspection* guide
+(`docs/src/guide/frame-introspection.md`), with runnable examples for C++,
+Python, TypeScript, and Fortran.
+
+### Added — synchronous remote access in C, C++, and Fortran
+
+Opening a remote `.tgm` (S3, GCS, Azure, HTTP) previously required the async C
+API. It is now available through the ordinary **blocking** file API:
+`tgm_file_open_remote(source, keys[], values[], n, opts, out)` returns a plain
+`tgm_file_t`, so the whole existing file surface — message count, raw read,
+decode, iterators — works unchanged against a remote source, and
+`tgm_file_close` closes it. Backend storage options (credentials, region,
+endpoint, …) are passed as parallel key / value arrays, and
+`TgmRemoteScanOptions { bidirectional }` configures the scan walker.
+`tgm_is_remote_url` tells the remote and local backends apart before opening.
+C++ adds `tensogram::is_remote_url` and
+`file::open_remote(source, storage_options, opts)`; Fortran adds
+`tensogram_is_remote_url` and `tensogram_file_open_remote` (with and without
+option arrays).
+
+This is an **opt-in `remote` Cargo feature** on `tensogram-ffi`, independent of
+`async`, and it is **not** part of the default published C-API tarballs — same
+model as the existing `async` feature. Build it with
+`cargo cinstall -p tensogram-ffi --features=remote`, or
+`cmake -S cpp -B build -DTENSOGRAM_REMOTE=ON` (default OFF) for the C++
+wrapper. Both symbols are exported either way, so consumers never hit an
+undefined symbol: a build without the feature answers `false` from
+`tgm_is_remote_url` for every input and `TGM_ERROR_REMOTE` from
+`tgm_file_open_remote`, with a message naming `--features=remote`. Argument
+validation runs *before* the feature check, so a genuine mistake is reported as
+`TGM_ERROR_INVALID_ARG` in either build.
+
+### Added — typed enums and the full encode-option set
+
+The C ABI gained four enums whose **zero value is the library default**, so a
+zero-initialised option struct requests exactly the previous behaviour:
+`tgm_dtype` (15 variants), `tgm_byte_order`, `tgm_aggregate_hash_policy`
+(auto / none / header / footer / both), and `tgm_compression_backend`
+(auto / ffi / pure). Two typed accessors —
+`tgm_object_dtype_enum` / `tgm_object_byte_order_enum` — join the existing
+string getters, which are unchanged and still supported; because an enum
+return has no spare code for failure, a bad index yields the zero variant plus
+a `tgm_last_error()` reason (the paired string getter returns NULL for exactly
+the same inputs). The new `TgmEncodeOptions` POD supersedes
+`TgmEncodeMaskOptions` (retained) by carrying the same six mask fields **plus**
+the hash algorithm, the aggregate-hash placement, and the codec backend, with
+one `*_with_encode_options` entry point per encode target (`NULL` ⇒ defaults).
+
+- **C++** — `enum class dtype` / `byte_order` / `aggregate_hash_policy` /
+  `compression_backend`, `decoded_object::dtype_enum()` /
+  `byte_order_enum()` (which raise on a bad index instead of returning a
+  plausible zero variant), and `encode_options::aggregate_hash` /
+  `::codec_backend`. Deliberately **no** `*_with_encode_options` overloads —
+  they would be signature-identical — so the existing entry points escalate to
+  the full C function automatically when either field is non-default; a caller
+  who sets neither keeps the exact previous call path and bytes.
+  `encode_pre_encoded()` has no full-option entry point in the C ABI and
+  therefore rejects both fields rather than ignoring them.
+- **Fortran** — `tensogram_object_dtype_enum` / `_byte_order_enum` (with an
+  optional `err`), the `TGM_DTYPE_*` / `TGM_BYTE_ORDER_*` /
+  `TGM_AGGREGATE_HASH_POLICY_*` / `TGM_COMPRESSION_BACKEND_*` /
+  `TGM_FRAME_TYPE_*` parameters, and `tensogram_encode_with_options` /
+  `tensogram_file_append_with_options` /
+  `tensogram_streaming_encoder_create_with_options`.
+- **Python** — `compression_backend=` on `encode`, `TensogramFile.append`,
+  `StreamingEncoder`, and `AsyncStreamingEncoder.create` (`aggregate_hash=`
+  already existed).
+- **TypeScript** — `aggregateHash` on `encode()` and `TensogramFile#append`.
+  `compressionBackend` is accepted and validated there but is a documented
+  **no-op on WASM**, which ships the pure-Rust codecs only; it exists for
+  source symmetry with the other bindings.
+
+Header-side aggregate-hash placements (`HEADER`, `BOTH`) are buffered-mode
+only: every streaming constructor rejects them, because a streaming writer
+emits its header before any data object exists.
+
 ## [0.24.0] - 2026-07-23
 
 ### Added — symmetric metadata access across every binding
