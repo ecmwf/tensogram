@@ -47,6 +47,15 @@
 !>   The types are NON-COPYABLE: a defined `assignment(=)` calls `error stop`,
 !>   so an accidental `b = a` aborts loudly at the copy site instead of
 !>   aliasing the handle and double-freeing later. Pass handles by reference.
+!>   `tensogram_frame_iterator` is the same handle design over the C frame
+!>   cursor, plus one Fortran-specific twist: the C cursor BORROWS the message
+!>   bytes for its whole lifetime, which no Fortran dummy argument can promise
+!>   (a non-contiguous or non-target actual is associated through a compiler
+!>   temporary that dies at the end of the call), so the iterator keeps a
+!>   private HEAP COPY of the buffer and lends the cursor that instead. What
+!>   the walk yields — `tensogram_frame` — is by contrast a plain VALUE with
+!>   its payload bytes copied out: freely assignable, owning nothing, and
+!>   valid after both the iterator and the message buffer are gone.
 module tensogram
    use, intrinsic :: iso_c_binding
    use, intrinsic :: iso_fortran_env, only : error_unit
@@ -115,6 +124,39 @@ module tensogram
    public :: tensogram_decode_with_masks
    public :: tensogram_object_has_masks, tensogram_object_mask
    public :: TGM_MASK_KIND_NAN, TGM_MASK_KIND_POS_INF, TGM_MASK_KIND_NEG_INF
+   !> Deferred Wave-B, component A3 — the lazy frame walker (one value type per
+   !> frame, with the payload bytes COPIED out of the message) and the typed
+   !> message header (the preamble's structural flags as named logicals).
+   public :: tensogram_frame, tensogram_frame_iterator, tensogram_frames
+   public :: tensogram_message_header, tensogram_message_header_read
+   !> Deferred Wave-B, component B — the SYNCHRONOUS remote surface. The
+   !> handle returned by tensogram_file_open_remote is an ordinary
+   !> tensogram_file, so the whole existing file API works against S3 / GCS /
+   !> Azure / HTTP sources unchanged.
+   public :: tensogram_is_remote_url, tensogram_file_open_remote
+   !> Deferred Wave-B, component C — the typed enum surface (the `switch`able
+   !> companions of the dtype / byte-order STRING getters, which stay).
+   public :: tensogram_object_dtype_enum, tensogram_object_byte_order_enum
+   !> …and the full encode-side option set (TgmEncodeOptions): the hash
+   !> algorithm, WHERE the aggregate hash frame goes, which codec backend to
+   !> use, plus every mask-companion knob — one entry point per encode target.
+   public :: tensogram_encode_with_options, tensogram_file_append_with_options
+   public :: tensogram_streaming_encoder_create_with_options
+   public :: TGM_FRAME_TYPE_HEADER_METADATA, TGM_FRAME_TYPE_HEADER_INDEX,     &
+             TGM_FRAME_TYPE_HEADER_HASH, TGM_FRAME_TYPE_FOOTER_HASH,          &
+             TGM_FRAME_TYPE_FOOTER_INDEX, TGM_FRAME_TYPE_FOOTER_METADATA,     &
+             TGM_FRAME_TYPE_PRECEDER_METADATA, TGM_FRAME_TYPE_NTENSOR
+   public :: TGM_DTYPE_FLOAT16, TGM_DTYPE_BFLOAT16, TGM_DTYPE_FLOAT32,        &
+             TGM_DTYPE_FLOAT64, TGM_DTYPE_COMPLEX64, TGM_DTYPE_COMPLEX128,    &
+             TGM_DTYPE_INT8, TGM_DTYPE_INT16, TGM_DTYPE_INT32, TGM_DTYPE_INT64, &
+             TGM_DTYPE_UINT8, TGM_DTYPE_UINT16, TGM_DTYPE_UINT32,             &
+             TGM_DTYPE_UINT64, TGM_DTYPE_BITMASK
+   public :: TGM_BYTE_ORDER_LITTLE, TGM_BYTE_ORDER_BIG
+   public :: TGM_AGGREGATE_HASH_POLICY_AUTO, TGM_AGGREGATE_HASH_POLICY_NONE,  &
+             TGM_AGGREGATE_HASH_POLICY_HEADER, TGM_AGGREGATE_HASH_POLICY_FOOTER, &
+             TGM_AGGREGATE_HASH_POLICY_BOTH
+   public :: TGM_COMPRESSION_BACKEND_AUTO, TGM_COMPRESSION_BACKEND_FFI,       &
+             TGM_COMPRESSION_BACKEND_PURE
    public :: tensogram_strerror, tensogram_last_error, tensogram_check
    public :: TGM_ERROR_OK, TGM_ERROR_FRAMING, TGM_ERROR_METADATA,            &
              TGM_ERROR_ENCODING, TGM_ERROR_COMPRESSION, TGM_ERROR_OBJECT,    &
@@ -167,6 +209,75 @@ module tensogram
    integer(c_int), parameter :: TGM_MASK_KIND_POS_INF = 1
    integer(c_int), parameter :: TGM_MASK_KIND_NEG_INF = 2
 
+   ! ---- tgm_frame_type enum — mirror of tensogram.h ------------------------
+   !  A frame's type identifier, as reported by tensogram_frame%frame_type().
+   !  These numbers ARE the wire format's frame-type field (see
+   !  plans/WIRE_FORMAT.md §2.2), not an FFI invention: type 4 is RESERVED (it
+   !  held the obsolete v2 data-object layout) and therefore has no parameter,
+   !  which is why the sequence skips from 3 to 5. NTENSOR is the only
+   !  data-object type in v3 and the only one with a 20-byte frame footer
+   !  (every other type has 12). CI guards this mirror against the C header.
+   integer(c_int), parameter :: TGM_FRAME_TYPE_HEADER_METADATA   = 1
+   integer(c_int), parameter :: TGM_FRAME_TYPE_HEADER_INDEX      = 2
+   integer(c_int), parameter :: TGM_FRAME_TYPE_HEADER_HASH       = 3
+   integer(c_int), parameter :: TGM_FRAME_TYPE_FOOTER_HASH       = 5
+   integer(c_int), parameter :: TGM_FRAME_TYPE_FOOTER_INDEX      = 6
+   integer(c_int), parameter :: TGM_FRAME_TYPE_FOOTER_METADATA   = 7
+   integer(c_int), parameter :: TGM_FRAME_TYPE_PRECEDER_METADATA = 8
+   integer(c_int), parameter :: TGM_FRAME_TYPE_NTENSOR           = 9
+
+   ! ---- tgm_dtype enum — mirror of tensogram.h -----------------------------
+   !  An element type, as reported by tensogram_object_dtype_enum. The WIRE
+   !  stores the dtype as a STRING (plans/WIRE_FORMAT.md §6.1), so unlike the
+   !  frame types these codes are an FFI convenience rather than a wire value
+   !  — but they are part of the frozen C ABI and must not be renumbered.
+   !  tensogram_object_dtype returns the same information as text. Fortran can
+   !  encode/decode arrays of float32/64 and int32/64 (see tensogram_encode);
+   !  every other code can still appear on a message written elsewhere.
+   integer(c_int), parameter :: TGM_DTYPE_FLOAT16    =  0
+   integer(c_int), parameter :: TGM_DTYPE_BFLOAT16   =  1
+   integer(c_int), parameter :: TGM_DTYPE_FLOAT32    =  2
+   integer(c_int), parameter :: TGM_DTYPE_FLOAT64    =  3
+   integer(c_int), parameter :: TGM_DTYPE_COMPLEX64  =  4
+   integer(c_int), parameter :: TGM_DTYPE_COMPLEX128 =  5
+   integer(c_int), parameter :: TGM_DTYPE_INT8       =  6
+   integer(c_int), parameter :: TGM_DTYPE_INT16      =  7
+   integer(c_int), parameter :: TGM_DTYPE_INT32      =  8
+   integer(c_int), parameter :: TGM_DTYPE_INT64      =  9
+   integer(c_int), parameter :: TGM_DTYPE_UINT8      = 10
+   integer(c_int), parameter :: TGM_DTYPE_UINT16     = 11
+   integer(c_int), parameter :: TGM_DTYPE_UINT32     = 12
+   integer(c_int), parameter :: TGM_DTYPE_UINT64     = 13
+   integer(c_int), parameter :: TGM_DTYPE_BITMASK    = 14
+
+   ! ---- tgm_byte_order enum — mirror of tensogram.h ------------------------
+   !  A payload's byte order, as reported by tensogram_object_byte_order_enum;
+   !  the wire stores "little" / "big" as text (tensogram_object_byte_order).
+   integer(c_int), parameter :: TGM_BYTE_ORDER_LITTLE = 0
+   integer(c_int), parameter :: TGM_BYTE_ORDER_BIG    = 1
+
+   ! ---- tgm_aggregate_hash_policy enum — mirror of tensogram.h -------------
+   !  Where the aggregate hash frame goes (tensogram_encode_with_options).
+   !  AUTO is the zero value: header when buffering, footer when streaming.
+   !  HEADER and BOTH are BUFFERED-MODE ONLY — a streaming encoder writes its
+   !  header before any data object exists, so the per-object hashes are not
+   !  yet known and tensogram_streaming_encoder_create_with_options rejects
+   !  them with TGM_ERROR_ENCODING.
+   integer(c_int), parameter :: TGM_AGGREGATE_HASH_POLICY_AUTO   = 0
+   integer(c_int), parameter :: TGM_AGGREGATE_HASH_POLICY_NONE   = 1
+   integer(c_int), parameter :: TGM_AGGREGATE_HASH_POLICY_HEADER = 2
+   integer(c_int), parameter :: TGM_AGGREGATE_HASH_POLICY_FOOTER = 3
+   integer(c_int), parameter :: TGM_AGGREGATE_HASH_POLICY_BOTH   = 4
+
+   ! ---- tgm_compression_backend enum — mirror of tensogram.h ---------------
+   !  Which codec implementation to prefer for szip / zstd where both are
+   !  compiled in. AUTO is the zero value (consult TENSOGRAM_COMPRESSION_
+   !  BACKEND, else the platform default); FFI and PURE always win over the
+   !  environment. Purely an implementation choice — the bytes are identical.
+   integer(c_int), parameter :: TGM_COMPRESSION_BACKEND_AUTO = 0
+   integer(c_int), parameter :: TGM_COMPRESSION_BACKEND_FFI  = 1
+   integer(c_int), parameter :: TGM_COMPRESSION_BACKEND_PURE = 2
+
    ! ---- Interoperable POD struct: tgm_bytes_t ------------------------------
    type, bind(C) :: tgm_bytes_t
       type(c_ptr)       :: data = c_null_ptr
@@ -212,6 +323,79 @@ module tensogram
       type(c_ptr)        :: neg_inf_mask_method        = c_null_ptr
       integer(c_int64_t) :: small_mask_threshold_bytes = -1_c_int64_t
    end type tgm_encode_mask_options_t
+
+   ! ---- Interoperable POD struct: TgmEncodeOptions -------------------------
+   !  The FULL encode-side option set (mirror of the C `TgmEncodeOptions`
+   !  POD), which supersedes tgm_encode_mask_options_t: the same six mask
+   !  fields plus the three knobs that previously had no C surface — the hash
+   !  algorithm, the aggregate-hash placement and the codec backend.
+   !  Populated internally by the tensogram_*_with_options wrappers from their
+   !  optional arguments; not part of the public surface (the string fields
+   !  are C pointers). EVERY field's default below IS the library default, so
+   !  a default-constructed value behaves exactly like a NULL options pointer:
+   !  no hashing, AUTO placement, AUTO backend, non-finite input rejected,
+   !  default mask methods ("roaring") and the default small-mask threshold.
+   !  `small_mask_threshold_bytes` is a `ptrdiff_t`, which has no F2008
+   !  iso_c_binding constant (c_ptrdiff_t is F2018), so it maps onto the
+   !  pointer-width signed c_int64_t as in tgm_encode_mask_options_t.
+   type, bind(C) :: tgm_encode_options_t
+      type(c_ptr)        :: hash                       = c_null_ptr
+      integer(c_int)     :: aggregate_hash             = 0_c_int   ! ..._AUTO
+      integer(c_int)     :: compression_backend        = 0_c_int   ! ..._AUTO
+      logical(c_bool)    :: allow_nan                  = .false._c_bool
+      logical(c_bool)    :: allow_inf                  = .false._c_bool
+      type(c_ptr)        :: nan_mask_method            = c_null_ptr
+      type(c_ptr)        :: pos_inf_mask_method        = c_null_ptr
+      type(c_ptr)        :: neg_inf_mask_method        = c_null_ptr
+      integer(c_int64_t) :: small_mask_threshold_bytes = -1_c_int64_t
+   end type tgm_encode_options_t
+
+   ! ---- Interoperable POD struct: TgmRemoteScanOptions ---------------------
+   !  Reader-side scan-walker options for tgm_file_open_remote. Populated
+   !  internally by tensogram_file_open_remote from its optional
+   !  `bidirectional` argument; not part of the public surface (a one-field
+   !  struct is better spelled as an optional argument than as a type the
+   !  caller must declare). The default reproduces the library default, so
+   !  passing a default-constructed value is equivalent to a NULL pointer.
+   type, bind(C) :: tgm_remote_scan_options_t
+      logical(c_bool) :: bidirectional = .true._c_bool
+   end type tgm_remote_scan_options_t
+
+   ! ---- Interoperable POD struct: TgmFrame ---------------------------------
+   !  One frame's structural description as filled by tgm_frame_iter_next. The
+   !  `payload` member BORROWS the message buffer the cursor walks, so this
+   !  struct never leaves the binding: tensogram_frame (below) copies every
+   !  field, payload bytes included. `version` / `flags` are u16 on the wire
+   !  and are carried here as their c_int16_t bit pattern (Fortran has no
+   !  unsigned kind); u16() widens them back to 0..65535.
+   type, bind(C) :: tgm_frame_t
+      integer(c_int)     :: frame_type  = 0_c_int          ! tgm_frame_type
+      integer(c_int16_t) :: version     = 0_c_int16_t      ! uint16_t
+      integer(c_int16_t) :: flags       = 0_c_int16_t      ! uint16_t
+      integer(c_size_t)  :: offset      = 0_c_size_t
+      integer(c_size_t)  :: length      = 0_c_size_t
+      type(c_ptr)        :: payload     = c_null_ptr       ! borrowed, never freed
+      integer(c_size_t)  :: payload_len = 0_c_size_t
+   end type tgm_frame_t
+
+   ! ---- Interoperable POD struct: TgmMessageHeader -------------------------
+   !  A message's envelope (the 24-byte preamble) as filled by
+   !  tgm_message_header: the wire version, the whole-message byte count (0
+   !  when a streaming writer never back-filled it) and the eight structural
+   !  flags. Copied field-by-field into tensogram_message_header, which
+   !  presents them as Fortran default logicals.
+   type, bind(C) :: tgm_message_header_t
+      integer(c_int16_t) :: version               = 0_c_int16_t   ! uint16_t
+      integer(c_int64_t) :: total_length          = 0_c_int64_t   ! uint64_t
+      logical(c_bool)    :: has_header_metadata   = .false._c_bool
+      logical(c_bool)    :: has_footer_metadata   = .false._c_bool
+      logical(c_bool)    :: has_header_index      = .false._c_bool
+      logical(c_bool)    :: has_footer_index      = .false._c_bool
+      logical(c_bool)    :: has_header_hashes     = .false._c_bool
+      logical(c_bool)    :: has_footer_hashes     = .false._c_bool
+      logical(c_bool)    :: has_preceder_metadata = .false._c_bool
+      logical(c_bool)    :: has_hashes_present    = .false._c_bool
+   end type tgm_message_header_t
 
    ! ---- Owned encoded buffer (RAII over tgm_bytes_t) -----------------------
    type :: tensogram_buffer
@@ -307,6 +491,83 @@ module tensogram
       final     :: stream_enc_final
    end type tensogram_streaming_encoder
 
+   ! ---- One walked frame (a plain VALUE, not a handle) ---------------------
+   !  Everything tgm_frame_iter_next reports about one frame, COPIED: the C
+   !  struct's `payload` borrows the message buffer, so a Fortran frame keeps
+   !  its own `integer(c_int8_t)` copy of those bytes (like %as_bytes on the
+   !  metadata value cursor). Consequences: a frame is freely copyable and
+   !  assignable, owns nothing the caller must release, and stays readable
+   !  after its iterator — and the message buffer — are gone.
+   type :: tensogram_frame
+      integer(c_int),    private :: ftype  = 0_c_int          !> TGM_FRAME_TYPE_*
+      integer,           private :: fver   = 0                !> u16, widened
+      integer,           private :: fflags = 0                !> u16, widened
+      integer(c_size_t), private :: foff   = 0_c_size_t       !> 1-based index
+      integer(c_size_t), private :: flen   = 0_c_size_t
+      logical,           private :: fhash  = .false.
+      integer(c_int8_t), allocatable, private :: fbytes(:)
+   contains
+      procedure :: frame_type => frame_frame_type  !> TGM_FRAME_TYPE_* code
+      procedure :: version    => frame_version     !> frame-header version
+      procedure :: flags      => frame_flags       !> raw 16-bit flags
+      procedure :: offset     => frame_offset      !> 1-based start in the message
+      procedure :: length     => frame_length      !> whole-frame span in bytes
+      procedure :: payload    => frame_payload     !> copied content bytes
+      procedure :: has_hash   => frame_has_hash    !> HASH_PRESENT (flag bit 1)
+   end type tensogram_frame
+
+   ! ---- Owned frame cursor (RAII over tgm_frame_iter_t*) -------------------
+   !  A lazy walk over one message's frames. The C cursor BORROWS the message
+   !  bytes for its whole lifetime, which Fortran cannot promise for an
+   !  arbitrary actual argument (a non-contiguous or non-target actual is
+   !  associated through a compiler temporary that dies at the end of the
+   !  call). So tensogram_frames takes a PRIVATE HEAP COPY of the buffer and
+   !  hands the C cursor that: the borrow is then sound by construction, the
+   !  caller's array may be modified, deallocated or go out of scope while the
+   !  walk continues, and every frame's payload has already been copied out
+   !  anyway. `free` releases both the cursor and the copy (idempotent, and
+   !  run by the finalizer); the type is NON-COPYABLE like every other handle.
+   type :: tensogram_frame_iterator
+      type(c_ptr),                private :: ptr      =  c_null_ptr
+      integer(c_int8_t), pointer, private :: bytes(:) => null()
+   contains
+      procedure :: next => frame_iter_next
+      procedure :: free => frame_iter_free
+      procedure, private :: frame_iter_assign
+      generic, public :: assignment(=) => frame_iter_assign
+      final     :: frame_iter_final
+   end type tensogram_frame_iterator
+
+   ! ---- A message's envelope (the 24-byte preamble), decoded ---------------
+   !  The typed companion to the frame walker: the wire version, the whole
+   !  message byte count and the eight structural flags as named logicals, all
+   !  without reading a single frame. Together the flags say whether a message
+   !  is random-access (metadata / index / hashes in the HEADER) or streaming
+   !  (in the FOOTER). A plain value type: copyable, owns nothing.
+   type :: tensogram_message_header
+      integer,            private :: ver      = 0
+      integer(c_int64_t), private :: total    = 0_c_int64_t
+      logical,            private :: hmeta    = .false.
+      logical,            private :: fmeta    = .false.
+      logical,            private :: hindex   = .false.
+      logical,            private :: findex   = .false.
+      logical,            private :: hhashes  = .false.
+      logical,            private :: fhashes  = .false.
+      logical,            private :: preceder = .false.
+      logical,            private :: hashes   = .false.
+   contains
+      procedure :: version               => hdr_version
+      procedure :: total_length          => hdr_total_length
+      procedure :: has_header_metadata   => hdr_has_header_metadata
+      procedure :: has_footer_metadata   => hdr_has_footer_metadata
+      procedure :: has_header_index      => hdr_has_header_index
+      procedure :: has_footer_index      => hdr_has_footer_index
+      procedure :: has_header_hashes     => hdr_has_header_hashes
+      procedure :: has_footer_hashes     => hdr_has_footer_hashes
+      procedure :: has_preceder_metadata => hdr_has_preceder_metadata
+      procedure :: has_hashes_present    => hdr_has_hashes_present
+   end type tensogram_message_header
+
    ! ---- Generic encode / decode / append over dtype ------------------------
    ! Generic over dtype x rank 0..7, expanded from tgm_iface.inc via the
    ! per-rank table tgm_ranks.inc. The matching
@@ -386,6 +647,16 @@ module tensogram
 #undef TGM_BODY
 #undef FAM
    end interface tensogram_streaming_encoder_write
+
+   ! ---- Remote open, with or without backend storage options ---------------
+   !  Two specifics rather than optional key/value arrays: parallel arrays are
+   !  only meaningful together, so "keys without values" is a compile-time
+   !  error here instead of a runtime one. The specifics are distinguishable
+   !  by the type of their second argument, and no call can match both.
+   interface tensogram_file_open_remote
+      module procedure file_open_remote_plain   !> (source, file, err [, bidirectional])
+      module procedure file_open_remote_opts    !> (source, keys, values, file, err [, bidirectional])
+   end interface tensogram_file_open_remote
 
    ! =========================================================================
    !  Raw C ABI — synchronous subset of tensogram.h.
@@ -1107,6 +1378,134 @@ module tensogram
          type(tgm_bytes_t),  intent(out) :: out
          integer(c_int)                  :: err
       end function
+
+      ! ---- Deferred Wave-B, component A3: frame walker + message header ----
+      !  The cursor BORROWS `msg` for its whole lifetime (see
+      !  tensogram_frame_iterator), and each frame's `payload` points into it.
+
+      function c_tgm_frame_iter_create(msg, msg_len) &
+            bind(C, name="tgm_frame_iter_create") result(it)
+         import :: c_ptr, c_size_t
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: msg_len
+         type(c_ptr)              :: it        ! NULL on a bad preamble
+      end function
+
+      function c_tgm_frame_iter_next(it, out) &
+            bind(C, name="tgm_frame_iter_next") result(b)
+         import :: c_ptr, c_bool, tgm_frame_t
+         type(c_ptr),       value       :: it
+         type(tgm_frame_t), intent(out) :: out
+         logical(c_bool)                :: b   ! false = end OR malformed
+      end function
+
+      subroutine c_tgm_frame_iter_free(it) bind(C, name="tgm_frame_iter_free")
+         import :: c_ptr
+         type(c_ptr), value :: it
+      end subroutine
+
+      function c_tgm_frame_has_hash(frame) &
+            bind(C, name="tgm_frame_has_hash") result(b)
+         import :: c_ptr, c_bool
+         type(c_ptr), value :: frame               ! const TgmFrame*
+         logical(c_bool)    :: b
+      end function
+
+      function c_tgm_message_header(msg, msg_len, out) &
+            bind(C, name="tgm_message_header") result(err)
+         import :: c_ptr, c_size_t, c_int, tgm_message_header_t
+         type(c_ptr),                value       :: msg
+         integer(c_size_t),          value       :: msg_len
+         type(tgm_message_header_t), intent(out) :: out
+         integer(c_int)                          :: err
+      end function
+
+      ! ---- Deferred Wave-B, component C: the full encode option set --------
+      !  NULL options mean the library defaults; the hash algorithm now lives
+      !  INSIDE the struct, so these have no separate hash_algo argument.
+
+      function c_tgm_encode_with_encode_options(meta, ptrs, lens, n, threads, &
+            opts, out) bind(C, name="tgm_encode_with_encode_options") result(err)
+         import :: c_ptr, c_size_t, c_int32_t, c_int, tgm_bytes_t
+         type(c_ptr),        value       :: meta
+         type(c_ptr),        value       :: ptrs
+         type(c_ptr),        value       :: lens
+         integer(c_size_t),  value       :: n
+         integer(c_int32_t), value       :: threads
+         type(c_ptr),        value       :: opts       ! const TgmEncodeOptions*
+         type(tgm_bytes_t),  intent(out) :: out
+         integer(c_int)                  :: err
+      end function
+
+      function c_tgm_file_append_with_encode_options(file, meta, ptrs, lens, n, &
+            threads, opts) bind(C, name="tgm_file_append_with_encode_options") result(err)
+         import :: c_ptr, c_size_t, c_int32_t, c_int
+         type(c_ptr),        value :: file
+         type(c_ptr),        value :: meta
+         type(c_ptr),        value :: ptrs
+         type(c_ptr),        value :: lens
+         integer(c_size_t),  value :: n
+         integer(c_int32_t), value :: threads
+         type(c_ptr),        value :: opts             ! const TgmEncodeOptions*
+         integer(c_int)            :: err
+      end function
+
+      function c_tgm_streaming_encoder_create_with_encode_options(path, meta, &
+            threads, opts, out)                                               &
+            bind(C, name="tgm_streaming_encoder_create_with_encode_options") result(err)
+         import :: c_ptr, c_int32_t, c_int
+         type(c_ptr),        value       :: path
+         type(c_ptr),        value       :: meta
+         integer(c_int32_t), value       :: threads
+         type(c_ptr),        value       :: opts       ! const TgmEncodeOptions*
+         type(c_ptr),        intent(out) :: out
+         integer(c_int)                  :: err
+      end function
+
+      ! ---- Deferred Wave-B, component C: typed object accessors ------------
+      !  Enum returns have no spare code for failure: a NULL handle or an
+      !  out-of-range index records the reason in tgm_last_error and returns
+      !  the ZERO variant, so the wrappers bounds-check before calling.
+
+      function c_tgm_object_dtype_enum(msg, idx) &
+            bind(C, name="tgm_object_dtype_enum") result(dt)
+         import :: c_ptr, c_size_t, c_int
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         integer(c_int)           :: dt         ! tgm_dtype
+      end function
+
+      function c_tgm_object_byte_order_enum(msg, idx) &
+            bind(C, name="tgm_object_byte_order_enum") result(bo)
+         import :: c_ptr, c_size_t, c_int
+         type(c_ptr),       value :: msg
+         integer(c_size_t), value :: idx
+         integer(c_int)           :: bo         ! tgm_byte_order
+      end function
+
+      ! ---- Deferred Wave-B, component B: synchronous remote ----------------
+      !  Always exported: a C library built WITHOUT the `remote` Cargo feature
+      !  still links, answering .false. / TGM_ERROR_REMOTE with an
+      !  explanatory tgm_last_error message.
+
+      function c_tgm_is_remote_url(source) &
+            bind(C, name="tgm_is_remote_url") result(b)
+         import :: c_ptr, c_bool
+         type(c_ptr), value :: source
+         logical(c_bool)    :: b
+      end function
+
+      function c_tgm_file_open_remote(source, keys, values, n_options, opts, out) &
+            bind(C, name="tgm_file_open_remote") result(err)
+         import :: c_ptr, c_size_t, c_int
+         type(c_ptr),       value       :: source
+         type(c_ptr),       value       :: keys      ! const char *const * (nullable)
+         type(c_ptr),       value       :: values    ! const char *const * (nullable)
+         integer(c_size_t), value       :: n_options
+         type(c_ptr),       value       :: opts      ! const TgmRemoteScanOptions*
+         type(c_ptr),       intent(out) :: out
+         integer(c_int)                 :: err
+      end function
    end interface
 
 contains
@@ -1243,6 +1642,122 @@ contains
          hash_ptr = c_loc(hash_c)
       end if
    end subroutine resolve_hash
+
+   !> Marshal a Fortran string array into the C `const char *const *` shape:
+   !> `flat` is ONE contiguous buffer holding every trimmed string with its
+   !> NUL terminator, and `ptrs(k)` points at entry k inside it. Both are
+   !> caller-owned targets that must outlive the C call (the resolve_hash
+   !> pattern). Trailing blanks — unavoidable in a fixed-length array literal
+   !> — are dropped, as everywhere else in this binding. A zero-size `strs`
+   !> still allocates size-1 dummies so nothing ever takes c_loc of a
+   !> zero-size array; pass NULL alongside n_options = 0 in that case.
+   subroutine cstr_array(strs, flat, ptrs)
+      character(len=*),                            intent(in)  :: strs(:)
+      character(kind=c_char), allocatable, target, intent(out) :: flat(:)
+      type(c_ptr),            allocatable,         intent(out) :: ptrs(:)
+      integer :: n, k, i, total, pos, ln
+      n = size(strs)
+      total = 0
+      do k = 1, n
+         total = total + len_trim(strs(k)) + 1
+      end do
+      allocate(flat(max(total, 1)), ptrs(max(n, 1)))
+      flat = c_null_char
+      ptrs = c_null_ptr
+      pos = 1
+      do k = 1, n
+         ln = len_trim(strs(k))
+         do i = 1, ln
+            flat(pos + i - 1) = strs(k)(i:i)
+         end do
+         flat(pos + ln) = c_null_char
+         ptrs(k) = c_loc(flat(pos))
+         pos = pos + ln + 1
+      end do
+   end subroutine cstr_array
+
+   !> Resolve an optional mask-method name to a C string pointer. `name_c` is
+   !> a caller-owned target buffer that must outlive the C call; an absent (or
+   !> empty) name is NULL, which selects the library default ("roaring").
+   subroutine resolve_method(name, name_c, name_ptr)
+      character(len=*), intent(in), optional :: name
+      character(kind=c_char), allocatable, target, intent(out) :: name_c(:)
+      type(c_ptr),                                 intent(out) :: name_ptr
+      name_ptr = c_null_ptr
+      if (.not. present(name)) return
+      if (len_trim(name) == 0) return
+      call f_to_cstr(trim(name), name_c)
+      name_ptr = c_loc(name_c)
+   end subroutine resolve_method
+
+   !> Fill a TgmEncodeOptions POD from the optional arguments the
+   !> tensogram_*_with_options wrappers share. Every field starts at the
+   !> library default (see the POD), so only what the caller asked for is
+   !> touched. The four `*_c` buffers hold the C strings the POD points at and
+   !> must outlive the C call — they are the caller's targets, exactly as in
+   !> resolve_hash. `hash` follows the Fortran binding's convention (absent =>
+   !> "xxh3", '' => no hashing), NOT the C ABI's NULL-means-no-hashing.
+   subroutine resolve_encode_opts(opts, hash_c, nan_c, pos_c, neg_c, hash,     &
+                                  aggregate_hash, compression_backend,         &
+                                  allow_nan, allow_inf, nan_mask_method,       &
+                                  pos_inf_mask_method, neg_inf_mask_method,    &
+                                  small_mask_threshold_bytes)
+      type(tgm_encode_options_t), intent(out) :: opts
+      character(kind=c_char), allocatable, target, intent(out) :: hash_c(:)
+      character(kind=c_char), allocatable, target, intent(out) :: nan_c(:)
+      character(kind=c_char), allocatable, target, intent(out) :: pos_c(:)
+      character(kind=c_char), allocatable, target, intent(out) :: neg_c(:)
+      character(len=*),   intent(in), optional :: hash
+      integer(c_int),     intent(in), optional :: aggregate_hash
+      integer(c_int),     intent(in), optional :: compression_backend
+      logical,            intent(in), optional :: allow_nan, allow_inf
+      character(len=*),   intent(in), optional :: nan_mask_method
+      character(len=*),   intent(in), optional :: pos_inf_mask_method
+      character(len=*),   intent(in), optional :: neg_inf_mask_method
+      integer(c_int64_t), intent(in), optional :: small_mask_threshold_bytes
+      call resolve_hash(hash, hash_c, opts%hash)
+      if (present(aggregate_hash))      opts%aggregate_hash      = aggregate_hash
+      if (present(compression_backend)) opts%compression_backend = compression_backend
+      if (present(allow_nan)) opts%allow_nan = logical(allow_nan, kind=c_bool)
+      if (present(allow_inf)) opts%allow_inf = logical(allow_inf, kind=c_bool)
+      call resolve_method(nan_mask_method,     nan_c, opts%nan_mask_method)
+      call resolve_method(pos_inf_mask_method, pos_c, opts%pos_inf_mask_method)
+      call resolve_method(neg_inf_mask_method, neg_c, opts%neg_inf_mask_method)
+      if (present(small_mask_threshold_bytes)) &
+         opts%small_mask_threshold_bytes = small_mask_threshold_bytes
+   end subroutine resolve_encode_opts
+
+   !> Marshal concatenated per-object bytes into the C parallel arrays: object
+   !> k is data(off+1 : off+lens(k)), so num_objects = size(lens) and
+   !> sum(lens) == size(data). `ptrs` / `lens_c` are caller-owned targets that
+   !> must outlive the C call; `ptrs_ptr` / `lens_ptr` are NULL for the
+   !> zero-object case (never take c_loc of a zero-size array).
+   subroutine object_arrays(data, lens, ptrs, lens_c, ptrs_ptr, lens_ptr)
+      integer(c_int8_t), target, contiguous,  intent(in)  :: data(:)
+      integer(c_size_t),                      intent(in)  :: lens(:)
+      type(c_ptr),       allocatable, target, intent(out) :: ptrs(:)
+      integer(c_size_t), allocatable, target, intent(out) :: lens_c(:)
+      type(c_ptr),                            intent(out) :: ptrs_ptr, lens_ptr
+      integer(c_size_t) :: off
+      integer :: nobj, k
+      nobj = size(lens)
+      allocate(ptrs(max(nobj, 1)), lens_c(max(nobj, 1)))
+      ptrs   = c_null_ptr
+      lens_c = 0_c_size_t
+      off = 0_c_size_t
+      do k = 1, nobj
+         if (lens(k) > 0_c_size_t) ptrs(k) = c_loc(data(off + 1_c_size_t))
+         lens_c(k) = lens(k)
+         off = off + lens(k)
+      end do
+      if (nobj > 0) then
+         ptrs_ptr = c_loc(ptrs)
+         lens_ptr = c_loc(lens_c)
+      else
+         ptrs_ptr = c_null_ptr
+         lens_ptr = c_null_ptr
+      end if
+   end subroutine object_arrays
 
    !> Total element count for a Fortran extent vector (1 for a scalar / empty).
    pure function num_elements(ext) result(n)
@@ -1618,6 +2133,112 @@ contains
               int(nobj, c_size_t), hash_ptr, 0_c_int32_t, c_loc(mopts), buf%raw)
    end subroutine tensogram_encode_with_masks
 
+   !> Encode a message with the FULL encode-side option set (binds
+   !> tgm_encode_with_encode_options). Supersedes tensogram_encode_with_masks,
+   !> which stays: this entry point carries the same mask knobs PLUS the three
+   !> that had no Fortran surface at all — the hash algorithm, WHERE the
+   !> aggregate hash frame goes, and which codec backend to use. Every
+   !> argument after `err` is optional and defaults to the library default, so
+   !> omitting them all is a plain encode.
+   !>
+   !> `metadata_json` is the full `{"descriptors":[...]}` envelope (one
+   !> descriptor per object, same schema as tensogram_encode). `data` is every
+   !> object's RAW element bytes CONCATENATED; `lens(k)` is object k's byte
+   !> length, so num_objects = size(lens) and sum(lens) == size(data).
+   !>
+   !>   hash                       "xxh3" (default) or '' for no hashing
+   !>   aggregate_hash             TGM_AGGREGATE_HASH_POLICY_* placement; the
+   !>                              default AUTO puts it in the header here
+   !>                              (buffered mode), BOTH writes it twice
+   !>   compression_backend        TGM_COMPRESSION_BACKEND_* codec choice —
+   !>                              an implementation detail, not a format one
+   !>   allow_nan / allow_inf      substitute non-finite values and record
+   !>                              companion masks (default: reject)
+   !>   *_mask_method              "none"/"rle"/"roaring"/"lz4"/"zstd"/"blosc2"
+   !>   small_mask_threshold_bytes raw-storage threshold; 0 disables the
+   !>                              auto-fallback, negative selects the default
+   subroutine tensogram_encode_with_options(metadata_json, data, lens, buf, err, &
+                                            hash, aggregate_hash,                &
+                                            compression_backend,                 &
+                                            allow_nan, allow_inf,                &
+                                            nan_mask_method, pos_inf_mask_method,&
+                                            neg_inf_mask_method,                 &
+                                            small_mask_threshold_bytes)
+      character(len=*),                      intent(in)  :: metadata_json
+      integer(c_int8_t), target, contiguous, intent(in)  :: data(:)
+      integer(c_size_t),                     intent(in)  :: lens(:)
+      type(tensogram_buffer),                intent(out) :: buf
+      integer(c_int),                        intent(out) :: err
+      character(len=*),   intent(in), optional :: hash
+      integer(c_int),     intent(in), optional :: aggregate_hash
+      integer(c_int),     intent(in), optional :: compression_backend
+      logical,            intent(in), optional :: allow_nan, allow_inf
+      character(len=*),   intent(in), optional :: nan_mask_method
+      character(len=*),   intent(in), optional :: pos_inf_mask_method
+      character(len=*),   intent(in), optional :: neg_inf_mask_method
+      integer(c_int64_t), intent(in), optional :: small_mask_threshold_bytes
+      character(kind=c_char), allocatable, target :: meta_c(:), hash_c(:)
+      character(kind=c_char), allocatable, target :: nan_c(:), pos_c(:), neg_c(:)
+      type(c_ptr),       allocatable, target :: ptrs(:)
+      integer(c_size_t), allocatable, target :: lens_c(:)
+      type(tgm_encode_options_t), target :: opts
+      type(c_ptr) :: ptrs_ptr, lens_ptr
+      call f_to_cstr(metadata_json, meta_c)
+      call resolve_encode_opts(opts, hash_c, nan_c, pos_c, neg_c, hash,        &
+                               aggregate_hash, compression_backend,            &
+                               allow_nan, allow_inf, nan_mask_method,          &
+                               pos_inf_mask_method, neg_inf_mask_method,       &
+                               small_mask_threshold_bytes)
+      call object_arrays(data, lens, ptrs, lens_c, ptrs_ptr, lens_ptr)
+      err = c_tgm_encode_with_encode_options(c_loc(meta_c), ptrs_ptr, lens_ptr, &
+              size(lens, kind=c_size_t), 0_c_int32_t, c_loc(opts), buf%raw)
+   end subroutine tensogram_encode_with_options
+
+   !> Encode a message with the full option set and APPEND it to `file` (binds
+   !> tgm_file_append_with_encode_options). Same options and same
+   !> `metadata_json` / `data` / `lens` contract as
+   !> tensogram_encode_with_options, but the bytes go straight to the open
+   !> file instead of into a buffer — the raw-bytes counterpart of the generic
+   !> tensogram_file_append.
+   subroutine tensogram_file_append_with_options(file, metadata_json, data, lens, err, &
+                                                 hash, aggregate_hash,                 &
+                                                 compression_backend,                  &
+                                                 allow_nan, allow_inf,                 &
+                                                 nan_mask_method,                      &
+                                                 pos_inf_mask_method,                  &
+                                                 neg_inf_mask_method,                  &
+                                                 small_mask_threshold_bytes)
+      type(tensogram_file),                  intent(in)  :: file
+      character(len=*),                      intent(in)  :: metadata_json
+      integer(c_int8_t), target, contiguous, intent(in)  :: data(:)
+      integer(c_size_t),                     intent(in)  :: lens(:)
+      integer(c_int),                        intent(out) :: err
+      character(len=*),   intent(in), optional :: hash
+      integer(c_int),     intent(in), optional :: aggregate_hash
+      integer(c_int),     intent(in), optional :: compression_backend
+      logical,            intent(in), optional :: allow_nan, allow_inf
+      character(len=*),   intent(in), optional :: nan_mask_method
+      character(len=*),   intent(in), optional :: pos_inf_mask_method
+      character(len=*),   intent(in), optional :: neg_inf_mask_method
+      integer(c_int64_t), intent(in), optional :: small_mask_threshold_bytes
+      character(kind=c_char), allocatable, target :: meta_c(:), hash_c(:)
+      character(kind=c_char), allocatable, target :: nan_c(:), pos_c(:), neg_c(:)
+      type(c_ptr),       allocatable, target :: ptrs(:)
+      integer(c_size_t), allocatable, target :: lens_c(:)
+      type(tgm_encode_options_t), target :: opts
+      type(c_ptr) :: ptrs_ptr, lens_ptr
+      call f_to_cstr(metadata_json, meta_c)
+      call resolve_encode_opts(opts, hash_c, nan_c, pos_c, neg_c, hash,        &
+                               aggregate_hash, compression_backend,            &
+                               allow_nan, allow_inf, nan_mask_method,          &
+                               pos_inf_mask_method, neg_inf_mask_method,       &
+                               small_mask_threshold_bytes)
+      call object_arrays(data, lens, ptrs, lens_c, ptrs_ptr, lens_ptr)
+      err = c_tgm_file_append_with_encode_options(file%ptr, c_loc(meta_c),     &
+              ptrs_ptr, lens_ptr, size(lens, kind=c_size_t), 0_c_int32_t,      &
+              c_loc(opts))
+   end subroutine tensogram_file_append_with_options
+
    ! =========================================================================
    !  Decode wire bytes -> message handle
    ! =========================================================================
@@ -1844,6 +2465,45 @@ contains
       character(len=:), allocatable :: s
       s = cptr_to_fstr(c_tgm_object_byte_order(msg%ptr, int(iobj - 1, c_size_t)))
    end function tensogram_object_byte_order
+
+   !> dtype of object `iobj` (1-based) as a TGM_DTYPE_* code — the typed
+   !> companion of tensogram_object_dtype, for a SELECT CASE instead of a
+   !> string comparison. An enum return has no spare code for failure, so an
+   !> out-of-range `iobj` (or a null handle) yields the zero variant
+   !> TGM_DTYPE_FLOAT16 and sets the optional `err` to TGM_ERROR_INVALID_ARG —
+   !> the unambiguous way to bounds-check (tensogram_object_dtype returns ''
+   !> for exactly the same inputs).
+   function tensogram_object_dtype_enum(msg, iobj, err) result(dt)
+      type(tensogram_message),  intent(in)            :: msg
+      integer,                  intent(in)            :: iobj
+      integer(c_int),           intent(out), optional :: err
+      integer(c_int) :: dt
+      if (iobj < 1 .or. iobj > tensogram_num_objects(msg)) then
+         if (present(err)) err = TGM_ERROR_INVALID_ARG
+         dt = TGM_DTYPE_FLOAT16                 ! the zero variant, as in C
+         return
+      end if
+      if (present(err)) err = TGM_ERROR_OK
+      dt = c_tgm_object_dtype_enum(msg%ptr, int(iobj - 1, c_size_t))
+   end function tensogram_object_dtype_enum
+
+   !> Byte order of object `iobj` (1-based) as a TGM_BYTE_ORDER_* code — the
+   !> typed companion of tensogram_object_byte_order. Out-of-range handling
+   !> matches tensogram_object_dtype_enum: the zero variant
+   !> TGM_BYTE_ORDER_LITTLE plus TGM_ERROR_INVALID_ARG in the optional `err`.
+   function tensogram_object_byte_order_enum(msg, iobj, err) result(bo)
+      type(tensogram_message),  intent(in)            :: msg
+      integer,                  intent(in)            :: iobj
+      integer(c_int),           intent(out), optional :: err
+      integer(c_int) :: bo
+      if (iobj < 1 .or. iobj > tensogram_num_objects(msg)) then
+         if (present(err)) err = TGM_ERROR_INVALID_ARG
+         bo = TGM_BYTE_ORDER_LITTLE             ! the zero variant, as in C
+         return
+      end if
+      if (present(err)) err = TGM_ERROR_OK
+      bo = c_tgm_object_byte_order_enum(msg%ptr, int(iobj - 1, c_size_t))
+   end function tensogram_object_byte_order_enum
 
    !> Filter string of object `iobj` (e.g. "none", "shuffle"); '' out of range.
    function tensogram_object_filter(msg, iobj) result(s)
@@ -2101,6 +2761,84 @@ contains
       err = c_tgm_file_create(c_loc(path_c), out)
       if (err == TGM_ERROR_OK) file%ptr = out
    end subroutine tensogram_file_create
+
+   !> .true. when `source` is a URL THIS BUILD can open remotely. The
+   !> recognised schemes are s3, s3a, gs, az, azure, http and https, compared
+   !> case-insensitively; plain paths and `file://` URLs are NOT remote — they
+   !> belong to tensogram_file_open. A C library built without the `remote`
+   !> Cargo feature answers .false. for EVERY input (it genuinely cannot open
+   !> any remote URL) and records why in tensogram_last_error().
+   function tensogram_is_remote_url(source) result(is_remote)
+      character(len=*), intent(in) :: source
+      logical :: is_remote
+      character(kind=c_char), allocatable, target :: source_c(:)
+      call f_to_cstr(trim(source), source_c)
+      is_remote = logical(c_tgm_is_remote_url(c_loc(source_c)))
+   end function tensogram_is_remote_url
+
+   !> Open a remote `.tgm` (S3 / GCS / Azure / HTTP) for SYNCHRONOUS reading.
+   !> `file` receives an ordinary tensogram_file, so the whole existing file
+   !> API — message_count / read_message / decode_message — works unchanged;
+   !> close it with file%close() as usual.
+   !>
+   !> `keys` / `values` are parallel arrays of backend storage options
+   !> (credentials, region, endpoint, …) forwarded verbatim to the object-store
+   !> backend; call the 3-argument form (source, file, err) when there are
+   !> none. `bidirectional` (default .true.) selects the meet-in-the-middle
+   !> remote scan walk; .false. forces a forward-only walk.
+   !>
+   !> `err` is TGM_ERROR_INVALID_ARG when `keys` and `values` have different
+   !> lengths (the C ABI takes ONE option count for both), and TGM_ERROR_REMOTE
+   !> for an unparseable URL, a missing object, a rejected storage option or a
+   !> transport failure — including EVERY call on a C library built without the
+   !> `remote` Cargo feature, whose tensogram_last_error() says how to enable
+   !> it. Argument validation runs before that feature check, so a mistake is
+   !> reported as a mistake in either build.
+   subroutine file_open_remote_opts(source, keys, values, file, err, bidirectional)
+      character(len=*),     intent(in)  :: source
+      character(len=*),     intent(in)  :: keys(:)
+      character(len=*),     intent(in)  :: values(:)
+      type(tensogram_file), intent(out) :: file
+      integer(c_int),       intent(out) :: err
+      logical, intent(in), optional     :: bidirectional
+      character(kind=c_char), allocatable, target :: source_c(:), kflat(:), vflat(:)
+      type(c_ptr),            allocatable, target :: kptrs(:), vptrs(:)
+      type(tgm_remote_scan_options_t),     target :: opts
+      type(c_ptr)       :: keys_ptr, values_ptr, out
+      integer(c_size_t) :: n
+      if (size(keys) /= size(values)) then
+         err = TGM_ERROR_INVALID_ARG        ! parallel arrays must pair up
+         return
+      end if
+      call f_to_cstr(trim(source), source_c)
+      call cstr_array(keys,   kflat, kptrs)
+      call cstr_array(values, vflat, vptrs)
+      n = size(keys, kind=c_size_t)
+      if (n > 0_c_size_t) then
+         keys_ptr   = c_loc(kptrs)
+         values_ptr = c_loc(vptrs)
+      else
+         keys_ptr   = c_null_ptr            ! n_options = 0 ignores both arrays
+         values_ptr = c_null_ptr
+      end if
+      ! opts starts at the library defaults, so passing it always is
+      ! equivalent to passing NULL; flip only what the caller asked for.
+      if (present(bidirectional)) opts%bidirectional = logical(bidirectional, kind=c_bool)
+      err = c_tgm_file_open_remote(c_loc(source_c), keys_ptr, values_ptr, n, &
+                                   c_loc(opts), out)
+      if (err == TGM_ERROR_OK) file%ptr = out
+   end subroutine file_open_remote_opts
+
+   !> Open a remote `.tgm` with no backend storage options — see
+   !> file_open_remote_opts for the full contract.
+   subroutine file_open_remote_plain(source, file, err, bidirectional)
+      character(len=*),     intent(in)  :: source
+      type(tensogram_file), intent(out) :: file
+      integer(c_int),       intent(out) :: err
+      logical, intent(in), optional     :: bidirectional
+      character(len=1) :: none(0)
+      call file_open_remote_opts(source, none, none, file, err, bidirectional)
+   end subroutine file_open_remote_plain
 
    !> Number of messages in the file (may trigger a lazy scan).
    subroutine tensogram_file_message_count(file, count, err)
@@ -2736,6 +3474,60 @@ contains
       if (err == TGM_ERROR_OK) enc%ptr = out
    end subroutine tensogram_streaming_encoder_create
 
+   !> Open a streaming encoder with the FULL encode-side option set (binds
+   !> tgm_streaming_encoder_create_with_encode_options). Like
+   !> tensogram_streaming_encoder_create, but the options also carry the
+   !> aggregate-hash placement and the codec backend — see
+   !> tensogram_encode_with_options for the shared argument contract.
+   !>
+   !> TGM_AGGREGATE_HASH_POLICY_HEADER and ..._BOTH are REJECTED here with
+   !> TGM_ERROR_ENCODING (and an explanatory tensogram_last_error): a
+   !> streaming writer emits its header before any data object exists, so the
+   !> per-object hashes are not yet known. Use AUTO — which resolves to the
+   !> footer when streaming — or FOOTER.
+   subroutine tensogram_streaming_encoder_create_with_options(path, enc, err,   &
+                                                 metadata_json, hash,          &
+                                                 aggregate_hash,               &
+                                                 compression_backend,          &
+                                                 allow_nan, allow_inf,         &
+                                                 nan_mask_method,              &
+                                                 pos_inf_mask_method,          &
+                                                 neg_inf_mask_method,          &
+                                                 small_mask_threshold_bytes)
+      character(len=*),                  intent(in)  :: path
+      type(tensogram_streaming_encoder), intent(out) :: enc
+      integer(c_int),                    intent(out) :: err
+      character(len=*),   intent(in), optional :: metadata_json
+      character(len=*),   intent(in), optional :: hash
+      integer(c_int),     intent(in), optional :: aggregate_hash
+      integer(c_int),     intent(in), optional :: compression_backend
+      logical,            intent(in), optional :: allow_nan, allow_inf
+      character(len=*),   intent(in), optional :: nan_mask_method
+      character(len=*),   intent(in), optional :: pos_inf_mask_method
+      character(len=*),   intent(in), optional :: neg_inf_mask_method
+      integer(c_int64_t), intent(in), optional :: small_mask_threshold_bytes
+      character(kind=c_char), allocatable, target :: path_c(:), meta_c(:), hash_c(:)
+      character(kind=c_char), allocatable, target :: nan_c(:), pos_c(:), neg_c(:)
+      character(len=:),       allocatable         :: meta_s
+      type(tgm_encode_options_t), target :: opts
+      type(c_ptr) :: out
+      call f_to_cstr(trim(path), path_c)
+      if (present(metadata_json)) then
+         meta_s = metadata_json
+      else
+         meta_s = '{}'
+      end if
+      call f_to_cstr(meta_s, meta_c)
+      call resolve_encode_opts(opts, hash_c, nan_c, pos_c, neg_c, hash,        &
+                               aggregate_hash, compression_backend,            &
+                               allow_nan, allow_inf, nan_mask_method,          &
+                               pos_inf_mask_method, neg_inf_mask_method,       &
+                               small_mask_threshold_bytes)
+      err = c_tgm_streaming_encoder_create_with_encode_options(c_loc(path_c),  &
+              c_loc(meta_c), 0_c_int32_t, c_loc(opts), out)
+      if (err == TGM_ERROR_OK) enc%ptr = out
+   end subroutine tensogram_streaming_encoder_create_with_options
+
    !> Finalise the stream: write the footer index/hash + postamble and close
    !> the file. The handle remains valid (release it with `enc%free()`).
    subroutine tensogram_streaming_encoder_finish(enc, err)
@@ -3120,5 +3912,297 @@ contains
          hex = ''
       end if
    end function tensogram_compute_hash
+
+   ! =========================================================================
+   !  Frame walker + message header (deferred Wave-B, component A3)
+   ! =========================================================================
+
+   !> Widen a u16 wire field carried as its signed c_int16_t bit pattern to a
+   !> default integer in 0..65535 (Fortran has no unsigned kind), so bit tests
+   !> on %flags() and comparisons on %version() read naturally.
+   pure function u16(x) result(v)
+      integer(c_int16_t), intent(in) :: x
+      integer :: v
+      v = int(x)
+      if (v < 0) v = v + 65536
+   end function u16
+
+   ! ---- tensogram_frame accessors (pure value reads) -----------------------
+
+   !> Which kind of frame this is, as a TGM_FRAME_TYPE_* code.
+   function frame_frame_type(self) result(t)
+      class(tensogram_frame), intent(in) :: self
+      integer(c_int) :: t
+      t = self%ftype
+   end function frame_frame_type
+
+   !> Frame-type-specific version field from the 16-byte frame header.
+   function frame_version(self) result(v)
+      class(tensogram_frame), intent(in) :: self
+      integer :: v
+      v = self%fver
+   end function frame_version
+
+   !> Raw 16-bit frame flags (0..65535); bit 1 is HASH_PRESENT — prefer
+   !> %has_hash(), which asks the library rather than the bit.
+   function frame_flags(self) result(f)
+      class(tensogram_frame), intent(in) :: self
+      integer :: f
+      f = self%fflags
+   end function frame_flags
+
+   !> 1-BASED index of the frame header within the walked message buffer (the
+   !> C ABI's 0-based byte offset + 1), matching the tensogram_scan
+   !> convention: the frame occupies buffer(offset : offset + length - 1).
+   function frame_offset(self) result(o)
+      class(tensogram_frame), intent(in) :: self
+      integer(c_size_t) :: o
+      o = self%foff
+   end function frame_offset
+
+   !> Whole-frame span in bytes: frame header through the ENDF sentinel,
+   !> excluding any alignment padding that follows.
+   function frame_length(self) result(n)
+      class(tensogram_frame), intent(in) :: self
+      integer(c_size_t) :: n
+      n = self%flen
+   end function frame_length
+
+   !> The frame's content bytes — everything between the 16-byte frame header
+   !> and the type-specific footer (20 bytes for TGM_FRAME_TYPE_NTENSOR, 12
+   !> for every other type) — as an independent COPY, so it outlives both the
+   !> iterator and the message buffer it was walked from. Size 0 for a frame
+   !> with no content (and for a default-initialised frame).
+   function frame_payload(self) result(p)
+      class(tensogram_frame), intent(in) :: self
+      integer(c_int8_t), allocatable :: p(:)
+      if (allocated(self%fbytes)) then
+         p = self%fbytes
+      else
+         allocate(p(0))
+      end if
+   end function frame_payload
+
+   !> .true. when this frame's HASH_PRESENT flag is set, i.e. its inline hash
+   !> slot holds a meaningful digest (plans/WIRE_FORMAT.md §2.5). Authoritative
+   !> per frame — tensogram_message_header%has_hashes_present() is only an
+   !> advisory message-wide summary.
+   function frame_has_hash(self) result(h)
+      class(tensogram_frame), intent(in) :: self
+      logical :: h
+      h = self%fhash
+   end function frame_has_hash
+
+   ! ---- tensogram_frame_iterator methods -----------------------------------
+
+   !> Release the C cursor and the private message copy (idempotent).
+   subroutine frame_iter_free(self)
+      class(tensogram_frame_iterator), intent(inout) :: self
+      if (c_associated(self%ptr)) then
+         call c_tgm_frame_iter_free(self%ptr)   ! cursor first: it borrows bytes
+         self%ptr = c_null_ptr
+      end if
+      if (associated(self%bytes)) then
+         deallocate(self%bytes)
+         nullify(self%bytes)
+      end if
+   end subroutine frame_iter_free
+
+   subroutine frame_iter_final(self)
+      type(tensogram_frame_iterator), intent(inout) :: self
+      call self%free()
+   end subroutine frame_iter_final
+
+   subroutine frame_iter_assign(lhs, rhs)
+      class(tensogram_frame_iterator), intent(out) :: lhs
+      type(tensogram_frame_iterator),  intent(in)  :: rhs
+      if (c_associated(rhs%ptr)) then
+         error stop "tensogram_frame_iterator is non-copyable: a live cursor would alias and double-free; pass by reference"
+      else
+         error stop "tensogram_frame_iterator is non-copyable: do not assign cursors; pass by reference"
+      end if
+   end subroutine frame_iter_assign
+
+   !> Advance the walk. `found` is .true. when `frame` was filled; .false.
+   !> ends the loop for BOTH of the C ABI's stop conditions, which the
+   !> optional `err` tells apart (it is the ONLY place they differ):
+   !>   * clean end       — every frame yielded; err = TGM_ERROR_OK
+   !>   * malformed chain — truncated / inconsistent framing; err =
+   !>     TGM_ERROR_FRAMING, with the reason in tensogram_last_error()
+   !>   * dead cursor     — %next after %free (or before tensogram_frames);
+   !>     err = TGM_ERROR_INVALID_ARG
+   !> Calling %next again after any .false. is safe and keeps returning
+   !> .false.. Omitting `err` collapses the three into "the walk stopped".
+   subroutine frame_iter_next(self, frame, found, err)
+      class(tensogram_frame_iterator), intent(inout) :: self
+      type(tensogram_frame),           intent(out)   :: frame
+      logical,                         intent(out)   :: found
+      integer(c_int),        optional, intent(out)   :: err
+      type(tgm_frame_t), target  :: raw
+      integer(c_int8_t), pointer :: view(:)
+      integer(c_int) :: e
+      found = .false.
+      e     = TGM_ERROR_OK
+      if (.not. c_associated(self%ptr)) then
+         e = TGM_ERROR_INVALID_ARG              ! freed / never created
+      else if (c_tgm_frame_iter_next(self%ptr, raw)) then
+         found        = .true.
+         frame%ftype  = raw%frame_type
+         frame%fver   = u16(raw%version)
+         frame%fflags = u16(raw%flags)
+         frame%foff   = raw%offset + 1_c_size_t ! 1-based Fortran index
+         frame%flen   = raw%length
+         frame%fhash  = logical(c_tgm_frame_has_hash(c_loc(raw)))
+         allocate(frame%fbytes(raw%payload_len))
+         if (raw%payload_len > 0_c_size_t .and. c_associated(raw%payload)) then
+            call c_f_pointer(raw%payload, view, [raw%payload_len])
+            frame%fbytes = view                 ! COPY out of the message
+         end if
+      else if (c_associated(c_tgm_last_error())) then
+         e = TGM_ERROR_FRAMING                  ! malformed: the C layer said why
+      end if                                    ! else: clean end (error cleared)
+      if (present(err)) err = e
+   end subroutine frame_iter_next
+
+   !> Start a lazy walk over the frames of ONE message. `buffer` must start at
+   !> a message preamble (the `TENSOGRM` magic) — for a multi-message buffer,
+   !> locate the boundaries with tensogram_scan first and pass each slice.
+   !> Only the type 1-9 frames are yielded; the preamble and postamble are not
+   !> frames (see tensogram_message_header_read for the envelope).
+   !>
+   !> The iterator takes its OWN copy of `buffer`, so the caller's array may
+   !> be modified or deallocated while the walk continues. Release the
+   !> iterator with %free() (or let it be finalized).
+   !>
+   !> `err` is TGM_ERROR_OK when the walk started, TGM_ERROR_INVALID_ARG for
+   !> an empty buffer, and TGM_ERROR_FRAMING when the preamble does not parse
+   !> (truncated buffer, wrong magic, unsupported version) — the reason is in
+   !> tensogram_last_error().
+   subroutine tensogram_frames(buffer, iterator, err)
+      integer(c_int8_t),              intent(in)  :: buffer(:)
+      type(tensogram_frame_iterator), intent(out) :: iterator
+      integer(c_int),                 intent(out) :: err
+      integer(c_size_t) :: n
+      type(c_ptr)       :: it
+      n = size(buffer, kind=c_size_t)
+      if (n == 0_c_size_t) then
+         err = TGM_ERROR_INVALID_ARG            ! no preamble to parse
+         return
+      end if
+      allocate(iterator%bytes(n))
+      iterator%bytes = buffer                   ! private copy: the C cursor
+      it = c_tgm_frame_iter_create(c_loc(iterator%bytes), n)   ! borrows it
+      if (.not. c_associated(it)) then
+         deallocate(iterator%bytes)
+         nullify(iterator%bytes)
+         err = TGM_ERROR_FRAMING
+         return
+      end if
+      iterator%ptr = it
+      err = TGM_ERROR_OK
+   end subroutine tensogram_frames
+
+   ! ---- tensogram_message_header accessors ---------------------------------
+
+   !> Wire-format version of the message (TGM_WIRE_VERSION for v3 messages).
+   function hdr_version(self) result(v)
+      class(tensogram_message_header), intent(in) :: self
+      integer :: v
+      v = self%ver
+   end function hdr_version
+
+   !> Whole-message byte count, preamble through postamble, or 0 when a
+   !> streaming writer never back-filled it (not an error — "unknown at write
+   !> time"). A u64 on the wire, carried as its signed c_int64_t bit pattern.
+   function hdr_total_length(self) result(n)
+      class(tensogram_message_header), intent(in) :: self
+      integer(c_int64_t) :: n
+      n = self%total
+   end function hdr_total_length
+
+   !> A HeaderMetadata frame is present (random-access mode).
+   function hdr_has_header_metadata(self) result(b)
+      class(tensogram_message_header), intent(in) :: self
+      logical :: b
+      b = self%hmeta
+   end function hdr_has_header_metadata
+
+   !> A FooterMetadata frame is present (streaming mode).
+   function hdr_has_footer_metadata(self) result(b)
+      class(tensogram_message_header), intent(in) :: self
+      logical :: b
+      b = self%fmeta
+   end function hdr_has_footer_metadata
+
+   !> A HeaderIndex frame is present.
+   function hdr_has_header_index(self) result(b)
+      class(tensogram_message_header), intent(in) :: self
+      logical :: b
+      b = self%hindex
+   end function hdr_has_header_index
+
+   !> A FooterIndex frame is present.
+   function hdr_has_footer_index(self) result(b)
+      class(tensogram_message_header), intent(in) :: self
+      logical :: b
+      b = self%findex
+   end function hdr_has_footer_index
+
+   !> A HeaderHash (aggregate hash) frame is present.
+   function hdr_has_header_hashes(self) result(b)
+      class(tensogram_message_header), intent(in) :: self
+      logical :: b
+      b = self%hhashes
+   end function hdr_has_header_hashes
+
+   !> A FooterHash (aggregate hash) frame is present.
+   function hdr_has_footer_hashes(self) result(b)
+      class(tensogram_message_header), intent(in) :: self
+      logical :: b
+      b = self%fhashes
+   end function hdr_has_footer_hashes
+
+   !> At least one PrecederMetadata frame appears in the body. ADVISORY in
+   !> streaming mode: the encoder sets the flag before it knows whether any
+   !> preceder will be written, so .true. does not guarantee a frame (only
+   !> "frame present => flag set" holds); in buffered mode it is exact.
+   function hdr_has_preceder_metadata(self) result(b)
+      class(tensogram_message_header), intent(in) :: self
+      logical :: b
+      b = self%preceder
+   end function hdr_has_preceder_metadata
+
+   !> ADVISORY: every frame in this message has its per-frame HASH_PRESENT bit
+   !> set. For any single frame, tensogram_frame%has_hash() stays authoritative.
+   function hdr_has_hashes_present(self) result(b)
+      class(tensogram_message_header), intent(in) :: self
+      logical :: b
+      b = self%hashes
+   end function hdr_has_hashes_present
+
+   !> Read a message's envelope (the 24-byte preamble) WITHOUT walking its
+   !> frames. `buffer` must start at a message preamble, as for
+   !> tensogram_frames. `err` is TGM_ERROR_OK on success, TGM_ERROR_INVALID_ARG
+   !> for an empty buffer, or the mapped parse error (message truncated, wrong
+   !> magic, unsupported version) with the reason in tensogram_last_error();
+   !> `header` is left default-initialised on any failure.
+   subroutine tensogram_message_header_read(buffer, header, err)
+      integer(c_int8_t), target, contiguous, intent(in)  :: buffer(:)
+      type(tensogram_message_header),        intent(out) :: header
+      integer(c_int),                        intent(out) :: err
+      type(tgm_message_header_t) :: raw
+      err = c_tgm_message_header(buf_ptr(buffer), size(buffer, kind=c_size_t), raw)
+      if (err /= TGM_ERROR_OK) return
+      header%ver      = u16(raw%version)
+      header%total    = raw%total_length
+      header%hmeta    = logical(raw%has_header_metadata)
+      header%fmeta    = logical(raw%has_footer_metadata)
+      header%hindex   = logical(raw%has_header_index)
+      header%findex   = logical(raw%has_footer_index)
+      header%hhashes  = logical(raw%has_header_hashes)
+      header%fhashes  = logical(raw%has_footer_hashes)
+      header%preceder = logical(raw%has_preceder_metadata)
+      header%hashes   = logical(raw%has_hashes_present)
+   end subroutine tensogram_message_header_read
 
 end module tensogram
