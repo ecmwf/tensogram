@@ -253,3 +253,88 @@ same lane serialize). Lanes: **FFI** (serial, chokepoint), **CPP**, **PY**,
 - The accepted-exceptions list in DESIGN.md is the only place a non-● cell is
   allowed to remain.
 - Re-audit the full matrix at the next release.
+
+## 9. Deferred Wave B — detailed implementation plan
+
+> **Status: PLANNED, not started.** One combined PR (`feat/symmetry-wave-b-deferred`).
+> Design settled by the questions in the 0.24.x planning round; recorded here so
+> the ABI decisions are unambiguous before any code lands.
+
+### 9.1 Settled design decisions
+
+| # | Decision |
+|---|----------|
+| Frame walker — scope | **Core-first**: add a public `frames()` iterator to the Rust core, then mirror in **all six** bindings (no new asymmetry). |
+| Frame walker — granularity | **Per-message**: the walker iterates the frames of a single message. Callers get message byte-ranges from the existing `scan` (`tgm_scan`), then frame-walk each. |
+| Frame walker — traversal | **Lazy iterator** handle (`create` / `next` / `free`), not a pre-collected index. |
+| Frame entry — contents | **Structural + borrowed payload**: `{ frame_type, version, flags, offset, length }` **and** a borrowed `payload` (content bytes, i.e. header + type-specific footer stripped). `offset`/`length` give the whole-frame span; `payload` gives the content. |
+| Frame walk — envelope | **Only the type 1–9 `FR` frames.** The preamble/postamble are exposed via a **separate message-header accessor** (below), not as frame entries. |
+| Message flags | **Typed booleans** (not a raw bitset): a `MessageHeader` value with named boolean members (`has_header_metadata`, …) plus `version` and `total_length`. |
+| Sync remote — storage_options | **Parallel arrays** `keys[]` / `values[]` + `count` → Rust `BTreeMap<String,String>`. |
+| Sync remote — open API | **Separate** `is_remote_url` + `open_remote`; the local `open` stays local-only. |
+| Sync remote — gating | **Opt-in `remote` feature**, *not* in the default published FFI tarball (same model as `async`). Header still declares the symbols (cbindgen). |
+| Encode setters | **New `TgmEncodeOptions` struct** (hash algo + `aggregate_hash` + `compression_backend` + the existing mask fields) + `*_with_encode_options` entry points; keep the mask-only entry points. |
+| Typed dtype/byte-order | **Include** `tgm_dtype` / `tgm_byte_order` enums + `_enum` accessors (alongside the string getters), each with an enum-consistency guard. |
+| Delivery | **One combined PR**, grouped commits per component. |
+
+**Sub-decisions implied by the above (specified so nothing is ambiguous):**
+- **Iterator input.** `frames(msg: &[u8])` / `tgm_frame_iter_create(const uint8_t* msg, size_t msg_len)` where `msg` points at the message preamble (the slice a caller obtains from `scan`). Frame `offset` is **relative to `msg`** (the message start), `payload`/frame pointers borrow `msg`.
+- **Lifetime (C).** The iterator borrows `msg` (which must outlive the iterator). `tgm_frame_iter_next(it, TgmFrame* out) -> bool` fills a caller-provided `TgmFrame`; `out->payload` / whole-frame bytes point **into the caller's `msg`** and are valid for as long as `msg` lives (independent of `next`/`free`). `free` releases only the cursor.
+- **Message header (C).** `tgm_message_header(const uint8_t* msg, size_t msg_len, TgmMessageHeader* out) -> tgm_error`, filling a POD with the eight `bool has_*` fields + `uint16_t version` + `uint64_t total_length`. The "typed booleans" are struct members (one parse), the cross-language-friendly form.
+
+### 9.2 Component A — Frame walker + message-header introspection
+
+**A0 · Rust core (foundational — everything else depends on it).**
+- New public `FrameInfo<'a> { frame_type: FrameType, version: u16, flags: FrameFlags, offset: usize, length: usize, payload: &'a [u8] }` and `FrameIter<'a>` (a lazy `Iterator<Item = Result<FrameInfo>>`) over one message's bytes, built on the existing `Preamble::read_from` + `FrameHeader::read_from` + `read_frame` (make `read_frame` reusable). `pub fn frames(message: &[u8]) -> Result<FrameIter<'_>>`.
+- Expose a public `MessageHeader { flags: MessageFlags, version: u16, total_length: u64 }` (or reuse `Preamble` + `MessageFlags`, which are already `pub`) with typed predicates. Re-export from `lib.rs`.
+- Tests: golden multi-frame message → assert the exact frame-type sequence, offsets/lengths tile the message, payload slices match, header booleans match the encode mode (streaming vs random-access).
+
+**A1 · C ABI** (`tensogram-ffi`):
+- `tgm_frame_type` enum (`TGM_FRAME_TYPE_HEADER_METADATA=1 … _NTENSOR=9`) — cbindgen `[export.rename]`; **enum-consistency guard** (shell check like `check_value_type_enum.sh`).
+- `TgmFrame { tgm_frame_type frame_type; uint16_t version; uint16_t flags; size_t offset; size_t length; const uint8_t* payload; size_t payload_len; }`.
+- `tgm_frame_iter_create(const uint8_t* msg, size_t msg_len) -> tgm_frame_iter_t*` (NULL on bad preamble), `tgm_frame_iter_next(it, TgmFrame* out) -> bool`, `tgm_frame_iter_free(it)`.
+- `TgmMessageHeader` POD + `tgm_message_header(msg, msg_len, &out)`; plus `tgm_frame_has_hash(const TgmFrame*)` convenience over the per-frame `HASH_PRESENT` bit.
+- FFI tests (golden frame sequence, lifetime, null-safety); regen header; header-drift guard.
+
+**A2 · C++**: `frame` struct + `frame_iterator` (input-iterator; `frames(std::span<const uint8_t>)` range-for) and a `message_header` struct with `[[nodiscard]] bool has_*()` + `version()`/`total_length()`. Tests + example.
+
+**A3 · Fortran**: `type(tensogram_frame_iterator)` (`%next(frame, found)` where `frame` is a `type(tensogram_frame)` with `%frame_type()`, `%offset()`, `%length()`, `%payload(bytes)`, `%version()`, `%flags()`), plus `tensogram_message_header(msg, header)` → `type(tensogram_message_header)` with `%has_header_metadata()` … type-bound logicals. Public `TGM_FRAME_TYPE_*` params + f2008 clean + enum guard. Tests + example.
+
+**A4 · Python**: `frames(buf) -> Iterator[Frame]` (`Frame` with `.frame_type` (enum/int), `.offset`, `.length`, `.flags`, `.payload` `bytes`/memoryview) and `message_header(buf) -> MessageHeader` (dataclass/NamedTuple with the boolean fields). pytest + example.
+
+**A5 · TypeScript**: `frames(buf) -> Frame[]` (or a generator) via a small wasm walker, each `Frame` `{ frameType, version, flags, offset, length, payload: Uint8Array }`; `messageHeader(buf) -> MessageHeader` (`{ hasHeaderMetadata, …, version, totalLength }`). vitest + example.
+
+### 9.3 Component B — Synchronous remote (opt-in `remote` feature)
+
+- **C ABI** (`#[cfg(feature = "remote")]`, cbindgen emits unconditionally): `bool tgm_is_remote_url(const char* source)`; `TgmRemoteScanOptions { bool bidirectional; }`; `tgm_error tgm_file_open_remote(const char* source, const char* const* keys, const char* const* values, size_t n, const TgmRemoteScanOptions* opts, tgm_file_t** out)` — returns a normal sync `tgm_file_t` so the existing file API works on remote sources. Error mapping → `TGM_ERROR_REMOTE`. New `remote` feature on `tensogram-ffi` enabling `tensogram/remote` (sync, **without** `async`).
+- **C++**: `bool is_remote_url(std::string_view)`; `file file::open_remote(std::string_view source, const std::map<std::string,std::string>& storage_options = {}, remote_scan_options = {})`. Guarded so a build without the feature degrades to a clear error.
+- **Fortran**: `tensogram_is_remote_url(url)` + `tensogram_file_open_remote(source, keys, values, [bidirectional], file, err)`.
+- **Python / TypeScript**: already have full sync/lazy remote — **no work** beyond confirming parity in the matrix.
+- **Distribution note** (docs): the default `tensogram-ffi` tarball stays remote-free; a `remote`-enabled build is opt-in (mirrors async). Record in `docs/src/guide/c-api.md`.
+
+### 9.4 Component C — Typed enums + encode-option setters
+
+- **Enums** (C ABI, each cbindgen-renamed + an enum-consistency guard): `tgm_dtype` (15 variants), `tgm_byte_order` (`LITTLE`/`BIG`), `tgm_aggregate_hash_policy` (`AUTO`/`NONE`/`HEADER`/`FOOTER`/`BOTH`), `tgm_compression_backend` (`AUTO`/`FFI`/`PURE`).
+- **Accessors**: `tgm_object_dtype_enum(msg,i) -> tgm_dtype`, `tgm_object_byte_order_enum(msg,i) -> tgm_byte_order` (the string getters stay).
+- **`TgmEncodeOptions`** POD: `{ const char* hash; tgm_aggregate_hash_policy aggregate_hash; tgm_compression_backend compression_backend; bool allow_nan; bool allow_inf; tgm_mask_method nan_mask_method; … small_mask_threshold_bytes; }` (supersedes `TgmEncodeMaskOptions`; keep the old struct + entry points). New `tgm_encode_with_encode_options` / `tgm_file_append_with_encode_options` / `tgm_streaming_encoder_create_with_encode_options`.
+- **Cross-language**: expose the four enums + the two new encode knobs in C++ (`enum class`), Fortran (integer params + option fields), Python (accept `aggregate_hash=`/`compression_backend=` kwargs + a `Dtype`/`ByteOrder` enum), TS (union types / enums + option fields). Some already have partial coverage (e.g. Python already surfaces most `EncodeOptions`); fill the two missing knobs everywhere.
+
+### 9.5 Dependency order & concurrency
+
+1. **A0 (core frame iterator + message header)** — foundational, land + commit first.
+2. Then **parallel** (disjoint crates): **A1+B+C on the C ABI** (one FFI owner, serial within the FFI), **A4 Python** (binds core), **A5 TS** (binds core via a small wasm walker). Python/TS also pick up the Component-C enum/setters.
+3. After the C ABI lands: **A2/B/C C++**, then **A3/B/C Fortran** (sequential — shared C-API build).
+4. Enum-consistency guards (frame-type, dtype, byte-order) added with each enum; header-drift guard must stay green.
+
+### 9.6 Testing & examples
+
+- Golden **frame-sequence** fixtures (random-access vs streaming message) shared across bindings, asserting identical frame types/offsets/flags and header booleans.
+- Remote: reuse the existing remote test harness; add a sync `open_remote` round-trip (local `file://` + a mock/object-store path) in C/C++/Fortran.
+- Encode setters: assert `aggregate_hash = Both` places hashes in header *and* footer (inspectable via the new frame walker — nice closed loop), and `compression_backend = Pure` selects the pure codec.
+- One example per binding for the frame walker + message header; extend an encode example for the new knobs.
+
+### 9.7 Risks / notes
+
+- **Frame-walker lifetime** is the sharpest edge (borrowed payload into the caller's buffer). Document it prominently in every binding; the C++ `frame_iterator` and Python `Frame.payload` must not outlive the source buffer.
+- **Enum drift**: three new C enums ⇒ three new consistency guards (Fortran already has the pattern). Non-negotiable to avoid silent skew.
+- **Combined-PR size**: this is large (frame walker × 6 bindings + sync remote × 3 + enums/setters × bindings). If review becomes unwieldy, it can still be *reviewed* commit-by-commit along the A/B/C grouping without splitting the branch.
