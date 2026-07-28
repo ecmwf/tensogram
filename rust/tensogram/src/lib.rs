@@ -12,6 +12,7 @@ pub mod dtype;
 pub mod encode;
 pub mod error;
 pub mod file;
+pub mod frame_walk;
 pub mod framing;
 pub mod hash;
 pub mod iter;
@@ -45,6 +46,7 @@ pub use dtype::Dtype;
 pub use encode::{AggregateHashPolicy, EncodeOptions, encode, encode_pre_encoded};
 pub use error::{Result, TensogramError};
 pub use file::{MessageLayout, TensogramFile};
+pub use frame_walk::{FrameInfo, FrameIter, MessageHeader, frames, message_header};
 pub use framing::{
     ScanOptions, data_object_inline_hashes, scan, scan_file, scan_file_with_options,
     scan_with_options,
