@@ -12,12 +12,12 @@
 //! `wasm_bindgen::memory()` + byte offsets for zero-copy TypedArray
 //! views that avoid forming misaligned Rust references.
 //!
-//! Also hosts the shared helpers (`js_err`, `build_encode_options`,
-//! `extract_descriptor_data_pairs`) used by every WASM entrypoint
-//! that writes a message.
+//! Also hosts the shared helpers (`js_err`, `set_field`,
+//! `build_encode_options`, `extract_descriptor_data_pairs`) used by
+//! every WASM entrypoint that writes a message.
 
 use serde::Serialize;
-use tensogram::{self as core, EncodeOptions};
+use tensogram::{self as core, AggregateHashPolicy, EncodeOptions};
 use wasm_bindgen::prelude::*;
 
 /// Convert a [`tensogram::TensogramError`] to a thrown JS error
@@ -93,6 +93,14 @@ fn attach_string_prop(err: &JsValue, key: &str, value: &str) {
     let _ = js_sys::Reflect::set(err, &key.into(), &value.into());
 }
 
+/// Set an own-property on a JS object, mapping the (practically
+/// unreachable) `Reflect::set` failure to a thrown JS error.
+pub(crate) fn set_field(obj: &js_sys::Object, key: &str, value: &JsValue) -> Result<(), JsValue> {
+    js_sys::Reflect::set(obj, &JsValue::from_str(key), value)
+        .map(|_| ())
+        .map_err(|_| JsValue::from(js_sys::Error::new(&format!("failed to set '{key}'"))))
+}
+
 /// Best-effort attach a numeric (`usize`-valued) own-property.
 fn attach_number_prop(err: &JsValue, key: &str, value: usize) {
     // JS Number is f64; up to 2^53 - 1 is exactly representable.
@@ -109,8 +117,30 @@ fn attach_number_prop(err: &JsValue, key: &str, value: usize) {
 /// [`build_encode_options_full`] directly.  Infallible — this form
 /// cannot carry user-supplied mask-method names.
 pub(crate) fn build_encode_options(hash: Option<bool>) -> EncodeOptions {
-    build_encode_options_full(hash, None, None, None, None, None, None)
+    build_encode_options_full(hash, None, None, None, None, None, None, None)
         .expect("build_encode_options_full with no method names cannot error")
+}
+
+/// Parse the JS `aggregateHash` option name into an
+/// [`AggregateHashPolicy`].
+///
+/// `None` (option omitted) means [`AggregateHashPolicy::Auto`], which
+/// the buffered encoder resolves to a `HeaderHash` frame and the
+/// streaming encoder to a `FooterHash` frame.  Unknown names are
+/// rejected with the full list of accepted values — no silent
+/// fallback, matching the mask-method contract above.
+fn parse_aggregate_hash(name: Option<&str>) -> Result<AggregateHashPolicy, JsValue> {
+    match name {
+        None | Some("auto") => Ok(AggregateHashPolicy::Auto),
+        Some("none") => Ok(AggregateHashPolicy::None),
+        Some("header") => Ok(AggregateHashPolicy::Header),
+        Some("footer") => Ok(AggregateHashPolicy::Footer),
+        Some("both") => Ok(AggregateHashPolicy::Both),
+        Some(other) => Err(JsValue::from(js_sys::Error::new(&format!(
+            "unknown aggregateHash policy '{other}', expected one of: \
+             auto, none, header, footer, both"
+        )))),
+    }
 }
 
 /// Build an [`EncodeOptions`] from the full JS kwargs set for the
@@ -126,6 +156,10 @@ pub(crate) fn build_encode_options(hash: Option<bool>) -> EncodeOptions {
 ///   names the offending value and the full list of accepted names
 ///   — no silent fallback.
 /// - `small_mask_threshold_bytes`: default `128`.
+/// - `aggregate_hash`: optional policy name (`"auto"` | `"none"` |
+///   `"header"` | `"footer"` | `"both"`) selecting where the aggregate
+///   hash frame is written.  `None` means `"auto"`.  See
+///   [`parse_aggregate_hash`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_encode_options_full(
     hash: Option<bool>,
@@ -135,6 +169,7 @@ pub(crate) fn build_encode_options_full(
     pos_inf_mask_method: Option<&str>,
     neg_inf_mask_method: Option<&str>,
     small_mask_threshold_bytes: Option<usize>,
+    aggregate_hash: Option<&str>,
 ) -> Result<EncodeOptions, JsValue> {
     use core::encode::MaskMethod;
 
@@ -154,6 +189,7 @@ pub(crate) fn build_encode_options_full(
         neg_inf_mask_method: parse(neg_inf_mask_method, defaults.neg_inf_mask_method.clone())?,
         small_mask_threshold_bytes: small_mask_threshold_bytes
             .unwrap_or(defaults.small_mask_threshold_bytes),
+        aggregate_hash: parse_aggregate_hash(aggregate_hash)?,
         ..defaults
     })
 }

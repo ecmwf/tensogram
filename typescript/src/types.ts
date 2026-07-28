@@ -384,6 +384,108 @@ export interface MessagePosition {
 }
 
 /**
+ * Canonical wire-format name of a frame type, as spelled in
+ * `plans/WIRE_FORMAT.md` §6 and in the Rust `FrameType` enum.
+ *
+ * Type 4 is reserved (it held the obsolete v2 tensor frame) and never
+ * appears — a v3 reader that meets one raises a {@link FramingError}.
+ */
+export type FrameTypeName =
+  | 'HeaderMetadata'
+  | 'HeaderIndex'
+  | 'HeaderHash'
+  | 'FooterHash'
+  | 'FooterIndex'
+  | 'FooterMetadata'
+  | 'PrecederMetadata'
+  | 'NTensorFrame';
+
+/**
+ * One frame of a message, as returned by {@link frames}.
+ *
+ * Mirrors the Rust core `tensogram::FrameInfo`.
+ */
+export interface Frame {
+  /** Canonical frame-type name.  See {@link FrameTypeName}. */
+  frameType: FrameTypeName;
+  /** The frame type's wire number (1–3, 5–9). */
+  frameTypeCode: number;
+  /** Frame-type-specific version field from the frame header. */
+  version: number;
+  /**
+   * Raw 16-bit frame flags.  Bit 1 is `HASH_PRESENT`, surfaced as
+   * {@link Frame.hasHash}.
+   */
+  flags: number;
+  /**
+   * Byte offset of the frame header, **relative to the start of the
+   * message** passed to {@link frames} — not to a multi-message file.
+   */
+  offset: number;
+  /**
+   * Whole-frame span in bytes: the frame header through its `ENDF`
+   * magic, excluding any inter-frame alignment padding that follows.
+   */
+  length: number;
+  /**
+   * The frame's content: everything between the 16-byte frame header
+   * and the type-specific footer (20 bytes for `NTensorFrame`, 12 for
+   * every other type).  For an `NTensorFrame` this is the encoded
+   * payload plus any mask blobs plus the trailing CBOR descriptor; for
+   * every other frame type it is the CBOR body.
+   *
+   * Always a **copy on the JS heap**, never a view into WASM linear
+   * memory: safe to retain across later WASM calls (which may grow that
+   * memory) and safe to mutate without touching the caller's buffer.
+   * Same ownership contract as the mask arrays from
+   * {@link decodeWithMasks}.  Use {@link Frame.offset} /
+   * {@link Frame.length} when you want the whole frame instead.
+   */
+  payload: Uint8Array;
+  /**
+   * `true` when this frame's `HASH_PRESENT` flag is set, i.e. its hash
+   * slot holds a meaningful digest.
+   */
+  hasHash: boolean;
+}
+
+/**
+ * A message's envelope (its 24-byte preamble) decoded into typed
+ * values, as returned by {@link messageHeader}.
+ *
+ * Mirrors the Rust core `tensogram::MessageHeader`.
+ */
+export interface MessageHeader {
+  /** Wire-format version — always {@link WIRE_VERSION} in v3. */
+  version: number;
+  /**
+   * Total message length in bytes, preamble through postamble.  `0` for
+   * a streaming message whose length was never back-filled.
+   */
+  totalLength: number;
+  /** A `HeaderMetadata` frame is present (random-access mode). */
+  hasHeaderMetadata: boolean;
+  /** A `FooterMetadata` frame is present (streaming mode). */
+  hasFooterMetadata: boolean;
+  /** A `HeaderIndex` frame is present. */
+  hasHeaderIndex: boolean;
+  /** A `FooterIndex` frame is present. */
+  hasFooterIndex: boolean;
+  /** A `HeaderHash` frame is present. */
+  hasHeaderHashes: boolean;
+  /** A `FooterHash` frame is present. */
+  hasFooterHashes: boolean;
+  /** At least one `PrecederMetadata` frame appears in the body. */
+  hasPrecederMetadata: boolean;
+  /**
+   * Advisory: every frame in this message has its per-frame
+   * `HASH_PRESENT` bit set.  {@link Frame.hasHash} remains
+   * authoritative for any single frame.
+   */
+  hasHashesPresent: boolean;
+}
+
+/**
  * Options for {@link scanWithOptions}.
  *
  * Mirrors the Rust core `framing::ScanOptions`.
@@ -419,6 +521,51 @@ export type MaskMethod =
   | 'zstd'
   | 'blosc2';
 
+/**
+ * Where the aggregate hash frame is written inside a message.
+ *
+ * The aggregate frame is a CBOR list of every per-object inline hash
+ * slot — a redundant copy that lets tools read all digests at once
+ * without walking the body.  The per-frame inline slots always remain
+ * authoritative (see {@link dataObjectInlineHashes}).
+ *
+ * Mirrors the Rust core `AggregateHashPolicy`:
+ *
+ * - `"auto"` — the encoder picks; buffered {@link encode} writes a
+ *   `HeaderHash` frame.  This is the default.
+ * - `"none"` — no aggregate frame at all.
+ * - `"header"` — a `HeaderHash` frame only.
+ * - `"footer"` — a `FooterHash` frame only.
+ * - `"both"` — a `HeaderHash` **and** a `FooterHash` frame, carrying
+ *   identical hash lists.
+ *
+ * Ignored when `hash: false`: with per-frame hashing disabled there is
+ * nothing to aggregate, so no frame is written whichever policy is
+ * requested.  Use {@link frames} to observe the resulting placement.
+ */
+export type AggregateHashPolicy = 'auto' | 'none' | 'header' | 'footer' | 'both';
+
+/**
+ * Which compression implementation the encode pipeline should use.
+ *
+ * Mirrors the Rust core `CompressionBackend` (`"auto"` consults the
+ * `TENSOGRAM_COMPRESSION_BACKEND` environment variable and the platform
+ * default; `"ffi"` selects the C libraries — libaec, libzstd; `"pure"`
+ * selects the pure-Rust codecs).
+ *
+ * **Platform no-op in these bindings.**  The WASM bundle is compiled
+ * with the pure-Rust codecs only (`lz4`, `szip-pure`, `zstd-pure`);
+ * there is no C library to link against in a browser or in Node's WASM
+ * sandbox.  Every accepted value therefore produces byte-identical
+ * output here.  The knob exists for source symmetry with the Rust,
+ * Python, and C bindings — code written against one binding reads the
+ * same against another — and is validated (an unrecognised name
+ * throws) but never changes behaviour.  The same accepted asymmetry
+ * applies to the core's `threads` knob, which the single-threaded WASM
+ * build does not expose at all.
+ */
+export type CompressionBackend = 'auto' | 'ffi' | 'pure';
+
 /** Options for `encode()`. */
 export interface EncodeOptions {
   /**
@@ -452,6 +599,19 @@ export interface EncodeOptions {
    * Default `128`.  Set to `0` to disable the auto-fallback.
    */
   smallMaskThresholdBytes?: number;
+  /**
+   * Where to emit the aggregate hash frame.  Default `"auto"`, which
+   * this buffered encoder resolves to a `HeaderHash` frame.  See
+   * {@link AggregateHashPolicy}.
+   */
+  aggregateHash?: AggregateHashPolicy;
+  /**
+   * Which compression implementation to use.  **No-op in the WASM
+   * bindings** — this build carries pure-Rust codecs only.  Accepted
+   * and validated for source symmetry with the other bindings; see
+   * {@link CompressionBackend}.
+   */
+  compressionBackend?: CompressionBackend;
 }
 
 /** Options for `decode()` / `decodeObject()`. */
@@ -774,6 +934,10 @@ export interface AppendOptions {
   negInfMaskMethod?: MaskMethod;
   /** See {@link EncodeOptions.smallMaskThresholdBytes}.  Default `128`. */
   smallMaskThresholdBytes?: number;
+  /** See {@link EncodeOptions.aggregateHash}.  Default `"auto"`. */
+  aggregateHash?: AggregateHashPolicy;
+  /** See {@link EncodeOptions.compressionBackend}.  No-op on WASM. */
+  compressionBackend?: CompressionBackend;
 }
 
 /** Options for {@link StreamingEncoder}. */

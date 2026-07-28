@@ -24,6 +24,7 @@
 mod convert;
 mod encoder;
 mod extras;
+mod frame_walk;
 mod layout;
 mod masks;
 mod remote_scan;
@@ -151,6 +152,12 @@ pub fn scan(buf: &[u8]) -> Result<JsValue, JsValue> {
 /// @param pos_inf_mask_method - Mask compression method for the +Inf mask
 /// @param neg_inf_mask_method - Mask compression method for the -Inf mask
 /// @param small_mask_threshold_bytes - Mask size below which method="none" is forced (default: 128)
+/// @param aggregate_hash - Where to emit the aggregate hash frame:
+///                    `"auto"` (default — a `HeaderHash` frame in this
+///                    buffered path), `"none"`, `"header"`, `"footer"`,
+///                    or `"both"`.  Ignored when `hash` is `false`:
+///                    with per-frame hashing off there is nothing to
+///                    aggregate.  Unknown names throw.
 /// @returns Uint8Array containing the encoded .tgm message
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
@@ -164,6 +171,7 @@ pub fn encode(
     pos_inf_mask_method: Option<String>,
     neg_inf_mask_method: Option<String>,
     small_mask_threshold_bytes: Option<usize>,
+    aggregate_hash: Option<String>,
 ) -> Result<js_sys::Uint8Array, JsValue> {
     let metadata = metadata_from_js(&metadata_js)?;
     let (descriptors, data_vec) = extract_descriptor_data_pairs(&objects_js)?;
@@ -180,6 +188,7 @@ pub fn encode(
         pos_inf_mask_method.as_deref(),
         neg_inf_mask_method.as_deref(),
         small_mask_threshold_bytes,
+        aggregate_hash.as_deref(),
     )?;
     let encoded = core::encode(&metadata, &pairs, &options).map_err(js_err)?;
     // Return a JS-owned copy.  We must not use `view_as_u8` here because
@@ -327,6 +336,10 @@ pub use extras::{
 // ── Wave-D exports (decode_with_masks + mask sets) ──────────────────────────
 
 pub use masks::{DecodedMaskedMessage, decode_with_masks};
+
+// ── Structural introspection (frame walker + typed message envelope) ────────
+
+pub use frame_walk::{frames, message_header};
 
 // ── Doctor: environment diagnostics ──────────────────────────────────────────
 

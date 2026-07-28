@@ -44,14 +44,6 @@ pub fn decode_descriptors(buf: &[u8]) -> Result<JsValue, JsValue> {
     Ok(result.into())
 }
 
-/// Set an own-property on a JS object, mapping the (practically
-/// unreachable) `Reflect::set` failure to a thrown JS error.
-fn set_field(obj: &js_sys::Object, key: &str, value: &JsValue) -> Result<(), JsValue> {
-    js_sys::Reflect::set(obj, &JsValue::from_str(key), value)
-        .map(|_| ())
-        .map_err(|_| JsValue::from(js_sys::Error::new(&format!("failed to set '{key}'"))))
-}
-
 // ── scan_with_options ────────────────────────────────────────────────────────
 
 /// Scan a multi-message buffer for message boundaries with explicit

@@ -1192,6 +1192,8 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
       posInfMaskMethod: options.posInfMaskMethod,
       negInfMaskMethod: options.negInfMaskMethod,
       smallMaskThresholdBytes: options.smallMaskThresholdBytes,
+      aggregateHash: options.aggregateHash,
+      compressionBackend: options.compressionBackend,
     };
     const bytes = rethrowTyped(() => encode(metadata, objects, encodeOpts));
 

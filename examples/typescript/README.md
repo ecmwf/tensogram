@@ -62,3 +62,4 @@ npx tsx 01_encode_decode.ts
 | [`18_remote_scan_trace.ts`](18_remote_scan_trace.ts) | Intercept `console.debug` to capture `tensogram:scan:*` events from forward-only and bidirectional walkers |
 | [`19_file_create_masks.ts`](19_file_create_masks.ts) | `TensogramFile.create` empty-file factory + `append` with NaN/Inf mask options (`allowNan` / `allowInf` / `*MaskMethod`), read back with restoration |
 | [`20_masks_and_iterators.ts`](20_masks_and_iterators.ts) | `decodeWithMasks` (raw NaN / Inf masks) + lazy `objects` / `objectsMetadata` iterators + `scanWithOptions` / `dataObjectInlineHashes` |
+| [`21_frame_walker.ts`](21_frame_walker.ts) | `frames` / `messageHeader` — structural introspection of one message (frame chain, offsets, typed envelope), per-message slicing with `scan`, and `aggregateHash` placement seen on the wire |

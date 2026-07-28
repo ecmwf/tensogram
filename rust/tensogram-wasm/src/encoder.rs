@@ -220,6 +220,13 @@ impl StreamingEncoder {
             pos_inf_mask_method.as_deref(),
             neg_inf_mask_method.as_deref(),
             small_mask_threshold_bytes,
+            // The streaming encoder keeps the core default
+            // (`AggregateHashPolicy::Auto` → a `FooterHash` frame):
+            // header placement is impossible here because the header is
+            // written before any object, so the digests are not yet
+            // known.  Buffered `encode` carries the caller-selectable
+            // knob.
+            None,
         )?;
         let inner = match on_bytes {
             Some(cb) => {
