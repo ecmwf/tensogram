@@ -51,6 +51,7 @@ uv pip install -e python/tensogram-zarr/
 | `17_convert_grib.py` | Convert GRIB → Tensogram via `tensogram.convert_grib` (file) and `tensogram.convert_grib_buffer` (in-memory) |
 | `19_async_streaming_and_common.py` | Async streaming encode with `AsyncStreamingEncoder`, cross-object `compute_common`, and per-object `object_inline_hashes` |
 | `20_scan_validate_layouts.py` | Reader-side symmetry: `scan_file`/`scan_with_options`/`ScanOptions`, `validate_buffer`, `message_layouts`, lazy `objects`/`objects_metadata`, and `open_mmap` |
+| `21_frames_and_message_header.py` | Structural introspection: the `frames()` frame walker and the typed `message_header()`, plus the `aggregate_hash=` / `compression_backend=` encode knobs |
 
 For **narrative walk-throughs** with live plots and prose explanations,
 see the companion notebooks under `../jupyter/`.
@@ -59,7 +60,10 @@ see the companion notebooks under `../jupyter/`.
 
 ```
 tensogram
-├── encode(metadata, descriptors_and_data, hash="xxh3") -> bytes
+├── encode(metadata, descriptors_and_data, hash="xxh3",
+│          aggregate_hash="auto",        # or "none"|"header"|"footer"|"both"
+│          compression_backend="auto")   # or "ffi"|"pure"  (szip / zstd)
+│          -> bytes
 ├── decode(buf, verify_hash=False) -> Message
 ├── decode_metadata(buf) -> Metadata
 ├── decode_object(buf, index, verify_hash=False) -> (Metadata, DataObjectDescriptor, ndarray)
@@ -71,6 +75,8 @@ tensogram
 ├── scan_file_with_options(path, ScanOptions(...)) -> list[tuple[int, int]]
 ├── objects(buf, ...) -> ObjectIter                         # lazy (descriptor, ndarray)
 ├── objects_metadata(buf) -> ObjectMetadataIter             # lazy descriptors only
+├── frames(msg) -> FrameIter                    # lazy Frame walk of ONE message
+├── message_header(msg) -> MessageHeader        # the preamble, typed
 ├── object_inline_hashes(buf) -> list[str | None]   # per-object xxh3-64 hex, or None
 ├── iter_messages(buf, verify_hash=False) -> MessageIter
 ├── compute_packing_params(values, bits_per_value, decimal_scale_factor) -> dict
@@ -78,13 +84,18 @@ tensogram
 ├── validate(buf, level="default", check_canonical=False) -> dict           # single message
 ├── validate_buffer(buf, level="default", check_canonical=False) -> dict    # multi-message buffer
 ├── validate_file(path, level="default", check_canonical=False) -> dict
-├── StreamingEncoder(metadata, hash="xxh3")           # + write_preceder / object_count() / bytes_written()
-├── AsyncStreamingEncoder.create(metadata, hash="xxh3") -> awaitable  # async write_object / finish
+├── StreamingEncoder(metadata, hash="xxh3", aggregate_hash="auto", compression_backend="auto")
+│                                                     # + write_preceder / object_count() / bytes_written()
+│                                                     # aggregate_hash "header"/"both" are rejected here
+├── AsyncStreamingEncoder.create(metadata, hash="xxh3", ...) -> awaitable
+│                                                     # same knobs as StreamingEncoder
+│                                                     # async write_object / finish
 └── TensogramFile
     ├── open(path) -> TensogramFile
     ├── open_mmap(path) -> TensogramFile   # zero-copy memory-mapped reads (mmap feature)
     ├── create(path) -> TensogramFile
-    ├── append(metadata, descriptors_and_data, hash="xxh3")
+    ├── append(metadata, descriptors_and_data, hash="xxh3",
+    │          aggregate_hash="auto", compression_backend="auto")
     ├── message_count() -> int
     ├── message_layouts() -> list[MessageLayout]   # per-message (offset, length)
     ├── read_message(index) -> bytes
@@ -112,6 +123,26 @@ tensogram.DataObjectDescriptor
     .byte_order, .encoding, .filter, .compression
     .params -> dict               # encoding parameters (e.g. reference_value, bits_per_value)
     .hash   -> None               # deprecated in v3; use tensogram.object_inline_hashes(buf)
+
+tensogram.Frame                   # yielded by tensogram.frames(msg)
+    .frame_type      -> str       # "HeaderMetadata" | "HeaderIndex" | "HeaderHash"
+                                  # | "FooterHash" | "FooterIndex" | "FooterMetadata"
+                                  # | "PrecederMetadata" | "NTensorFrame"
+    .frame_type_code -> int       # the numeric wire code (1,2,3,5,6,7,8,9)
+    .version, .flags -> int       # frame header fields (flags bit 1 = HASH_PRESENT)
+    .offset, .length -> int       # whole-frame span, relative to the message start
+    .payload         -> bytes     # frame content (header + type-specific footer excluded)
+    .has_hash        -> bool      # this frame's hash slot holds a real digest
+    .is_data_object  -> bool      # True for NTensorFrame
+
+tensogram.MessageHeader           # returned by tensogram.message_header(msg)
+    .version      -> int          # wire-format version
+    .total_length -> int          # 0 for a streaming message that was not back-filled
+    .flags        -> int          # raw preamble bits; prefer the predicates below
+    .has_header_metadata, .has_footer_metadata -> bool
+    .has_header_index,    .has_footer_index    -> bool
+    .has_header_hashes,   .has_footer_hashes   -> bool
+    .has_preceder_metadata, .has_hashes_present -> bool
 ```
 
 ## NumPy Integration

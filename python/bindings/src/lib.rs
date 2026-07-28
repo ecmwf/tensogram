@@ -37,13 +37,14 @@ use tensogram_lib::validate::{
     validate_file as core_validate_file, validate_message,
 };
 use tensogram_lib::{
-    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    MessageLayout, ObjectIter as CoreObjectIter, RESERVED_KEY, RemoteScanOptions,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, FrameType,
+    GlobalMetadata, MessageLayout, ObjectIter as CoreObjectIter, RESERVED_KEY, RemoteScanOptions,
     ScanOptions as CoreScanOptions, StreamingEncoder, TensogramError, TensogramFile,
     compute_common, data_object_inline_hashes, decode, decode_descriptors, decode_metadata,
     decode_object, decode_range, decode_range_from_payload, encode, encode_pre_encoded,
-    objects as core_objects, objects_metadata as core_objects_metadata, parse_hash_name, scan,
-    scan_file, scan_file_with_options, scan_with_options,
+    frames as core_frames, message_header as core_message_header, objects as core_objects,
+    objects_metadata as core_objects_metadata, parse_hash_name, scan, scan_file,
+    scan_file_with_options, scan_with_options,
 };
 
 type PyObject = Py<PyAny>;
@@ -803,6 +804,10 @@ impl PyTensogramFile {
     ///         optionally ``byte_order``, ``encoding``, ``filter``, ``compression``.
     ///     hash: ``"xxh3"`` (default) or ``None`` to skip hashing.
     ///     threads: thread budget (0 = sequential / env fallback).
+    ///     aggregate_hash: aggregate hash frame placement — ``"auto"``
+    ///         (default), ``"none"``, ``"header"``, ``"footer"``, ``"both"``.
+    ///     compression_backend: szip / zstd implementation — ``"auto"``
+    ///         (default), ``"ffi"``, ``"pure"``.
     #[pyo3(
         signature = (
             global_meta_dict,
@@ -816,6 +821,7 @@ impl PyTensogramFile {
             neg_inf_mask_method=None,
             small_mask_threshold_bytes=None,
             aggregate_hash=None,
+            compression_backend=None,
         )
     )]
     #[allow(clippy::too_many_arguments)]
@@ -833,6 +839,7 @@ impl PyTensogramFile {
         neg_inf_mask_method: Option<&str>,
         small_mask_threshold_bytes: Option<usize>,
         aggregate_hash: Option<&str>,
+        compression_backend: Option<&str>,
     ) -> PyResult<()> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
@@ -849,6 +856,7 @@ impl PyTensogramFile {
             neg_inf_mask_method,
             small_mask_threshold_bytes,
             aggregate_hash,
+            compression_backend,
         )?;
         py.detach(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
@@ -1260,9 +1268,20 @@ impl PyFileIter {
 ///     global_meta_dict: ``{"base": [...], ...}`` with any extra keys.
 ///     descriptors_and_data: list of ``(descriptor_dict, numpy_array)`` pairs.
 ///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
+///     aggregate_hash: where to place the aggregate hash frame —
+///         ``"auto"`` (default; buffered → header), ``"none"``,
+///         ``"header"``, ``"footer"`` or ``"both"``.  Verifiable with
+///         :func:`frames` (``HeaderHash`` / ``FooterHash``).
+///     compression_backend: which szip / zstd implementation to use when
+///         both are compiled in — ``"auto"`` (default; consults
+///         ``TENSOGRAM_COMPRESSION_BACKEND``), ``"ffi"`` or ``"pure"``.
 ///
 /// Returns:
 ///     ``bytes`` — the complete wire-format message.
+///
+/// Raises:
+///     ValueError: On an unknown ``aggregate_hash`` or
+///         ``compression_backend`` value.
 #[pyfunction]
 #[pyo3(
     name = "encode",
@@ -1278,6 +1297,7 @@ impl PyFileIter {
         neg_inf_mask_method=None,
         small_mask_threshold_bytes=None,
         aggregate_hash=None,
+        compression_backend=None,
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -1294,6 +1314,7 @@ fn py_encode<'py>(
     neg_inf_mask_method: Option<&str>,
     small_mask_threshold_bytes: Option<usize>,
     aggregate_hash: Option<&str>,
+    compression_backend: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
     let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
@@ -1310,6 +1331,7 @@ fn py_encode<'py>(
         neg_inf_mask_method,
         small_mask_threshold_bytes,
         aggregate_hash,
+        compression_backend,
     )?;
     let msg = py.detach(|| encode(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
@@ -2161,6 +2183,389 @@ impl PyObjectMetadataIter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Frame walker — Frame / FrameIter / MessageHeader
+// ---------------------------------------------------------------------------
+
+/// Canonical wire-format name of a frame type (`plans/WIRE_FORMAT.md` §4).
+///
+/// The name is the Python-facing identity of a frame type: it is what
+/// :attr:`Frame.frame_type` returns, paired with the numeric wire code in
+/// :attr:`Frame.frame_type_code`.  Type 4 is reserved (the obsolete v2
+/// tensor frame) and never reaches this function — the core walker
+/// rejects it while parsing the frame header.
+fn frame_type_name(frame_type: FrameType) -> &'static str {
+    match frame_type {
+        FrameType::HeaderMetadata => "HeaderMetadata",
+        FrameType::HeaderIndex => "HeaderIndex",
+        FrameType::HeaderHash => "HeaderHash",
+        FrameType::FooterHash => "FooterHash",
+        FrameType::FooterIndex => "FooterIndex",
+        FrameType::FooterMetadata => "FooterMetadata",
+        FrameType::PrecederMetadata => "PrecederMetadata",
+        FrameType::NTensorFrame => "NTensorFrame",
+    }
+}
+
+/// One frame of a message, as reported by :func:`frames`.
+///
+/// Direct binding of the Rust core ``tensogram::FrameInfo``.  All byte
+/// positions are relative to the start of the message that was handed to
+/// :func:`frames`.
+///
+/// Attributes:
+///     frame_type (str): Wire-format name — one of ``"HeaderMetadata"``,
+///         ``"HeaderIndex"``, ``"HeaderHash"``, ``"FooterHash"``,
+///         ``"FooterIndex"``, ``"FooterMetadata"``, ``"PrecederMetadata"``,
+///         ``"NTensorFrame"``.
+///     frame_type_code (int): The same type as its numeric wire code
+///         (1, 2, 3, 5, 6, 7, 8, 9 — code 4 is reserved and never appears).
+///     version (int): Frame-type-specific version from the frame header.
+///     flags (int): Raw 16-bit frame flags; bit 1 is ``HASH_PRESENT``
+///         (see :attr:`has_hash`).
+///     offset (int): Byte offset of the frame header within the message.
+///     length (int): Whole-frame span in bytes, frame header through
+///         ``ENDF``, excluding trailing alignment padding.
+///     payload (bytes): The frame *content* — the 16-byte frame header and
+///         the type-specific footer are excluded.  For a data-object frame
+///         that is the encoded payload plus the trailing CBOR descriptor;
+///         for every other type it is the CBOR body.  Materialised on
+///         access from the source buffer, so walking frames for their
+///         offsets costs no payload copies.
+///     has_hash (bool): The frame's ``HASH_PRESENT`` flag — its hash slot
+///         holds a real digest.
+///     is_data_object (bool): ``True`` for data-object frames
+///         (``NTensorFrame`` in v3).
+#[pyclass(name = "Frame")]
+struct PyFrame {
+    #[pyo3(get)]
+    frame_type: String,
+    #[pyo3(get)]
+    frame_type_code: u16,
+    #[pyo3(get)]
+    version: u16,
+    #[pyo3(get)]
+    flags: u16,
+    #[pyo3(get)]
+    offset: usize,
+    #[pyo3(get)]
+    length: usize,
+    #[pyo3(get)]
+    has_hash: bool,
+    #[pyo3(get)]
+    is_data_object: bool,
+    /// The source message, retained so :attr:`payload` can be sliced on
+    /// demand rather than copied for every frame the walk yields.
+    buf: PyBackedBytes,
+    payload_offset: usize,
+    payload_len: usize,
+}
+
+#[pymethods]
+impl PyFrame {
+    /// The frame's content as ``bytes`` (header and footer excluded).
+    #[getter]
+    fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(
+            py,
+            &self.buf[self.payload_offset..self.payload_offset + self.payload_len],
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Frame(frame_type='{}', offset={}, length={}, payload_len={}, has_hash={})",
+            self.frame_type,
+            self.offset,
+            self.length,
+            self.payload_len,
+            if self.has_hash { "True" } else { "False" },
+        )
+    }
+}
+
+/// Structural description of one frame, without its payload bytes.
+///
+/// `payload_offset` is an absolute offset into the source message (the
+/// core reports the payload as a borrowed slice; the binding keeps the
+/// span so the bytes can be produced later from the retained buffer).
+struct FrameRecord {
+    frame_type: FrameType,
+    version: u16,
+    flags: u16,
+    offset: usize,
+    length: usize,
+    has_hash: bool,
+    payload_offset: usize,
+    payload_len: usize,
+}
+
+/// Walk the frames of a **single** message.
+///
+/// Direct binding of the Rust core :func:`tensogram::frames`.  Yields one
+/// :class:`Frame` per ``next()``, in wire order, for frame types 1–9.  The
+/// preamble and postamble are *not* frames and are never yielded — use
+/// :func:`message_header` for the envelope.
+///
+/// Args:
+///     buf: The bytes of **one** message, starting at its ``TENSOGRM``
+///         preamble.  For a multi-message buffer or file, slice it first::
+///
+///             for offset, length in tensogram.scan(buf):
+///                 for frame in tensogram.frames(buf[offset:offset + length]):
+///                     ...
+///
+///         Passing an unsliced multi-message buffer is not an error, but the
+///         walk stops at the end of the first message.
+///
+/// Returns:
+///     :class:`FrameIter` — an iterator of :class:`Frame` objects.
+///
+/// Raises:
+///     ValueError: If ``buf`` does not start with a readable preamble.  A
+///         preamble that parses but is followed by a malformed frame chain
+///         raises from ``next()`` instead, after the frames that did parse.
+///
+/// Example::
+///
+///     for frame in tensogram.frames(msg):
+///         print(frame.frame_type, frame.offset, frame.length, len(frame.payload))
+#[pyfunction]
+#[pyo3(name = "frames")]
+fn py_frames(buf: PyBackedBytes) -> PyResult<PyFrameIter> {
+    use tensogram_lib::wire::FRAME_HEADER_SIZE;
+
+    // The core iterator borrows `buf`, so the structural walk (frame
+    // headers only — no payload is touched) runs here and the payload
+    // spans are resolved against the retained buffer on demand.  This is
+    // the same shape as `objects_metadata` / `ObjectMetadataIter`.
+    let mut records: Vec<FrameRecord> = Vec::new();
+    let mut error: Option<TensogramError> = None;
+    for item in core_frames(&buf).map_err(to_py_err)? {
+        match item {
+            Ok(info) => records.push(FrameRecord {
+                frame_type: info.frame_type,
+                version: info.version,
+                flags: info.flags,
+                offset: info.offset,
+                length: info.length,
+                // The core owns the meaning of the flag bits.
+                has_hash: info.has_hash(),
+                // `FrameInfo::payload` starts right after the frame header
+                // and stops before the type-specific footer.
+                payload_offset: info.offset + FRAME_HEADER_SIZE,
+                payload_len: info.payload.len(),
+            }),
+            // The core iterator yields at most one error and then stops;
+            // it is surfaced from `__next__` in the position it occurred.
+            Err(e) => {
+                error = Some(e);
+                break;
+            }
+        }
+    }
+    Ok(PyFrameIter {
+        buf,
+        records,
+        index: 0,
+        error,
+    })
+}
+
+/// Iterator over the frames of a single message.
+///
+/// Created by :func:`frames`.  Implements ``__len__`` (frames left to
+/// yield, not counting a trailing framing error).  A malformed frame chain
+/// raises ``ValueError`` from ``next()`` once, after the frames that did
+/// parse; iteration then stops cleanly.
+///
+/// Cost model: the structural walk reads frame *headers* only and never
+/// touches payload bytes; each ``next()`` then materialises one
+/// :class:`Frame`, whose ``payload`` is sliced out of the retained source
+/// buffer on access.  Walking a large message to inspect offsets and
+/// lengths therefore copies nothing.
+#[pyclass(name = "FrameIter")]
+struct PyFrameIter {
+    buf: PyBackedBytes,
+    records: Vec<FrameRecord>,
+    index: usize,
+    /// Framing error that ended the walk, replayed once in position.
+    error: Option<TensogramError>,
+}
+
+#[pymethods]
+impl PyFrameIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        if let Some(record) = self.records.get(self.index) {
+            self.index += 1;
+            let frame = PyFrame {
+                frame_type: frame_type_name(record.frame_type).to_string(),
+                frame_type_code: record.frame_type as u16,
+                version: record.version,
+                flags: record.flags,
+                offset: record.offset,
+                length: record.length,
+                has_hash: record.has_hash,
+                is_data_object: record.frame_type.is_data_object(),
+                buf: self.buf.clone_ref(py),
+                payload_offset: record.payload_offset,
+                payload_len: record.payload_len,
+            };
+            return Ok(Some(frame.into_pyobject(py)?.into_any().unbind()));
+        }
+        // `take` makes the error a one-shot: the next call ends the walk.
+        match self.error.take() {
+            Some(e) => Err(to_py_err(e)),
+            None => Ok(None),
+        }
+    }
+
+    fn __len__(&self) -> usize {
+        self.records.len().saturating_sub(self.index)
+    }
+
+    fn __repr__(&self) -> String {
+        let remaining = self.records.len().saturating_sub(self.index);
+        format!(
+            "FrameIter(position={}, remaining={})",
+            self.index, remaining
+        )
+    }
+}
+
+/// A message's envelope (its 24-byte preamble), decoded into typed values.
+///
+/// Direct binding of the Rust core ``tensogram::MessageHeader``, returned
+/// by :func:`message_header`.  The eight structural predicates keep the
+/// core's ``has_`` prefix and are plain read-only ``bool`` attributes, so
+/// ``header.has_header_index`` reads the same in every binding.
+///
+/// Attributes:
+///     version (int): Wire-format version (3 in v3).
+///     total_length (int): Total message length in bytes, preamble through
+///         postamble.  ``0`` for a streaming message whose length was never
+///         back-filled.
+///     flags (int): Raw preamble flag bits; prefer the predicates below.
+///     has_header_metadata (bool): A ``HeaderMetadata`` frame is present
+///         (random-access mode).
+///     has_footer_metadata (bool): A ``FooterMetadata`` frame is present
+///         (streaming mode).
+///     has_header_index (bool): A ``HeaderIndex`` frame is present.
+///     has_footer_index (bool): A ``FooterIndex`` frame is present.
+///     has_header_hashes (bool): A ``HeaderHash`` frame is present.
+///     has_footer_hashes (bool): A ``FooterHash`` frame is present.
+///     has_preceder_metadata (bool): At least one ``PrecederMetadata``
+///         frame appears in the body.
+///     has_hashes_present (bool): Advisory — every frame has its per-frame
+///         ``HASH_PRESENT`` bit set.  The per-frame :attr:`Frame.has_hash`
+///         stays authoritative for any single frame.
+///
+/// In a buffered (``encode``) message the flags describe the frames
+/// exactly.  A streaming message writes its preamble before any object, so
+/// its flags are advisory: a frame that *is* present is always advertised,
+/// but ``has_preceder_metadata`` may be set optimistically with no
+/// ``PrecederMetadata`` frame in the body.
+#[pyclass(name = "MessageHeader")]
+struct PyMessageHeader {
+    #[pyo3(get)]
+    version: u16,
+    #[pyo3(get)]
+    total_length: u64,
+    #[pyo3(get)]
+    flags: u16,
+    #[pyo3(get)]
+    has_header_metadata: bool,
+    #[pyo3(get)]
+    has_footer_metadata: bool,
+    #[pyo3(get)]
+    has_header_index: bool,
+    #[pyo3(get)]
+    has_footer_index: bool,
+    #[pyo3(get)]
+    has_header_hashes: bool,
+    #[pyo3(get)]
+    has_footer_hashes: bool,
+    #[pyo3(get)]
+    has_preceder_metadata: bool,
+    #[pyo3(get)]
+    has_hashes_present: bool,
+}
+
+#[pymethods]
+impl PyMessageHeader {
+    fn __repr__(&self) -> String {
+        let mut present: Vec<&str> = Vec::new();
+        for (name, set) in [
+            ("header_metadata", self.has_header_metadata),
+            ("footer_metadata", self.has_footer_metadata),
+            ("header_index", self.has_header_index),
+            ("footer_index", self.has_footer_index),
+            ("header_hashes", self.has_header_hashes),
+            ("footer_hashes", self.has_footer_hashes),
+            ("preceder_metadata", self.has_preceder_metadata),
+            ("hashes_present", self.has_hashes_present),
+        ] {
+            if set {
+                present.push(name);
+            }
+        }
+        format!(
+            "MessageHeader(version={}, total_length={}, flags=0x{:04x}, present=[{}])",
+            self.version,
+            self.total_length,
+            self.flags,
+            present.join(", ")
+        )
+    }
+}
+
+/// Read a message's envelope without walking its frames.
+///
+/// Direct binding of the Rust core :func:`tensogram::message_header`.
+/// Parses only the 24-byte preamble, so it is the cheapest way to tell a
+/// random-access message (metadata / index / hashes in the *header*) from a
+/// streaming one (in the *footer*).
+///
+/// Args:
+///     buf: The bytes of **one** message, starting at its ``TENSOGRM``
+///         preamble.  For a multi-message buffer, slice it with
+///         :func:`scan` first; reading an unsliced buffer describes only
+///         the first message.
+///
+/// Returns:
+///     :class:`MessageHeader`.
+///
+/// Raises:
+///     ValueError: If ``buf`` does not start with a readable preamble.
+///
+/// Example::
+///
+///     header = tensogram.message_header(msg)
+///     if header.has_header_index:
+///         print("random-access message of", header.total_length, "bytes")
+#[pyfunction]
+#[pyo3(name = "message_header")]
+fn py_message_header(buf: PyBackedBytes) -> PyResult<PyMessageHeader> {
+    let header = core_message_header(&buf).map_err(to_py_err)?;
+    Ok(PyMessageHeader {
+        version: header.version,
+        total_length: header.total_length,
+        flags: header.flags.bits(),
+        has_header_metadata: header.has_header_metadata(),
+        has_footer_metadata: header.has_footer_metadata(),
+        has_header_index: header.has_header_index(),
+        has_footer_index: header.has_footer_index(),
+        has_header_hashes: header.has_header_hashes(),
+        has_footer_hashes: header.has_footer_hashes(),
+        has_preceder_metadata: header.has_preceder_metadata(),
+        has_hashes_present: header.has_hashes_present(),
+    })
+}
+
 /// Compute a hash digest over arbitrary bytes.
 ///
 /// Mirrors Rust :func:`tensogram::compute_hash`, the WASM
@@ -2352,6 +2757,12 @@ impl PyStreamingEncoder {
     ///         :meth:`write_object` (axis B only — streaming encoding
     ///         does not have cross-object parallelism by design).
     ///         Default ``0`` preserves the sequential path.
+    ///     aggregate_hash: aggregate hash frame placement — ``"auto"``
+    ///         (default; streaming → footer), ``"none"`` or ``"footer"``.
+    ///         ``"header"`` / ``"both"`` raise ``ValueError``: the
+    ///         streaming header is written before any data object.
+    ///     compression_backend: szip / zstd implementation — ``"auto"``
+    ///         (default), ``"ffi"``, ``"pure"``.
     #[new]
     #[pyo3(
         signature = (
@@ -2365,6 +2776,7 @@ impl PyStreamingEncoder {
             neg_inf_mask_method=None,
             small_mask_threshold_bytes=None,
             aggregate_hash=None,
+            compression_backend=None,
         )
     )]
     #[allow(clippy::too_many_arguments)]
@@ -2379,6 +2791,7 @@ impl PyStreamingEncoder {
         neg_inf_mask_method: Option<&str>,
         small_mask_threshold_bytes: Option<usize>,
         aggregate_hash: Option<&str>,
+        compression_backend: Option<&str>,
     ) -> PyResult<Self> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let options = make_encode_options_full(
@@ -2391,6 +2804,7 @@ impl PyStreamingEncoder {
             neg_inf_mask_method,
             small_mask_threshold_bytes,
             aggregate_hash,
+            compression_backend,
         )?;
         let inner = StreamingEncoder::new(std::io::Cursor::new(Vec::new()), &global_meta, &options)
             .map_err(to_py_err)?;
@@ -3339,7 +3753,8 @@ impl PyAsyncStreamingEncoder {
     ///
     /// Writes the preamble + header metadata frame to the in-memory sink
     /// before the returned coroutine resolves.  Accepts the same kwargs
-    /// as :class:`StreamingEncoder`.  ``aggregate_hash="header"`` /
+    /// as :class:`StreamingEncoder`, including ``aggregate_hash`` and
+    /// ``compression_backend``.  ``aggregate_hash="header"`` /
     /// ``"both"`` are rejected in streaming mode (the header is written
     /// before any data object).
     ///
@@ -3359,6 +3774,7 @@ impl PyAsyncStreamingEncoder {
             neg_inf_mask_method=None,
             small_mask_threshold_bytes=None,
             aggregate_hash=None,
+            compression_backend=None,
         )
     )]
     #[allow(clippy::too_many_arguments)]
@@ -3374,6 +3790,7 @@ impl PyAsyncStreamingEncoder {
         neg_inf_mask_method: Option<&str>,
         small_mask_threshold_bytes: Option<usize>,
         aggregate_hash: Option<&str>,
+        compression_backend: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // Convert the caller's metadata + options while the GIL is held,
         // yielding owned `Send + 'static` values to move into the future.
@@ -3388,6 +3805,7 @@ impl PyAsyncStreamingEncoder {
             neg_inf_mask_method,
             small_mask_threshold_bytes,
             aggregate_hash,
+            compression_backend,
         )?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let enc = AsyncStreamingEncoder::new(
@@ -4211,6 +4629,8 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_objects, m)?)?;
     m.add_function(wrap_pyfunction!(py_objects_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(py_object_inline_hashes, m)?)?;
+    m.add_function(wrap_pyfunction!(py_frames, m)?)?;
+    m.add_function(wrap_pyfunction!(py_message_header, m)?)?;
     m.add_function(wrap_pyfunction!(py_compute_common, m)?)?;
     m.add_function(wrap_pyfunction!(py_iter_messages, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate, m)?)?;
@@ -4233,6 +4653,9 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBufferIter>()?;
     m.add_class::<PyObjectIter>()?;
     m.add_class::<PyObjectMetadataIter>()?;
+    m.add_class::<PyFrame>()?;
+    m.add_class::<PyFrameIter>()?;
+    m.add_class::<PyMessageHeader>()?;
     m.add_class::<PyStreamingEncoder>()?;
     #[cfg(feature = "async")]
     m.add_class::<PyAsyncTensogramFile>()?;
@@ -4282,7 +4705,9 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // ---------------------------------------------------------------------------
 
 fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptions> {
-    make_encode_options_full(hash, threads, false, false, None, None, None, None, None)
+    make_encode_options_full(
+        hash, threads, false, false, None, None, None, None, None, None,
+    )
 }
 
 /// Build an [`EncodeOptions`] from the full kwargs set exposed by the
@@ -4306,6 +4731,17 @@ fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptio
 /// object.  Earlier versions silently folded those into a footer
 /// hash; the current contract surfaces the mismatch as a `ValueError`
 /// from the encoder constructor.
+///
+/// `compression_backend` selects the szip / zstd implementation when
+/// both an FFI and a pure-Rust one are compiled in.  Accepted values:
+/// - `None` (or omitted) / `"auto"` → `Auto`: consult
+///   `TENSOGRAM_COMPRESSION_BACKEND`, else the platform default.
+/// - `"ffi"` → the C libraries (libaec / libzstd).
+/// - `"pure"` → the pure-Rust codecs (tensogram-szip / ruzstd).
+///
+/// When only one implementation is compiled in, the value is ignored —
+/// the available one is always used, so `"pure"` never fails at encode
+/// time on an FFI-only build.
 #[allow(clippy::too_many_arguments)]
 fn make_encode_options_full(
     hash: Option<&str>,
@@ -4317,7 +4753,9 @@ fn make_encode_options_full(
     neg_inf_mask_method: Option<&str>,
     small_mask_threshold_bytes: Option<usize>,
     aggregate_hash: Option<&str>,
+    compression_backend: Option<&str>,
 ) -> PyResult<EncodeOptions> {
+    use tensogram_lib::CompressionBackend;
     use tensogram_lib::encode::{AggregateHashPolicy, MaskMethod};
 
     // Python-side `hash=` semantics — distinct from the Rust core
@@ -4361,6 +4799,18 @@ fn make_encode_options_full(
         }
     };
 
+    let backend = match compression_backend {
+        None | Some("auto") => CompressionBackend::Auto,
+        Some("ffi") => CompressionBackend::Ffi,
+        Some("pure") => CompressionBackend::Pure,
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "unknown compression_backend {other:?}; \
+                 expected one of: 'auto', 'ffi', 'pure'"
+            )));
+        }
+    };
+
     let defaults = EncodeOptions::default();
     Ok(EncodeOptions {
         hashing,
@@ -4373,6 +4823,7 @@ fn make_encode_options_full(
         small_mask_threshold_bytes: small_mask_threshold_bytes
             .unwrap_or(defaults.small_mask_threshold_bytes),
         aggregate_hash: aggregate,
+        compression_backend: backend,
         ..defaults
     })
 }
