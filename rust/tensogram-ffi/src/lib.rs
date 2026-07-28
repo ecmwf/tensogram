@@ -59,8 +59,8 @@ use tensogram::{
     DataObjectDescriptor, DecodeOptions, DecodedMaskSet, EncodeOptions, GlobalMetadata, MetaType,
     MetaValue, RESERVED_KEY, ScanOptions, StreamingEncoder, TensogramError, TensogramFile,
     compute_common, decode, decode_metadata, decode_object, decode_range, decode_with_masks,
-    encode, encode_pre_encoded, parse_hash_name, scan, scan_file, scan_file_with_options,
-    scan_with_options, verify_canonical_cbor,
+    encode, encode_pre_encoded, message_header as core_message_header, parse_hash_name, scan,
+    scan_file, scan_file_with_options, scan_with_options, verify_canonical_cbor,
 };
 
 // ---------------------------------------------------------------------------
@@ -171,6 +171,19 @@ fn set_last_error(msg: &str) {
     });
     // A plain-string error carries no object index; clear it. Typed-error sites
     // call `to_error_code` immediately after, which records the real index.
+    LAST_ERROR_OBJECT_INDEX.with(|c| c.set(-1));
+}
+
+/// Discard the thread-local last error, so [`tgm_last_error`] reports NULL.
+///
+/// Needed wherever "nothing went wrong" has to be observable *through the
+/// error channel* rather than the return value — e.g. [`tgm_frame_iter_next`]
+/// returns `false` both at a clean end and on a malformed frame, and callers
+/// tell the two apart by whether a last error is set.
+fn clear_last_error() {
+    LAST_ERROR.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
     LAST_ERROR_OBJECT_INDEX.with(|c| c.set(-1));
 }
 
@@ -4004,6 +4017,322 @@ pub extern "C" fn tgm_object_iter_free(iter: *mut TgmObjectIter) {
     if !iter.is_null() {
         unsafe {
             drop(Box::from_raw(iter));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame walker + message header
+// ---------------------------------------------------------------------------
+
+/// A frame's type identifier (cbindgen: `tgm_frame_type`, variants
+/// `TGM_FRAME_TYPE_*`).
+///
+/// Mirrors [`tensogram::FrameType`] value-for-value — these numbers are the
+/// wire's frame-type field (see `plans/WIRE_FORMAT.md` §2.2), not an FFI
+/// invention. **Type 4 is reserved** (it held the obsolete v2 data-object
+/// layout) and therefore has no variant, which is why the sequence skips from
+/// 3 to 5. `fortran/test/check_frame_type_enum.sh` guards the generated header
+/// against the core enum so the two can never drift.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TgmFrameType {
+    /// CBOR global metadata, written in the header (random-access mode).
+    HeaderMetadata = 1,
+    /// Object index, written in the header (random-access mode).
+    HeaderIndex = 2,
+    /// Aggregate hash frame, written in the header.
+    HeaderHash = 3,
+    /// Aggregate hash frame, written in the footer.
+    FooterHash = 5,
+    /// Object index, written in the footer (streaming mode).
+    FooterIndex = 6,
+    /// CBOR global metadata, written in the footer (streaming mode).
+    FooterMetadata = 7,
+    /// Per-object metadata frame immediately preceding a data-object frame.
+    PrecederMetadata = 8,
+    /// N-dimensional tensor data-object frame — the only data-object type in
+    /// v3, and the only frame type with a 20-byte footer.
+    Ntensor = 9,
+}
+
+impl From<tensogram::FrameType> for TgmFrameType {
+    fn from(t: tensogram::FrameType) -> Self {
+        match t {
+            tensogram::FrameType::HeaderMetadata => TgmFrameType::HeaderMetadata,
+            tensogram::FrameType::HeaderIndex => TgmFrameType::HeaderIndex,
+            tensogram::FrameType::HeaderHash => TgmFrameType::HeaderHash,
+            tensogram::FrameType::FooterHash => TgmFrameType::FooterHash,
+            tensogram::FrameType::FooterIndex => TgmFrameType::FooterIndex,
+            tensogram::FrameType::FooterMetadata => TgmFrameType::FooterMetadata,
+            tensogram::FrameType::PrecederMetadata => TgmFrameType::PrecederMetadata,
+            tensogram::FrameType::NTensorFrame => TgmFrameType::Ntensor,
+        }
+    }
+}
+
+/// One frame's structural description plus a **borrowed** view of its content.
+///
+/// Filled by [`tgm_frame_iter_next`] into caller-provided storage.
+///
+/// # Lifetime — read this before storing a `TgmFrame`
+///
+/// `payload` points **into the `msg` buffer the caller passed to
+/// [`tgm_frame_iter_create`]** — it is a view, never a copy, and there is
+/// nothing to free. It stays valid for exactly as long as `msg` does,
+/// independently of any later `tgm_frame_iter_next` call and of
+/// `tgm_frame_iter_free`. Copy the bytes out if you need them to outlive the
+/// message buffer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TgmFrame {
+    /// Which kind of frame this is.
+    pub frame_type: TgmFrameType,
+    /// Frame-type-specific version field from the frame header.
+    pub version: u16,
+    /// Raw 16-bit frame flags; bit 1 is `HASH_PRESENT` (see
+    /// [`tgm_frame_has_hash`]).
+    pub flags: u16,
+    /// Byte offset of the frame header, relative to the start of `msg`.
+    pub offset: usize,
+    /// Whole-frame span in bytes: frame header through `ENDF`, excluding any
+    /// alignment padding that follows.
+    pub length: usize,
+    /// Borrowed content bytes: everything between the 16-byte frame header and
+    /// the type-specific footer (20 bytes for `TGM_FRAME_TYPE_NTENSOR`, 12 for
+    /// every other type). Points into the caller's `msg` — never freed.
+    pub payload: *const u8,
+    /// Length of `payload` in bytes.
+    pub payload_len: usize,
+}
+
+/// Opaque lazy cursor over one message's frames (cbindgen:
+/// `tgm_frame_iter_t`). Created by [`tgm_frame_iter_create`], advanced with
+/// [`tgm_frame_iter_next`], released with [`tgm_frame_iter_free`].
+///
+/// # Soundness invariant
+///
+/// The handle stores the caller's message slice with a `'static` lifetime,
+/// which is a controlled fiction — exactly like the metadata value cursor's
+/// arena (see [`store_value`]). The C contract that makes it sound is stated
+/// on [`tgm_frame_iter_create`]: **`msg` must outlive the iterator**. Nothing
+/// inside the handle owns or copies the message bytes, so freeing the handle
+/// touches only the cursor; the caller's buffer is never read after
+/// [`tgm_frame_iter_free`] returns.
+pub struct TgmFrameIter {
+    /// The borrowed core cursor. Reconstructing it per call is impossible
+    /// (its position is private), so the borrow is carried in the handle.
+    inner: tensogram::FrameIter<'static>,
+}
+
+/// Start a lazy walk over the frames of one message.
+///
+/// `msg` must point at the start of a message (the `TENSOGRM` preamble magic)
+/// — typically a slice obtained from `tgm_scan`. Only the type 1–9 `FR` frames
+/// are yielded; the preamble and postamble are not frames, use
+/// [`tgm_message_header`] for the envelope.
+///
+/// Returns NULL — with the reason in `tgm_last_error` — if `msg` is NULL or
+/// the preamble does not parse (truncated buffer, wrong magic, unsupported
+/// version). Free the returned handle with [`tgm_frame_iter_free`].
+///
+/// # Lifetime contract
+///
+/// The iterator **borrows `msg`; `msg` must outlive the iterator** and must
+/// not be moved, reallocated, or mutated while the iterator lives. Each frame
+/// written by [`tgm_frame_iter_next`] carries a `payload` pointer **into
+/// `msg`**, which remains valid for as long as `msg` lives — later `next`
+/// calls and `tgm_frame_iter_free` do not invalidate it.
+///
+/// Binds [`tensogram::frames`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_frame_iter_create(msg: *const u8, msg_len: usize) -> *mut TgmFrameIter {
+    if msg.is_null() {
+        set_last_error("null argument");
+        return ptr::null_mut();
+    }
+    // SAFETY: `msg` is non-null and the caller guarantees `msg_len` readable
+    // bytes. Naming the borrow `'static` is the lifetime fiction documented on
+    // `TgmFrameIter`: the C contract requires `msg` to outlive the handle, and
+    // the handle never exposes the slice beyond the borrowed `payload`
+    // pointers it hands back, which carry the same contract.
+    let data: &'static [u8] = unsafe { slice::from_raw_parts(msg, msg_len) };
+    match tensogram::frames(data) {
+        Ok(inner) => Box::into_raw(Box::new(TgmFrameIter { inner })),
+        Err(e) => {
+            set_last_error(&e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Advance the frame cursor, filling `*out` with the next frame.
+///
+/// Returns `true` when a frame was written. Returns `false` in three cases,
+/// which `tgm_last_error` tells apart:
+///
+/// - **clean end** — every frame has been yielded; the last error is
+///   *cleared*, so `tgm_last_error()` returns NULL;
+/// - **malformed frame** — the frame chain is truncated or inconsistent; the
+///   reason is recorded in `tgm_last_error()` and iteration stops for good;
+/// - **invalid argument** — `it` or `out` is NULL; nothing is written.
+///
+/// Calling this again after any `false` is safe and keeps returning `false`.
+///
+/// `out->payload` borrows the caller's message buffer — see the lifetime
+/// contract on [`tgm_frame_iter_create`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_frame_iter_next(it: *mut TgmFrameIter, out: *mut TgmFrame) -> bool {
+    if it.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return false;
+    }
+    let iter = unsafe { &mut *it };
+    match iter.inner.next() {
+        Some(Ok(info)) => {
+            let frame = TgmFrame {
+                frame_type: info.frame_type.into(),
+                version: info.version,
+                flags: info.flags,
+                offset: info.offset,
+                length: info.length,
+                payload: info.payload.as_ptr(),
+                payload_len: info.payload.len(),
+            };
+            unsafe {
+                *out = frame;
+            }
+            true
+        }
+        Some(Err(e)) => {
+            set_last_error(&e.to_string());
+            false
+        }
+        None => {
+            // A clean end is not a failure: clear the thread-local error so
+            // callers can use `tgm_last_error() != NULL` to detect the
+            // malformed-frame case above.
+            clear_last_error();
+            false
+        }
+    }
+}
+
+/// Free a frame cursor. Releases only the cursor — the caller's message
+/// buffer and every `payload` pointer handed out by [`tgm_frame_iter_next`]
+/// are untouched and stay valid. NULL is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_frame_iter_free(it: *mut TgmFrameIter) {
+    if !it.is_null() {
+        unsafe {
+            drop(Box::from_raw(it));
+        }
+    }
+}
+
+/// `true` if this frame's `HASH_PRESENT` flag is set, i.e. its inline hash
+/// slot holds a meaningful digest (see `plans/WIRE_FORMAT.md` §2.5).
+///
+/// Convenience over `frame->flags` bit 1, and the authoritative answer for a
+/// single frame — `TgmMessageHeader::has_hashes_present` is only an advisory
+/// message-wide summary. Returns `false` for a NULL `frame`.
+///
+/// Binds [`tensogram::FrameInfo::has_hash`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_frame_has_hash(frame: *const TgmFrame) -> bool {
+    match unsafe { frame.as_ref() } {
+        Some(f) => f.flags & tensogram::wire::FrameFlags::HASH_PRESENT != 0,
+        None => {
+            set_last_error("null argument");
+            false
+        }
+    }
+}
+
+/// A message's envelope (the 24-byte preamble) as a flat C POD.
+///
+/// Filled by [`tgm_message_header`].  The eight `has_*` members are the
+/// preamble's structural flags decoded into named booleans, so callers never
+/// touch a raw bitset.  Together they say whether a message is *random-access*
+/// (metadata / index / hashes in the **header**) or *streaming* (in the
+/// **footer**) without reading a single frame.
+///
+/// `total_length` is the whole-message byte count, preamble through
+/// postamble.  It is `0` in a streaming message whose length was never
+/// back-filled — not an error, just "unknown at write time".
+#[repr(C)]
+pub struct TgmMessageHeader {
+    /// Wire-format version (`TGM_WIRE_VERSION` for messages this build writes).
+    pub version: u16,
+    /// Total message length in bytes, or `0` if a streaming writer never
+    /// back-filled it.
+    pub total_length: u64,
+    /// A `HeaderMetadata` frame is present (random-access mode).
+    pub has_header_metadata: bool,
+    /// A `FooterMetadata` frame is present (streaming mode).
+    pub has_footer_metadata: bool,
+    /// A `HeaderIndex` frame is present.
+    pub has_header_index: bool,
+    /// A `FooterIndex` frame is present.
+    pub has_footer_index: bool,
+    /// A `HeaderHash` frame is present.
+    pub has_header_hashes: bool,
+    /// A `FooterHash` frame is present.
+    pub has_footer_hashes: bool,
+    /// At least one `PrecederMetadata` frame appears in the body.  Advisory in
+    /// streaming mode: the encoder sets it before it knows whether any
+    /// preceder will be written, so `true` does not guarantee a frame.
+    pub has_preceder_metadata: bool,
+    /// Advisory: every frame in this message has its per-frame `HASH_PRESENT`
+    /// bit set.  For any single frame, `tgm_frame_has_hash` stays authoritative.
+    pub has_hashes_present: bool,
+}
+
+/// Read a message's envelope without walking its frames.
+///
+/// `msg` must point at the start of a message (the `TENSOGRM` preamble magic)
+/// — typically a slice obtained from `tgm_scan`.  On success writes the decoded
+/// preamble to `*out` and returns `TGM_ERROR_OK`.
+///
+/// Returns `TGM_ERROR_INVALID_ARG` if `msg` or `out` is NULL, or the mapped
+/// error code if the preamble does not parse (message truncated, wrong magic,
+/// unsupported version); the reason is available from `tgm_last_error` and
+/// `*out` is left untouched.
+///
+/// Binds [`tensogram::message_header`].
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_message_header(
+    msg: *const u8,
+    msg_len: usize,
+    out: *mut TgmMessageHeader,
+) -> TgmError {
+    if msg.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let data = unsafe { slice::from_raw_parts(msg, msg_len) };
+    match core_message_header(data) {
+        Ok(h) => {
+            let header = TgmMessageHeader {
+                version: h.version,
+                total_length: h.total_length,
+                has_header_metadata: h.has_header_metadata(),
+                has_footer_metadata: h.has_footer_metadata(),
+                has_header_index: h.has_header_index(),
+                has_footer_index: h.has_footer_index(),
+                has_header_hashes: h.has_header_hashes(),
+                has_footer_hashes: h.has_footer_hashes(),
+                has_preceder_metadata: h.has_preceder_metadata(),
+                has_hashes_present: h.has_hashes_present(),
+            };
+            unsafe {
+                *out = header;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
         }
     }
 }
@@ -8963,6 +9292,498 @@ mod tests {
         // NULL key on map_get.
         let mars = tgm_metadata_get(hp, CString::new("mars").unwrap().as_ptr());
         assert!(tgm_value_map_get(mars, ptr::null()).is_null());
+    }
+
+    // =====================================================================
+    // Frame walker + message header (tgm_frame_iter_* / tgm_message_header)
+    // =====================================================================
+
+    /// One trivial float32 tensor: descriptor plus its raw little-endian bytes.
+    fn frame_walk_object() -> (DataObjectDescriptor, Vec<u8>) {
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: tensogram::Dtype::Float32,
+            byte_order: tensogram::ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|v| v.to_ne_bytes())
+            .collect();
+        (desc, data)
+    }
+
+    /// A buffered (random-access) message: metadata / index / hashes all live
+    /// in the header, so every preamble flag is an exact statement about the
+    /// frames that follow.
+    fn frame_walk_buffered_message(n_objects: usize) -> Vec<u8> {
+        let (desc, data) = frame_walk_object();
+        let objects: Vec<(&DataObjectDescriptor, &[u8])> =
+            (0..n_objects).map(|_| (&desc, data.as_slice())).collect();
+        encode(
+            &GlobalMetadata::default(),
+            &objects,
+            &EncodeOptions::default(),
+        )
+        .expect("buffered encode")
+    }
+
+    /// A streaming message: index / hashes land in the footer, `total_length`
+    /// stays 0 (never back-filled by the non-seeking `finish`), and
+    /// `PRECEDER_METADATA` is set advisorily even with no preceder frame.
+    fn frame_walk_streamed_message() -> Vec<u8> {
+        let (desc, data) = frame_walk_object();
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &GlobalMetadata::default(),
+            &EncodeOptions::default(),
+        )
+        .expect("streaming encoder");
+        enc.write_object(&desc, &data).expect("write object");
+        enc.finish().expect("finish").into_inner()
+    }
+
+    /// A `TgmMessageHeader` with every field cleared, so a test can tell an
+    /// untouched out-param from one the callee filled in.
+    fn blank_message_header() -> super::TgmMessageHeader {
+        super::TgmMessageHeader {
+            version: 0,
+            total_length: 0,
+            has_header_metadata: false,
+            has_footer_metadata: false,
+            has_header_index: false,
+            has_footer_index: false,
+            has_header_hashes: false,
+            has_footer_hashes: false,
+            has_preceder_metadata: false,
+            has_hashes_present: false,
+        }
+    }
+
+    #[test]
+    fn ffi_message_header_reads_a_buffered_preamble() {
+        let msg = frame_walk_buffered_message(2);
+        let mut h = blank_message_header();
+        let err = super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(h.version, super::TGM_WIRE_VERSION);
+        assert_eq!(h.total_length, msg.len() as u64);
+        // Random-access layout: metadata + index in the header, nothing in the
+        // footer, and no preceder frames were written.
+        assert!(h.has_header_metadata);
+        assert!(h.has_header_index);
+        assert!(!h.has_footer_metadata);
+        assert!(!h.has_footer_index);
+        assert!(!h.has_preceder_metadata);
+        assert!(h.has_hashes_present, "default encode hashes every frame");
+    }
+
+    #[test]
+    fn ffi_message_header_reads_a_streaming_preamble() {
+        let msg = frame_walk_streamed_message();
+        let mut h = blank_message_header();
+        let err = super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(h.version, super::TGM_WIRE_VERSION);
+        // Streaming mode cannot know the length up front and never seeks back.
+        assert_eq!(h.total_length, 0);
+        assert!(h.has_header_metadata);
+        assert!(h.has_footer_metadata);
+        assert!(h.has_footer_index);
+    }
+
+    #[test]
+    fn ffi_message_header_null_safety() {
+        let msg = frame_walk_buffered_message(1);
+        let mut h = blank_message_header();
+        assert!(matches!(
+            super::tgm_message_header(ptr::null(), 0, &mut h),
+            super::TgmError::InvalidArg
+        ));
+        assert!(matches!(
+            super::tgm_message_header(msg.as_ptr(), msg.len(), ptr::null_mut()),
+            super::TgmError::InvalidArg
+        ));
+        // A rejected call must not have written anything.
+        assert_eq!(h.version, 0);
+    }
+
+    #[test]
+    fn ffi_message_header_rejects_a_buffer_that_is_not_a_message() {
+        let junk = b"not a tensogram message at all!!!!!!!!!!";
+        let mut h = blank_message_header();
+        let err = super::tgm_message_header(junk.as_ptr(), junk.len(), &mut h);
+        assert!(!matches!(err, super::TgmError::Ok));
+        assert!(!super::tgm_last_error().is_null(), "reason is reported");
+        assert_eq!(h.version, 0, "a failed parse leaves the out-param alone");
+
+        // A truncated preamble is rejected the same way.
+        let msg = frame_walk_buffered_message(1);
+        let err = super::tgm_message_header(msg.as_ptr(), 8, &mut h);
+        assert!(!matches!(err, super::TgmError::Ok));
+    }
+
+    /// A `TgmFrame` with every field cleared, so a test can tell an untouched
+    /// out-param from one the callee filled in (`payload` stays NULL).
+    fn blank_frame() -> super::TgmFrame {
+        super::TgmFrame {
+            frame_type: super::TgmFrameType::HeaderMetadata,
+            version: 0,
+            flags: 0,
+            offset: 0,
+            length: 0,
+            payload: ptr::null(),
+            payload_len: 0,
+        }
+    }
+
+    /// Walk `msg` to exhaustion through the C API and collect every frame.
+    /// Asserts the clean-end contract: an exhausted walk records no error.
+    fn ffi_collect_frames(msg: &[u8]) -> Vec<super::TgmFrame> {
+        let it = super::tgm_frame_iter_create(msg.as_ptr(), msg.len());
+        assert!(!it.is_null(), "iterator create failed");
+        let mut frames = Vec::new();
+        let mut f = blank_frame();
+        while super::tgm_frame_iter_next(it, &mut f) {
+            frames.push(f);
+        }
+        assert!(
+            super::tgm_last_error().is_null(),
+            "a clean end must not look like a malformed frame"
+        );
+        super::tgm_frame_iter_free(it);
+        frames
+    }
+
+    #[test]
+    fn ffi_frame_type_discriminants_match_the_core_wire_types() {
+        // The C enum carries the wire's frame-type value; drift would silently
+        // mislabel frames. `fortran/test/check_frame_type_enum.sh` guards the
+        // generated header against the same source of truth.
+        for (c, core) in [
+            (
+                super::TgmFrameType::HeaderMetadata,
+                tensogram::FrameType::HeaderMetadata,
+            ),
+            (
+                super::TgmFrameType::HeaderIndex,
+                tensogram::FrameType::HeaderIndex,
+            ),
+            (
+                super::TgmFrameType::HeaderHash,
+                tensogram::FrameType::HeaderHash,
+            ),
+            (
+                super::TgmFrameType::FooterHash,
+                tensogram::FrameType::FooterHash,
+            ),
+            (
+                super::TgmFrameType::FooterIndex,
+                tensogram::FrameType::FooterIndex,
+            ),
+            (
+                super::TgmFrameType::FooterMetadata,
+                tensogram::FrameType::FooterMetadata,
+            ),
+            (
+                super::TgmFrameType::PrecederMetadata,
+                tensogram::FrameType::PrecederMetadata,
+            ),
+            (
+                super::TgmFrameType::Ntensor,
+                tensogram::FrameType::NTensorFrame,
+            ),
+        ] {
+            assert_eq!(c as u16, core as u16, "{c:?} must mirror {core:?}");
+        }
+        assert_eq!(super::TgmFrameType::HeaderMetadata as u16, 1);
+        assert_eq!(super::TgmFrameType::Ntensor as u16, 9);
+        // 4 is reserved (the obsolete v2 data-object frame) — no variant here.
+        assert!(tensogram::FrameType::from_u16(4).is_err());
+    }
+
+    #[test]
+    fn ffi_frame_iter_mirrors_the_core_walk_exactly() {
+        let msg = frame_walk_buffered_message(2);
+        let ffi = ffi_collect_frames(&msg);
+        let core: Vec<_> = tensogram::frames(&msg)
+            .expect("core frames")
+            .map(|r| r.expect("core frame"))
+            .collect();
+        assert_eq!(ffi.len(), core.len(), "same number of frames");
+        for (f, c) in ffi.iter().zip(&core) {
+            assert_eq!(f.frame_type as u16, c.frame_type as u16);
+            assert_eq!(f.version, c.version);
+            assert_eq!(f.flags, c.flags);
+            assert_eq!(f.offset, c.offset);
+            assert_eq!(f.length, c.length);
+            assert_eq!(f.payload_len, c.payload.len());
+            assert_eq!(f.payload, c.payload.as_ptr(), "payload borrows the caller");
+        }
+    }
+
+    #[test]
+    fn ffi_frame_iter_yields_the_expected_frame_sequence() {
+        let msg = frame_walk_buffered_message(3);
+        let fs = ffi_collect_frames(&msg);
+        assert!(!fs.is_empty(), "expected frames");
+        assert_eq!(
+            fs[0].frame_type,
+            super::TgmFrameType::HeaderMetadata,
+            "a random-access message opens with its metadata frame"
+        );
+        let data_objects = fs
+            .iter()
+            .filter(|f| f.frame_type == super::TgmFrameType::Ntensor)
+            .count();
+        assert_eq!(data_objects, 3, "one data-object frame per encoded object");
+        // The preamble and the postamble are NOT frames.
+        assert!(fs[0].offset >= tensogram::wire::PREAMBLE_SIZE);
+        let last = fs.last().expect("at least one frame");
+        assert!(last.offset + last.length <= msg.len() - tensogram::wire::POSTAMBLE_SIZE);
+    }
+
+    #[test]
+    fn ffi_frame_offsets_and_lengths_tile_the_message_in_bounds() {
+        let msg = frame_walk_buffered_message(2);
+        let mut prev_end = tensogram::wire::PREAMBLE_SIZE;
+        for f in ffi_collect_frames(&msg) {
+            assert!(f.offset >= prev_end, "frames must not overlap");
+            assert!(f.offset + f.length <= msg.len(), "frame stays in bounds");
+            assert!(f.length >= tensogram::wire::FRAME_HEADER_SIZE);
+            // The whole-frame span always ends on the ENDF sentinel.
+            let end = f.offset + f.length;
+            assert_eq!(&msg[end - 4..end], b"ENDF", "length spans the footer");
+            prev_end = end;
+        }
+        assert!(
+            prev_end > tensogram::wire::PREAMBLE_SIZE,
+            "walked at least one frame"
+        );
+    }
+
+    #[test]
+    fn ffi_frame_payload_excludes_the_frame_header_and_footer() {
+        let msg = frame_walk_buffered_message(1);
+        let fs = ffi_collect_frames(&msg);
+        assert!(!fs.is_empty());
+        for f in fs {
+            let core_type =
+                tensogram::FrameType::from_u16(f.frame_type as u16).expect("known frame type");
+            // 20 bytes for a data-object frame, 12 for every other type.
+            let footer = tensogram::wire::footer_size_for(core_type);
+            assert_eq!(
+                f.payload_len,
+                f.length - tensogram::wire::FRAME_HEADER_SIZE - footer,
+                "payload_len excludes the 16-byte header and the footer"
+            );
+            let content_start = f.offset + tensogram::wire::FRAME_HEADER_SIZE;
+            assert_eq!(f.payload, unsafe { msg.as_ptr().add(content_start) });
+            let payload = unsafe { slice::from_raw_parts(f.payload, f.payload_len) };
+            assert_eq!(payload, &msg[content_start..f.offset + f.length - footer]);
+        }
+    }
+
+    #[test]
+    fn ffi_frame_payload_stays_valid_after_the_iterator_is_freed() {
+        // Documented contract: `out->payload` points INTO the caller's `msg`
+        // and lives as long as `msg` does — freeing the cursor does not
+        // invalidate it.
+        let msg = frame_walk_buffered_message(1);
+        let fs = ffi_collect_frames(&msg); // frees the iterator before returning
+        let f = fs[0];
+        assert!(f.payload_len > 0);
+        let payload = unsafe { slice::from_raw_parts(f.payload, f.payload_len) };
+        let content_start = f.offset + tensogram::wire::FRAME_HEADER_SIZE;
+        assert_eq!(payload, &msg[content_start..content_start + f.payload_len]);
+    }
+
+    #[test]
+    fn ffi_buffered_frame_set_matches_the_message_header_exactly() {
+        // Buffered mode: the encoder knows the whole message up front, so every
+        // preamble flag is an exact statement about the frames present.
+        let msg = frame_walk_buffered_message(2);
+        let mut h = blank_message_header();
+        assert!(matches!(
+            super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h),
+            super::TgmError::Ok
+        ));
+        let types: Vec<super::TgmFrameType> = ffi_collect_frames(&msg)
+            .iter()
+            .map(|f| f.frame_type)
+            .collect();
+        let has = |t: super::TgmFrameType| types.contains(&t);
+        assert_eq!(
+            h.has_header_metadata,
+            has(super::TgmFrameType::HeaderMetadata)
+        );
+        assert_eq!(
+            h.has_footer_metadata,
+            has(super::TgmFrameType::FooterMetadata)
+        );
+        assert_eq!(h.has_header_index, has(super::TgmFrameType::HeaderIndex));
+        assert_eq!(h.has_footer_index, has(super::TgmFrameType::FooterIndex));
+        assert_eq!(h.has_header_hashes, has(super::TgmFrameType::HeaderHash));
+        assert_eq!(h.has_footer_hashes, has(super::TgmFrameType::FooterHash));
+        assert_eq!(
+            h.has_preceder_metadata,
+            has(super::TgmFrameType::PrecederMetadata)
+        );
+    }
+
+    #[test]
+    fn ffi_streaming_message_header_never_understates_its_frames() {
+        // Streaming mode writes the preamble before any object, so it sets
+        // PRECEDER_METADATA advisorily even with no preceder frame. Only
+        // "frame present => flag set" holds in that direction.
+        let msg = frame_walk_streamed_message();
+        let mut h = blank_message_header();
+        assert!(matches!(
+            super::tgm_message_header(msg.as_ptr(), msg.len(), &mut h),
+            super::TgmError::Ok
+        ));
+        let types: Vec<super::TgmFrameType> = ffi_collect_frames(&msg)
+            .iter()
+            .map(|f| f.frame_type)
+            .collect();
+        let has = |t: super::TgmFrameType| types.contains(&t);
+        let implies = |present: bool, flag: bool| !present || flag;
+        assert!(implies(
+            has(super::TgmFrameType::HeaderMetadata),
+            h.has_header_metadata
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::FooterMetadata),
+            h.has_footer_metadata
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::HeaderIndex),
+            h.has_header_index
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::FooterIndex),
+            h.has_footer_index
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::HeaderHash),
+            h.has_header_hashes
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::FooterHash),
+            h.has_footer_hashes
+        ));
+        assert!(implies(
+            has(super::TgmFrameType::PrecederMetadata),
+            h.has_preceder_metadata
+        ));
+        // The walk still stops cleanly at the postamble even though
+        // `total_length` was never back-filled.
+        assert!(
+            has(super::TgmFrameType::FooterIndex),
+            "footer frames are reachable"
+        );
+    }
+
+    #[test]
+    fn ffi_frame_iter_is_safe_past_exhaustion() {
+        let msg = frame_walk_buffered_message(1);
+        let it = super::tgm_frame_iter_create(msg.as_ptr(), msg.len());
+        assert!(!it.is_null());
+        let mut f = blank_frame();
+        let mut n = 0usize;
+        while super::tgm_frame_iter_next(it, &mut f) {
+            n += 1;
+        }
+        assert!(n > 0, "walked at least one frame");
+        // Calling next past the end is safe, stays false, and records no error.
+        assert!(!super::tgm_frame_iter_next(it, &mut f));
+        assert!(!super::tgm_frame_iter_next(it, &mut f));
+        assert!(super::tgm_last_error().is_null());
+        super::tgm_frame_iter_free(it);
+    }
+
+    #[test]
+    fn ffi_frame_iter_reports_a_malformed_frame_chain() {
+        let msg = frame_walk_buffered_message(2);
+        let last = *ffi_collect_frames(&msg).last().expect("at least one frame");
+        // Cut *inside* the last frame: the preamble still parses, the chain does not.
+        let truncated = &msg[..last.offset + 8];
+        let it = super::tgm_frame_iter_create(truncated.as_ptr(), truncated.len());
+        assert!(!it.is_null(), "the preamble still parses");
+        let mut f = blank_frame();
+        let mut n = 0usize;
+        while super::tgm_frame_iter_next(it, &mut f) {
+            n += 1;
+        }
+        assert!(n > 0, "the frames before the cut are still yielded");
+        // Stopping on a malformed frame is distinguishable from a clean end.
+        assert!(
+            !super::tgm_last_error().is_null(),
+            "a malformed frame must record why"
+        );
+        // The cursor stays safe afterwards.
+        assert!(!super::tgm_frame_iter_next(it, &mut f));
+        super::tgm_frame_iter_free(it);
+    }
+
+    #[test]
+    fn ffi_frame_iter_rejects_a_buffer_that_is_not_a_message() {
+        let junk = b"not a tensogram message at all!!!!!!!!!!";
+        let it = super::tgm_frame_iter_create(junk.as_ptr(), junk.len());
+        assert!(it.is_null(), "a bad preamble yields no iterator");
+        assert!(!super::tgm_last_error().is_null());
+
+        // A message truncated inside its preamble is rejected the same way.
+        let msg = frame_walk_buffered_message(1);
+        assert!(super::tgm_frame_iter_create(msg.as_ptr(), 8).is_null());
+    }
+
+    #[test]
+    fn ffi_frame_iter_null_safety() {
+        assert!(super::tgm_frame_iter_create(ptr::null(), 0).is_null());
+        assert!(!super::tgm_last_error().is_null());
+
+        let mut f = blank_frame();
+        assert!(!super::tgm_frame_iter_next(ptr::null_mut(), &mut f));
+        assert!(f.payload.is_null(), "a rejected call writes nothing");
+
+        let msg = frame_walk_buffered_message(1);
+        let it = super::tgm_frame_iter_create(msg.as_ptr(), msg.len());
+        assert!(!it.is_null());
+        assert!(!super::tgm_frame_iter_next(it, ptr::null_mut()));
+        // The rejected call did not consume a frame.
+        assert!(super::tgm_frame_iter_next(it, &mut f));
+        assert!(!f.payload.is_null());
+        super::tgm_frame_iter_free(it);
+
+        // free(NULL) is a no-op.
+        super::tgm_frame_iter_free(ptr::null_mut());
+    }
+
+    #[test]
+    fn ffi_frame_has_hash_mirrors_the_per_frame_flag() {
+        let msg = frame_walk_buffered_message(1);
+        let fs = ffi_collect_frames(&msg);
+        assert!(
+            fs.iter().any(|f| super::tgm_frame_has_hash(f)),
+            "default encode hashes every frame"
+        );
+        for f in &fs {
+            // HASH_PRESENT is bit 1 of the raw frame flags.
+            assert_eq!(super::tgm_frame_has_hash(f), f.flags & (1 << 1) != 0);
+        }
+    }
+
+    #[test]
+    fn ffi_frame_has_hash_null_safety() {
+        assert!(!super::tgm_frame_has_hash(ptr::null()));
     }
 }
 

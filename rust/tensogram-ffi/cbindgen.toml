@@ -27,6 +27,9 @@ usize_is_size_t = true
 "TgmValueType" = "tgm_value_type"
 # Mask-kind enum: no _t suffix so prefix_with_name produces TGM_MASK_KIND_NAN
 "TgmMaskKind" = "tgm_mask_kind"
+# Frame-type enum: no _t suffix so prefix_with_name produces TGM_FRAME_TYPE_NTENSOR
+"TgmFrameType" = "tgm_frame_type"
+"TgmFrameIter" = "tgm_frame_iter_t"
 "TgmValue" = "tgm_value_t"
 "TgmBytes" = "tgm_bytes_t"
 "TgmMessage" = "tgm_message_t"

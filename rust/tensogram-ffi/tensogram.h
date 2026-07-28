@@ -117,6 +117,53 @@ typedef enum {
 } tgm_value_type;
 
 /**
+ * A frame's type identifier (cbindgen: `tgm_frame_type`, variants
+ * `TGM_FRAME_TYPE_*`).
+ *
+ * Mirrors [`tensogram::FrameType`] value-for-value — these numbers are the
+ * wire's frame-type field (see `plans/WIRE_FORMAT.md` §2.2), not an FFI
+ * invention. **Type 4 is reserved** (it held the obsolete v2 data-object
+ * layout) and therefore has no variant, which is why the sequence skips from
+ * 3 to 5. `fortran/test/check_frame_type_enum.sh` guards the generated header
+ * against the core enum so the two can never drift.
+ */
+typedef enum {
+  /**
+   * CBOR global metadata, written in the header (random-access mode).
+   */
+  TGM_FRAME_TYPE_HEADER_METADATA = 1,
+  /**
+   * Object index, written in the header (random-access mode).
+   */
+  TGM_FRAME_TYPE_HEADER_INDEX = 2,
+  /**
+   * Aggregate hash frame, written in the header.
+   */
+  TGM_FRAME_TYPE_HEADER_HASH = 3,
+  /**
+   * Aggregate hash frame, written in the footer.
+   */
+  TGM_FRAME_TYPE_FOOTER_HASH = 5,
+  /**
+   * Object index, written in the footer (streaming mode).
+   */
+  TGM_FRAME_TYPE_FOOTER_INDEX = 6,
+  /**
+   * CBOR global metadata, written in the footer (streaming mode).
+   */
+  TGM_FRAME_TYPE_FOOTER_METADATA = 7,
+  /**
+   * Per-object metadata frame immediately preceding a data-object frame.
+   */
+  TGM_FRAME_TYPE_PRECEDER_METADATA = 8,
+  /**
+   * N-dimensional tensor data-object frame — the only data-object type in
+   * v3, and the only frame type with a 20-byte footer.
+   */
+  TGM_FRAME_TYPE_NTENSOR = 9,
+} tgm_frame_type;
+
+/**
  * Status returned by `tgm_async_streaming_encoder_try_object_count`.
  *
  * Distinguishes the three states the previous overloaded sentinel
@@ -187,6 +234,23 @@ typedef struct tgm_file_t tgm_file_t;
  * Opaque handle for iterating over messages in a file.
  */
 typedef struct tgm_file_iter_t tgm_file_iter_t;
+
+/**
+ * Opaque lazy cursor over one message's frames (cbindgen:
+ * `tgm_frame_iter_t`). Created by [`tgm_frame_iter_create`], advanced with
+ * [`tgm_frame_iter_next`], released with [`tgm_frame_iter_free`].
+ *
+ * # Soundness invariant
+ *
+ * The handle stores the caller's message slice with a `'static` lifetime,
+ * which is a controlled fiction — exactly like the metadata value cursor's
+ * arena (see [`store_value`]). The C contract that makes it sound is stated
+ * on [`tgm_frame_iter_create`]: **`msg` must outlive the iterator**. Nothing
+ * inside the handle owns or copies the message bytes, so freeing the handle
+ * touches only the cursor; the caller's buffer is never read after
+ * [`tgm_frame_iter_free`] returns.
+ */
+typedef struct tgm_frame_iter_t tgm_frame_iter_t;
 
 /**
  * Decoded message: global metadata + decoded (descriptor, payload) pairs.
@@ -299,6 +363,115 @@ typedef struct {
    */
   uint64_t max_message_size;
 } TgmScanOptions;
+
+/**
+ * One frame's structural description plus a **borrowed** view of its content.
+ *
+ * Filled by [`tgm_frame_iter_next`] into caller-provided storage.
+ *
+ * # Lifetime — read this before storing a `TgmFrame`
+ *
+ * `payload` points **into the `msg` buffer the caller passed to
+ * [`tgm_frame_iter_create`]** — it is a view, never a copy, and there is
+ * nothing to free. It stays valid for exactly as long as `msg` does,
+ * independently of any later `tgm_frame_iter_next` call and of
+ * `tgm_frame_iter_free`. Copy the bytes out if you need them to outlive the
+ * message buffer.
+ */
+typedef struct {
+  /**
+   * Which kind of frame this is.
+   */
+  tgm_frame_type frame_type;
+  /**
+   * Frame-type-specific version field from the frame header.
+   */
+  uint16_t version;
+  /**
+   * Raw 16-bit frame flags; bit 1 is `HASH_PRESENT` (see
+   * [`tgm_frame_has_hash`]).
+   */
+  uint16_t flags;
+  /**
+   * Byte offset of the frame header, relative to the start of `msg`.
+   */
+  size_t offset;
+  /**
+   * Whole-frame span in bytes: frame header through `ENDF`, excluding any
+   * alignment padding that follows.
+   */
+  size_t length;
+  /**
+   * Borrowed content bytes: everything between the 16-byte frame header and
+   * the type-specific footer (20 bytes for `TGM_FRAME_TYPE_NTENSOR`, 12 for
+   * every other type). Points into the caller's `msg` — never freed.
+   */
+  const uint8_t *payload;
+  /**
+   * Length of `payload` in bytes.
+   */
+  size_t payload_len;
+} TgmFrame;
+
+/**
+ * A message's envelope (the 24-byte preamble) as a flat C POD.
+ *
+ * Filled by [`tgm_message_header`].  The eight `has_*` members are the
+ * preamble's structural flags decoded into named booleans, so callers never
+ * touch a raw bitset.  Together they say whether a message is *random-access*
+ * (metadata / index / hashes in the **header**) or *streaming* (in the
+ * **footer**) without reading a single frame.
+ *
+ * `total_length` is the whole-message byte count, preamble through
+ * postamble.  It is `0` in a streaming message whose length was never
+ * back-filled — not an error, just "unknown at write time".
+ */
+typedef struct {
+  /**
+   * Wire-format version (`TGM_WIRE_VERSION` for messages this build writes).
+   */
+  uint16_t version;
+  /**
+   * Total message length in bytes, or `0` if a streaming writer never
+   * back-filled it.
+   */
+  uint64_t total_length;
+  /**
+   * A `HeaderMetadata` frame is present (random-access mode).
+   */
+  bool has_header_metadata;
+  /**
+   * A `FooterMetadata` frame is present (streaming mode).
+   */
+  bool has_footer_metadata;
+  /**
+   * A `HeaderIndex` frame is present.
+   */
+  bool has_header_index;
+  /**
+   * A `FooterIndex` frame is present.
+   */
+  bool has_footer_index;
+  /**
+   * A `HeaderHash` frame is present.
+   */
+  bool has_header_hashes;
+  /**
+   * A `FooterHash` frame is present.
+   */
+  bool has_footer_hashes;
+  /**
+   * At least one `PrecederMetadata` frame appears in the body.  Advisory in
+   * streaming mode: the encoder sets it before it knows whether any
+   * preceder will be written, so `true` does not guarantee a frame.
+   */
+  bool has_preceder_metadata;
+  /**
+   * Advisory: every frame in this message has its per-frame `HASH_PRESENT`
+   * bit set.  For any single frame, `tgm_frame_has_hash` stays authoritative.
+   */
+  bool has_hashes_present;
+} TgmMessageHeader;
 
 /**
  * Returns a pointer to the last error message, or NULL if no error.
@@ -1303,6 +1476,84 @@ tgm_error tgm_object_iter_next(tgm_object_iter_t *iter, tgm_message_t **out);
  * Free an object iterator handle.
  */
 void tgm_object_iter_free(tgm_object_iter_t *iter);
+
+/**
+ * Start a lazy walk over the frames of one message.
+ *
+ * `msg` must point at the start of a message (the `TENSOGRM` preamble magic)
+ * — typically a slice obtained from `tgm_scan`. Only the type 1–9 `FR` frames
+ * are yielded; the preamble and postamble are not frames, use
+ * [`tgm_message_header`] for the envelope.
+ *
+ * Returns NULL — with the reason in `tgm_last_error` — if `msg` is NULL or
+ * the preamble does not parse (truncated buffer, wrong magic, unsupported
+ * version). Free the returned handle with [`tgm_frame_iter_free`].
+ *
+ * # Lifetime contract
+ *
+ * The iterator **borrows `msg`; `msg` must outlive the iterator** and must
+ * not be moved, reallocated, or mutated while the iterator lives. Each frame
+ * written by [`tgm_frame_iter_next`] carries a `payload` pointer **into
+ * `msg`**, which remains valid for as long as `msg` lives — later `next`
+ * calls and `tgm_frame_iter_free` do not invalidate it.
+ *
+ * Binds [`tensogram::frames`].
+ */
+tgm_frame_iter_t *tgm_frame_iter_create(const uint8_t *msg, size_t msg_len);
+
+/**
+ * Advance the frame cursor, filling `*out` with the next frame.
+ *
+ * Returns `true` when a frame was written. Returns `false` in three cases,
+ * which `tgm_last_error` tells apart:
+ *
+ * - **clean end** — every frame has been yielded; the last error is
+ *   *cleared*, so `tgm_last_error()` returns NULL;
+ * - **malformed frame** — the frame chain is truncated or inconsistent; the
+ *   reason is recorded in `tgm_last_error()` and iteration stops for good;
+ * - **invalid argument** — `it` or `out` is NULL; nothing is written.
+ *
+ * Calling this again after any `false` is safe and keeps returning `false`.
+ *
+ * `out->payload` borrows the caller's message buffer — see the lifetime
+ * contract on [`tgm_frame_iter_create`].
+ */
+bool tgm_frame_iter_next(tgm_frame_iter_t *it, TgmFrame *out);
+
+/**
+ * Free a frame cursor. Releases only the cursor — the caller's message
+ * buffer and every `payload` pointer handed out by [`tgm_frame_iter_next`]
+ * are untouched and stay valid. NULL is a no-op.
+ */
+void tgm_frame_iter_free(tgm_frame_iter_t *it);
+
+/**
+ * `true` if this frame's `HASH_PRESENT` flag is set, i.e. its inline hash
+ * slot holds a meaningful digest (see `plans/WIRE_FORMAT.md` §2.5).
+ *
+ * Convenience over `frame->flags` bit 1, and the authoritative answer for a
+ * single frame — `TgmMessageHeader::has_hashes_present` is only an advisory
+ * message-wide summary. Returns `false` for a NULL `frame`.
+ *
+ * Binds [`tensogram::FrameInfo::has_hash`].
+ */
+bool tgm_frame_has_hash(const TgmFrame *frame);
+
+/**
+ * Read a message's envelope without walking its frames.
+ *
+ * `msg` must point at the start of a message (the `TENSOGRM` preamble magic)
+ * — typically a slice obtained from `tgm_scan`.  On success writes the decoded
+ * preamble to `*out` and returns `TGM_ERROR_OK`.
+ *
+ * Returns `TGM_ERROR_INVALID_ARG` if `msg` or `out` is NULL, or the mapped
+ * error code if the preamble does not parse (message truncated, wrong magic,
+ * unsupported version); the reason is available from `tgm_last_error` and
+ * `*out` is left untouched.
+ *
+ * Binds [`tensogram::message_header`].
+ */
+tgm_error tgm_message_header(const uint8_t *msg, size_t msg_len, TgmMessageHeader *out);
 
 /**
  * Convert an error code to a human-readable string.

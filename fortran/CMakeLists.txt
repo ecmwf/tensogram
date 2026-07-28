@@ -210,5 +210,14 @@ if(TENSOGRAM_FORTRAN_TESTS)
     add_test(NAME value_type_enum_consistency
       COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_value_type_enum.sh
               ${CMAKE_CURRENT_SOURCE_DIR}/src/tensogram.F90 ${_tgm_header})
+    # The C `tgm_frame_type` enum carries the wire format's frame-type field,
+    # so its source of truth is the Rust core `FrameType` rather than a
+    # binding-side mirror; guard the generated header directly against it.
+    set(_tgm_wire ${CMAKE_CURRENT_SOURCE_DIR}/../rust/tensogram/src/wire.rs)
+    if(EXISTS ${_tgm_wire})
+      add_test(NAME frame_type_enum_consistency
+        COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_frame_type_enum.sh
+                ${_tgm_wire} ${_tgm_header})
+    endif()
   endif()
 endif()
