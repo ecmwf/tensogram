@@ -118,6 +118,36 @@ TEST(AsyncCoro, StreamingEncoderRoundTrip) {
     std::filesystem::remove(path);
 }
 
+TEST(AsyncCoro, StreamingEncoderFooterMetadata) {
+    // Annotations set while encoding land in the footer metadata frame and
+    // override the header value for the same key.
+    auto path = make_temp_path(".tgm");
+    std::string meta_json = R"json({"_extra_":{"status":"provisional"}})json";
+    std::string desc = R"json({
+        "type":"ntensor","ndim":1,"shape":[4],"strides":[1],
+        "dtype":"float32","byte_order":"little","encoding":"none",
+        "filter":"none","compression":"none","params":{}
+    })json";
+    std::vector<std::uint8_t> data(16);
+    for (std::size_t i = 0; i < data.size(); ++i) data[i] = static_cast<std::uint8_t>(i);
+
+    auto run = [&]() -> tco::task<void> {
+        auto enc = co_await tco::async_streaming_encoder::create(path.string(), meta_json);
+        co_await enc.write_object(desc, data.data(), data.size());
+        co_await enc.set_footer_metadata(R"json({"status":"complete"})json");
+        co_await enc.finish();
+    };
+    tco::block_on(run());
+
+    std::ifstream is(path.string(), std::ios::binary);
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(is)),
+                                    std::istreambuf_iterator<char>());
+    auto msg = tensogram::decode(bytes.data(), bytes.size());
+    EXPECT_EQ(msg.get_metadata().get_string("status"), "complete");
+
+    std::filesystem::remove(path);
+}
+
 TEST(AsyncCoro, AsyncForEachWalksAllMessages) {
     auto path = make_test_file();
     auto run = [&path]() -> tco::task<std::size_t> {
