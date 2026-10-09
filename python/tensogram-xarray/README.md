@@ -20,8 +20,8 @@ The `tensogram` native package is pulled in automatically.
 import xarray as xr
 
 ds = xr.open_dataset("forecast.tgm", engine="tensogram")
-print(ds)                    # coordinates, variables, CF attributes
-print(ds["temperature"])     # standard xarray DataArray
+print(ds)  # coordinates, variables, CF attributes
+print(ds["temperature"])  # standard xarray DataArray
 ```
 
 With Dask for out-of-core reads:
