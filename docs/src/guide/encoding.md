@@ -131,6 +131,56 @@ let message = encode(
 
 Each descriptor independently specifies its own encoding, compression, dtype, and byte order. The encoder processes each pair in sequence.
 
+## Progressive Encoding and Late Metadata
+
+`StreamingEncoder` writes frames to any `io::Write` sink as they are
+produced, rather than buffering a whole message (see
+`examples/rust/src/bin/11_streaming.rs`). Because the header metadata
+frame is written before any object exists, the encoder also writes a
+footer metadata frame at finish time — and that frame supersedes the
+header on decode.
+
+`set_footer_metadata` uses that frame to carry message-level facts a
+producer only learns while encoding: which requested parameters
+actually had data, an observed value range, a final status.
+
+```rust
+use std::collections::BTreeMap;
+use ciborium::Value;
+use tensogram::streaming::StreamingEncoder;
+
+let header = GlobalMetadata {
+    extra: BTreeMap::from([(
+        "status".to_string(),
+        Value::Text("provisional".to_string()),
+    )]),
+    ..Default::default()
+};
+let mut enc = StreamingEncoder::new(Vec::new(), &header, &EncodeOptions::default())?;
+enc.write_object(&desc, &raw)?;
+enc.set_footer_metadata(BTreeMap::from([(
+    "status".to_string(),
+    Value::Text("complete".to_string()),
+)]));
+let message = enc.finish()?;
+```
+
+- Keys land in the footer frame's `_extra_` map and override
+  same-named header keys, so the header can hold a provisional value
+  and the footer the final one.
+- Callable at any point before any finish method
+  (`finish`, `finish_with_backfill`, `finish_and_reset`,
+  `finish_and_reset_with_backfill`); repeated calls accumulate, with a
+  repeated key taking the value from the later call.
+- The pending map is per-message: a reset clears it.
+- `AsyncStreamingEncoder` has the identical method.
+
+A reader that parses only the header frame — `decode_metadata`, or a
+forward scan that never reaches the footer — keeps seeing the header
+values. See [wire-format.md](../format/wire-format.md) → *Header and
+Footer Metadata Frames* for the full merge rule, and
+`examples/rust/src/bin/19_footer_metadata.rs` for a runnable producer.
+
 ## Error Conditions
 
 | Error | Cause |

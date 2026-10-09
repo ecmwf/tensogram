@@ -452,3 +452,109 @@ describe('Scope C.1 — StreamingEncoder streaming mode', () => {
     }
   });
 });
+
+describe('Scope C.1 — StreamingEncoder footer metadata', () => {
+  initOnce();
+
+  it('setFooterMetadata annotations reach the decoded _extra_ map', () => {
+    const enc = new StreamingEncoder(defaultMeta());
+    enc.writeObject(makeDescriptor([2], 'float32'), new Float32Array([1, 2]));
+    enc.setFooterMetadata({ writtenParams: ['2t', '10u'], count: 2 });
+    const bytes = enc.finish();
+
+    const decoded = decode(bytes);
+    try {
+      expect(decoded.metadata._extra_?.writtenParams).toEqual(['2t', '10u']);
+      expect(decoded.metadata._extra_?.count).toBe(2);
+    } finally {
+      decoded.close();
+    }
+  });
+
+  it('footer annotations override header keys of the same name', () => {
+    const enc = new StreamingEncoder({ _extra_: { status: 'provisional', centre: 'ecmwf' } });
+    enc.writeObject(makeDescriptor([2], 'float32'), new Float32Array([1, 2]));
+    enc.setFooterMetadata({ status: 'complete' });
+    const bytes = enc.finish();
+
+    const decoded = decode(bytes);
+    try {
+      expect(decoded.metadata._extra_?.status).toBe('complete');
+      expect(decoded.metadata._extra_?.centre).toBe('ecmwf');
+    } finally {
+      decoded.close();
+    }
+  });
+
+  it('repeated calls accumulate, later keys winning', () => {
+    const enc = new StreamingEncoder(defaultMeta());
+    enc.setFooterMetadata({ first: 1, shared: 'old' });
+    enc.writeObject(makeDescriptor([2], 'float32'), new Float32Array([1, 2]));
+    enc.setFooterMetadata({ second: 2, shared: 'new' });
+    const bytes = enc.finish();
+
+    const decoded = decode(bytes);
+    try {
+      expect(decoded.metadata._extra_?.first).toBe(1);
+      expect(decoded.metadata._extra_?.second).toBe(2);
+      expect(decoded.metadata._extra_?.shared).toBe('new');
+    } finally {
+      decoded.close();
+    }
+  });
+
+  it('setting no annotations leaves the message unchanged', () => {
+    const encode = (annotate: boolean): Uint8Array => {
+      const enc = new StreamingEncoder({ _extra_: { centre: 'ecmwf' } });
+      enc.writeObject(makeDescriptor([2], 'float32'), new Float32Array([1, 2]));
+      if (annotate) enc.setFooterMetadata({});
+      return enc.finish();
+    };
+
+    const plain = encode(false);
+    const annotated = encode(true);
+    expect(annotated.byteLength).toBe(plain.byteLength);
+
+    const decodedPlain = decode(plain);
+    const decodedAnnotated = decode(annotated);
+    try {
+      expect(decodedAnnotated.metadata._extra_).toEqual(decodedPlain.metadata._extra_);
+    } finally {
+      decodedPlain.close();
+      decodedAnnotated.close();
+    }
+  });
+
+  it('annotations flow through the streaming sink as part of the footer', () => {
+    const chunks: Uint8Array[] = [];
+    const enc = new StreamingEncoder(defaultMeta(), {
+      onBytes: (c) => chunks.push(new Uint8Array(c)),
+    });
+    enc.writeObject(makeDescriptor([2], 'float32'), new Float32Array([1, 2]));
+    enc.setFooterMetadata({ status: 'complete' });
+    enc.finish();
+
+    const decoded = decode(joinChunks(chunks));
+    try {
+      expect(decoded.metadata._extra_?.status).toBe('complete');
+    } finally {
+      decoded.close();
+    }
+  });
+
+  it('rejects non-object annotations', () => {
+    const enc = new StreamingEncoder(defaultMeta());
+    try {
+      expect(() => enc.setFooterMetadata([1, 2] as never)).toThrow(InvalidArgumentError);
+    } finally {
+      enc.close();
+    }
+  });
+
+  it('rejects annotations after finish', () => {
+    const enc = new StreamingEncoder(defaultMeta());
+    enc.writeObject(makeDescriptor([2], 'float32'), new Float32Array([1, 2]));
+    enc.finish();
+    expect(() => enc.setFooterMetadata({ status: 'complete' })).toThrow(InvalidArgumentError);
+  });
+});

@@ -572,6 +572,23 @@ public:
         launch_void_completion(task, err, std::move(cb));
     }
 
+    /// Async merge of message-level annotations into the footer metadata
+    /// frame.  Keys override same-named keys from the constructor
+    /// metadata; repeated calls accumulate.
+    void set_footer_metadata(const std::string& metadata_json,
+                             std::function<void(result<void>)> cb,
+                             cancellation_token* token = nullptr,
+                             std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) {
+        tgm_async_task_t* task = nullptr;
+        tgm_error err = tgm_async_streaming_encoder_set_footer_metadata(
+            handle_.get(),
+            metadata_json.c_str(),
+            token ? token->raw() : nullptr,
+            static_cast<uint64_t>(timeout.count()),
+            &task);
+        launch_void_completion(task, err, std::move(cb));
+    }
+
     /// Async finish — writes footer frames + postamble.  When
     /// `backfill = true` (default) and the sink supports seek (local
     /// files do), the preamble + postamble `total_length` slots are

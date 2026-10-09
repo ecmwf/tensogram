@@ -235,6 +235,51 @@ A Preceder Metadata Frame (type 8) optionally appears immediately before a Data 
 
 **Merge on decode:** Preceder keys override footer `base[i]` keys on conflict. Footer-only keys (e.g., auto-populated `_reserved_.tensor` with ndim, shape, strides, dtype) are preserved. The consumer sees a unified `GlobalMetadata.base` — the preceder/footer distinction is transparent.
 
+## Header and Footer Metadata Frames
+
+A message carries a Header Metadata Frame (type 1), a Footer Metadata
+Frame (type 7), or both.  Buffered `encode` writes one header frame;
+the streaming encoder writes both, because at header time it does not
+yet know the objects.
+
+**Footer supersedes header.**  A decoder that reads both frames adopts
+the footer frame's metadata.  The footer frame is the *complete*
+message metadata — the streaming encoder builds it from the
+constructor metadata plus the per-object `base[i]` entries, the
+`_reserved_` provenance, and any message-level annotations the
+producer supplied while encoding.
+
+Inside `_extra_` this means footer keys override same-named header
+keys, mirroring the preceder-over-footer rule for `base[i]` above.  A
+producer that only learns a fact at the end — which requested
+parameters actually had data, an observed value range, a final status —
+publishes a provisional value in the header and the final one in the
+footer:
+
+```python
+enc = tensogram.StreamingEncoder(
+    {"_extra_": {"requested_params": ["2t", "10u", "tp"], "status": "provisional"}}
+)
+enc.write_object(descriptor, values)            # "tp" had no data
+enc.set_footer_metadata({"status": "complete", "written_params": ["2t", "10u"]})
+message = enc.finish()
+
+tensogram.decode(message).metadata.extra["status"]   # "complete"  (footer frame)
+tensogram.decode_metadata(message).extra["status"]   # "provisional" (header frame)
+```
+
+A reader that parses only the header frame — a forward scan that never
+reaches the footer, or a cheap "metadata only" read that stops at the
+first metadata frame — keeps seeing the header values.  That is a
+valid reading of the message, so a provisional header value must stand
+on its own and never mislead.
+
+The same merge is available from every binding:
+`set_footer_metadata` (Rust, Python, Fortran), `setFooterMetadata`
+(TypeScript), `set_footer_metadata` (C++), and
+`tgm_streaming_encoder_set_footer_metadata` /
+`tgm_async_streaming_encoder_set_footer_metadata` (C).
+
 ## Postamble (16 bytes)
 
 The postamble sits at the very end of every message.

@@ -455,3 +455,70 @@ async fn async_streaming_with_mask_options_round_trip() {
     let f = f32::from_ne_bytes([restored[0], restored[1], restored[2], restored[3]]);
     assert!(f.is_nan(), "NaN should be restored after round trip");
 }
+
+/// Footer annotations supplied via `set_footer_metadata` must land in the
+/// async encoder's footer metadata frame with the same override rule the
+/// sync encoder applies: footer `_extra_` keys win over header keys.
+#[tokio::test]
+async fn async_streaming_footer_metadata_matches_sync() {
+    let mut header_extra = BTreeMap::new();
+    header_extra.insert(
+        "status".to_string(),
+        ciborium::Value::Text("provisional".to_string()),
+    );
+    header_extra.insert(
+        "centre".to_string(),
+        ciborium::Value::Text("ecmwf".to_string()),
+    );
+    let meta = GlobalMetadata {
+        extra: header_extra,
+        ..Default::default()
+    };
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let data: Vec<u8> = (0..16).collect();
+
+    let footer_extra = || {
+        let mut m = BTreeMap::new();
+        m.insert(
+            "status".to_string(),
+            ciborium::Value::Text("complete".to_string()),
+        );
+        m
+    };
+
+    let sync_bytes = {
+        let mut enc = StreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        enc.set_footer_metadata(footer_extra());
+        enc.finish().unwrap()
+    };
+
+    let async_bytes = {
+        let mut enc = AsyncStreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default())
+            .await
+            .unwrap();
+        enc.write_object(&desc, &data).await.unwrap();
+        enc.set_footer_metadata(footer_extra());
+        enc.finish().await.unwrap()
+    };
+
+    assert_eq!(
+        sync_bytes.len(),
+        async_bytes.len(),
+        "async footer frame must match sync in length"
+    );
+
+    let (sync_meta, _) = decode(&sync_bytes, &DecodeOptions::default()).unwrap();
+    let (async_meta, _) = decode(&async_bytes, &DecodeOptions::default()).unwrap();
+    assert_eq!(sync_meta.extra, async_meta.extra);
+    assert_eq!(
+        async_meta.extra.get("status"),
+        Some(&ciborium::Value::Text("complete".to_string())),
+        "footer value must override the header value"
+    );
+    assert_eq!(
+        async_meta.extra.get("centre"),
+        Some(&ciborium::Value::Text("ecmwf".to_string())),
+        "header-only keys must survive"
+    );
+}

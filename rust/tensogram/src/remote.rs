@@ -5452,6 +5452,71 @@ mod inmem_tests {
         assert!(state.layouts[0].global_metadata.is_some());
     }
 
+    #[test]
+    fn parse_footer_frames_adopts_footer_extra_over_header_extra() {
+        // The remote walker reads header frames first and footer frames
+        // later; the footer metadata frame replaces what the header
+        // yielded, so a producer's late `_extra_` annotations are what a
+        // remote reader observes.
+        let meta_with_status = |status: &str| {
+            let meta = GlobalMetadata {
+                extra: BTreeMap::from([(
+                    "status".to_string(),
+                    ciborium::Value::Text(status.to_string()),
+                )]),
+                ..Default::default()
+            };
+            crate::metadata::global_metadata_to_cbor(&meta).expect("meta cbor")
+        };
+        let index_cbor = crate::metadata::index_to_cbor(&IndexFrame {
+            offsets: vec![0],
+            lengths: vec![64],
+        })
+        .expect("index cbor");
+
+        // The frame walkers advance to the next 8-byte boundary after each
+        // frame, so concatenated frames must be padded like the encoder
+        // writes them.
+        let push_frame = |buf: &mut Vec<u8>, frame_type, payload: &[u8]| {
+            buf.extend_from_slice(&build_frame(frame_type, payload));
+            let pad = (8 - (buf.len() % 8)) % 8;
+            buf.extend(std::iter::repeat_n(0u8, pad));
+        };
+
+        let mut header_region = vec![0u8; PREAMBLE_SIZE];
+        push_frame(
+            &mut header_region,
+            FrameType::HeaderMetadata,
+            &meta_with_status("provisional"),
+        );
+        push_frame(&mut header_region, FrameType::HeaderIndex, &index_cbor);
+
+        let mut footer_region = Vec::new();
+        push_frame(
+            &mut footer_region,
+            FrameType::FooterMetadata,
+            &meta_with_status("complete"),
+        );
+        push_frame(&mut footer_region, FrameType::FooterIndex, &index_cbor);
+
+        let mut state = RemoteState::default();
+        state
+            .layouts
+            .push(dummy_layout(0, header_region.len() as u64));
+        RemoteBackend::parse_header_frames(&mut state, 0, &header_region).expect("header frames");
+        RemoteBackend::parse_footer_frames(&mut state, 0, &footer_region).expect("footer frames");
+
+        let meta = state.layouts[0]
+            .global_metadata
+            .as_ref()
+            .expect("metadata populated");
+        assert_eq!(
+            meta.extra.get("status"),
+            Some(&ciborium::Value::Text("complete".to_string())),
+            "footer metadata must supersede the header metadata"
+        );
+    }
+
     // ── checked_frame_range / validate_index_access units ────────────────
 
     #[test]

@@ -49,6 +49,7 @@ uv pip install -e python/tensogram-zarr/
 | `15_async_operations.py` | Async open, decode, and `asyncio.gather` with `AsyncTensogramFile` |
 | `16_multi_threaded_pipeline.py` | Caller-controlled `threads=N` encode/decode with determinism invariants |
 | `17_convert_grib.py` | Convert GRIB → Tensogram via `tensogram.convert_grib` (file) and `tensogram.convert_grib_buffer` (in-memory) |
+| `19_footer_metadata.py` | `set_footer_metadata` — message-level facts learnt while streaming, merged into the footer metadata frame |
 
 For **narrative walk-throughs** with live plots and prose explanations,
 see the companion notebooks under `../jupyter/`.

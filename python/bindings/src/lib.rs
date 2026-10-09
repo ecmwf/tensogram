@@ -1713,6 +1713,10 @@ fn compute_packing_params(
 ///         enc.write_object(descriptor, data)
 ///         wire_bytes = enc.finish_and_reset_backfilled()
 ///         send(wire_bytes)
+///
+/// Message-level metadata learnt while encoding goes in via
+/// :meth:`set_footer_metadata`; those keys reach the footer metadata frame,
+/// which supersedes the header frame on decode.
 #[pyclass(name = "StreamingEncoder")]
 struct PyStreamingEncoder {
     inner: Option<StreamingEncoder<std::io::Cursor<Vec<u8>>>>,
@@ -1823,6 +1827,38 @@ impl PyStreamingEncoder {
                 .write_object_pre_encoded(&desc, &bytes)
                 .map_err(to_py_err)
         }
+    }
+
+    /// Add message-level annotations to the footer metadata frame.
+    ///
+    /// Args:
+    ///     extra: dict of keys to merge into the footer metadata frame's
+    ///         ``_extra_`` map.
+    ///
+    /// Call this at any point before a finish method for facts only known
+    /// once the objects are written — which requested parameters actually
+    /// had data, value ranges, counts.  Keys override same-named keys from
+    /// the constructor metadata's ``_extra_``, so the header can carry a
+    /// provisional value and the footer the final one.
+    ///
+    /// Repeated calls accumulate; a repeated key takes the value from the
+    /// later call.  The pending map is per-message: :meth:`finish_and_reset`
+    /// and :meth:`finish_and_reset_backfilled` clear it.
+    ///
+    /// Example::
+    ///
+    ///     enc = tensogram.StreamingEncoder({"_extra_": {"status": "partial"}})
+    ///     enc.write_object(descriptor, values)
+    ///     enc.set_footer_metadata({"status": "complete", "written": 1})
+    ///     msg = enc.finish()
+    fn set_footer_metadata(&mut self, extra: &Bound<'_, PyDict>) -> PyResult<()> {
+        let map = py_dict_to_btree(extra.as_any())?;
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        inner.set_footer_metadata(map);
+        Ok(())
     }
 
     /// Finalize the stream and return the complete wire-format ``bytes``.

@@ -5936,6 +5936,104 @@ mod tests {
     }
 
     #[test]
+    fn ffi_streaming_encoder_set_footer_metadata() {
+        // Footer annotations override the header value for the same key and
+        // are readable from `_extra_` once the message is decoded.
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_footer_metadata.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"_extra_":{"status":"provisional"}}"#).unwrap();
+
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            meta_json.as_ptr(),
+            ptr::null(),
+            0,
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let values = [42.0f32];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let desc_json = CString::new(format!(
+            r#"{{"type":"ntensor","ndim":1,"shape":[1],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}"#,
+            bo = if cfg!(target_endian = "little") { "little" } else { "big" },
+        )).unwrap();
+        let err =
+            super::tgm_streaming_encoder_write(enc, desc_json.as_ptr(), data.as_ptr(), data.len());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let footer_json = CString::new(r#"{"status":"complete","written":1}"#).unwrap();
+        let err = super::tgm_streaming_encoder_set_footer_metadata(enc, footer_json.as_ptr());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let err = super::tgm_streaming_encoder_finish(enc);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Once finished the encoder rejects further annotations.
+        let err = super::tgm_streaming_encoder_set_footer_metadata(enc, footer_json.as_ptr());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        super::tgm_streaming_encoder_free(enc);
+
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open(c_path.as_ptr(), &mut file);
+        assert!(matches!(err, super::TgmError::Ok));
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_message_metadata(msg, &mut meta);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let key = CString::new("status").unwrap();
+        let val_ptr = super::tgm_metadata_get_string(meta, key.as_ptr());
+        assert!(!val_ptr.is_null());
+        let val_str = unsafe { CStr::from_ptr(val_ptr) }.to_str().unwrap();
+        assert_eq!(val_str, "complete", "footer annotation must win");
+
+        super::tgm_metadata_free(meta);
+        super::tgm_message_free(msg);
+        super::tgm_file_close(file);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_set_footer_metadata_bad_args() {
+        let err = super::tgm_streaming_encoder_set_footer_metadata(ptr::null_mut(), ptr::null());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_footer_metadata_bad.tgm");
+        let _ = std::fs::remove_file(&path);
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new("{}").unwrap();
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            meta_json.as_ptr(),
+            ptr::null(),
+            0,
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // A JSON array is not a metadata object.
+        let not_an_object = CString::new("[1,2,3]").unwrap();
+        let err = super::tgm_streaming_encoder_set_footer_metadata(enc, not_an_object.as_ptr());
+        assert!(matches!(err, super::TgmError::Metadata));
+
+        let malformed = CString::new("{not json").unwrap();
+        let err = super::tgm_streaming_encoder_set_footer_metadata(enc, malformed.as_ptr());
+        assert!(matches!(err, super::TgmError::Metadata));
+
+        super::tgm_streaming_encoder_free(enc);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn ffi_streaming_encoder_write_pre_encoded_null_args() {
         let err = super::tgm_streaming_encoder_write_pre_encoded(
             ptr::null_mut(),
@@ -8161,6 +8259,65 @@ pub extern "C" fn tgm_streaming_encoder_write_preceder(
                 to_error_code(&e)
             }
         },
+        None => {
+            set_last_error("streaming encoder already finished");
+            TgmError::InvalidArg
+        }
+    }
+}
+
+/// Add message-level annotations to the footer metadata frame.
+///
+/// `metadata_json` is a JSON object whose keys are merged into the
+/// footer metadata frame's `_extra_` map (e.g.
+/// `{"status":"complete","written_params":["2t"]}`).  Use it for facts
+/// the producer only learns once the objects are written.
+///
+/// Keys override same-named keys from the metadata passed to
+/// `tgm_streaming_encoder_create`, so the header frame can carry a
+/// provisional value and the footer the final one.  Repeated calls
+/// accumulate; a repeated key takes the value from the later call.
+///
+/// Callable at any point before `tgm_streaming_encoder_finish`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_streaming_encoder_set_footer_metadata(
+    enc: *mut TgmStreamingEncoder,
+    metadata_json: *const c_char,
+) -> TgmError {
+    if enc.is_null() || metadata_json.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let map: BTreeMap<String, ciborium::Value> =
+        match serde_json::from_str::<serde_json::Value>(json_str) {
+            Ok(serde_json::Value::Object(obj)) => {
+                obj.into_iter().map(|(k, v)| (k, json_to_cbor(v))).collect()
+            }
+            Ok(_) => {
+                set_last_error("metadata_json must be a JSON object");
+                return TgmError::Metadata;
+            }
+            Err(e) => {
+                set_last_error(&format!("failed to parse metadata JSON: {e}"));
+                return TgmError::Metadata;
+            }
+        };
+
+    let encoder = unsafe { &mut *enc };
+    match encoder.inner.as_mut() {
+        Some(inner) => {
+            inner.set_footer_metadata(map);
+            TgmError::Ok
+        }
         None => {
             set_last_error("streaming encoder already finished");
             TgmError::InvalidArg

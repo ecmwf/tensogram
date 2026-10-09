@@ -19,10 +19,10 @@ import zarr
 from tensogram_zarr import TensogramStore
 
 store = TensogramStore("forecast.tgm")
-root  = zarr.open(store, mode="r")
-arr   = root["temperature"]
+root = zarr.open(store, mode="r")
+arr = root["temperature"]
 print(arr.shape, arr.dtype)
-print(arr[0, :10, :10])      # Zarr-style chunk-aware access
+print(arr[0, :10, :10])  # Zarr-style chunk-aware access
 ```
 
 `TensogramStore` is a standard `zarr.abc.store.Store`, so the full Zarr

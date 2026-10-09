@@ -81,6 +81,7 @@ module tensogram
    public :: tensogram_streaming_encoder
    public :: tensogram_streaming_encoder_create, tensogram_streaming_encoder_write
    public :: tensogram_streaming_encoder_finish, tensogram_streaming_encoder_count
+   public :: tensogram_streaming_encoder_set_footer_metadata
    public :: tensogram_num_objects, tensogram_object_ndim
    public :: tensogram_object_shape, tensogram_object_dtype
    public :: tensogram_strerror, tensogram_last_error, tensogram_check
@@ -678,6 +679,14 @@ module tensogram
          type(c_ptr),       value :: data
          integer(c_size_t), value :: data_len
          integer(c_int)           :: err
+      end function
+
+      function c_tgm_streaming_encoder_set_footer_metadata(enc, metadata_json) &
+            bind(C, name="tgm_streaming_encoder_set_footer_metadata") result(err)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: enc
+         type(c_ptr), value :: metadata_json
+         integer(c_int)     :: err
       end function
 
       function c_tgm_streaming_encoder_count(enc) &
@@ -1884,6 +1893,21 @@ contains
                                            0_c_int32_t, out)
       if (err == TGM_ERROR_OK) enc%ptr = out
    end subroutine tensogram_streaming_encoder_create
+
+   !> Merge message-level annotations into the footer metadata frame.
+   !> `metadata_json` is a JSON object (e.g. `'{"status":"complete"}'`) whose
+   !> keys land in the footer frame's `_extra_` map, overriding same-named keys
+   !> from the metadata passed to `_create`. Use it for facts only known once
+   !> the objects are written; repeated calls accumulate. Call it any time
+   !> before `_finish`.
+   subroutine tensogram_streaming_encoder_set_footer_metadata(enc, metadata_json, err)
+      type(tensogram_streaming_encoder), intent(inout) :: enc
+      character(len=*),                  intent(in)    :: metadata_json
+      integer(c_int),                    intent(out)   :: err
+      character(kind=c_char), allocatable, target :: meta_c(:)
+      call f_to_cstr(metadata_json, meta_c)
+      err = c_tgm_streaming_encoder_set_footer_metadata(enc%ptr, c_loc(meta_c))
+   end subroutine tensogram_streaming_encoder_set_footer_metadata
 
    !> Finalise the stream: write the footer index/hash + postamble and close
    !> the file. The handle remains valid (release it with `enc%free()`).

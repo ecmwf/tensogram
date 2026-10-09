@@ -99,6 +99,12 @@ pub struct StreamingEncoder<W: Write> {
     neg_inf_mask_method: MaskMethod,
     /// Snapshot of the small-mask fallback threshold.
     small_mask_threshold_bytes: usize,
+    /// Message-level annotations supplied after construction via
+    /// [`set_footer_metadata`](StreamingEncoder::set_footer_metadata).
+    /// Merged over the constructor metadata's `_extra_` map when the
+    /// footer metadata frame is built, so late-known facts reach the
+    /// footer frame that supersedes the header on decode.
+    footer_extra: BTreeMap<String, ciborium::Value>,
 }
 
 impl<W: Write> StreamingEncoder<W> {
@@ -157,6 +163,7 @@ impl<W: Write> StreamingEncoder<W> {
             pos_inf_mask_method: options.pos_inf_mask_method.clone(),
             neg_inf_mask_method: options.neg_inf_mask_method.clone(),
             small_mask_threshold_bytes: options.small_mask_threshold_bytes,
+            footer_extra: BTreeMap::new(),
         })
     }
 
@@ -198,6 +205,41 @@ impl<W: Write> StreamingEncoder<W> {
         // Store for inclusion in footer metadata
         self.preceder_payloads.push(Some(metadata));
         Ok(())
+    }
+
+    /// Add message-level annotations to the footer metadata frame.
+    ///
+    /// Callable at any point before the message is finalised — use it for
+    /// facts a producer only learns while encoding (which requested
+    /// parameters actually had data, value ranges, counts).  The keys land
+    /// in the footer metadata frame's `_extra_` map, overriding
+    /// same-named keys from the constructor metadata's `_extra_` (see
+    /// `plans/WIRE_FORMAT.md` §6.1, *Header / footer divergence*).
+    ///
+    /// Repeated calls accumulate: each call merges its keys into the
+    /// pending map and a repeated key replaces its previous value.  A
+    /// caller that never calls this produces byte-identical output to one
+    /// that cannot.
+    ///
+    /// The pending map is per-message — [`finish_and_reset`] clears it, so
+    /// each message in a sequence carries only its own annotations.
+    ///
+    /// ```no_run
+    /// # use std::collections::BTreeMap;
+    /// # use tensogram::streaming::StreamingEncoder;
+    /// # use tensogram::{GlobalMetadata, EncodeOptions};
+    /// # let meta = GlobalMetadata::default();
+    /// # let mut enc = StreamingEncoder::new(
+    /// #     std::io::Cursor::new(Vec::new()), &meta, &EncodeOptions::default()).unwrap();
+    /// let mut extra = BTreeMap::new();
+    /// extra.insert("written_params".to_string(), ciborium::Value::Integer(7.into()));
+    /// enc.set_footer_metadata(extra);
+    /// let bytes = enc.finish().unwrap().into_inner();
+    /// ```
+    ///
+    /// [`finish_and_reset`]: StreamingEncoder::finish_and_reset
+    pub fn set_footer_metadata(&mut self, extra: BTreeMap<String, ciborium::Value>) {
+        self.footer_extra.extend(extra);
     }
 
     /// Encode and write a single data object frame.
@@ -435,34 +477,16 @@ impl<W: Write> StreamingEncoder<W> {
         // Footer metadata frame: updated global metadata with per-object payload entries.
         // The header metadata was written without knowing the objects; here we write
         // a footer metadata frame that supersedes it with payload populated.
-        // Preceder payloads are merged in so the footer is complete even for
-        // decoders that skip PrecederMetadata frames.
+        // Preceder payloads and any late message-level annotations are merged in
+        // so the footer is complete even for decoders that skip PrecederMetadata
+        // frames.
         {
-            let mut enriched_meta = self.global_meta.clone();
-            populate_base_entries(&mut enriched_meta.base, &self.completed_objects);
-            populate_reserved_provenance(&mut enriched_meta.reserved);
-
-            // Merge preceder payloads into footer metadata base entries
-            // (preceder wins).  preceder_payloads is aligned 1:1 with
-            // completed_objects by write_preceder/write_object bookkeeping,
-            // so the lengths must match.
-            if self.preceder_payloads.len() != self.completed_objects.len() {
-                return Err(TensogramError::Framing(format!(
-                    "internal: preceder_payloads ({}) out of sync with completed_objects ({})",
-                    self.preceder_payloads.len(),
-                    self.completed_objects.len()
-                )));
-            }
-            for (i, prec) in self.preceder_payloads.iter().enumerate() {
-                if let Some(prec_map) = prec
-                    && i < enriched_meta.base.len()
-                {
-                    for (k, v) in prec_map {
-                        enriched_meta.base[i].insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            let meta_cbor = metadata::global_metadata_to_cbor(&enriched_meta)?;
+            let meta_cbor = build_footer_metadata_cbor(
+                &self.global_meta,
+                &self.completed_objects,
+                &self.preceder_payloads,
+                &self.footer_extra,
+            )?;
             let frame_bytes =
                 build_frame(FrameType::FooterMetadata, 1, 0, &meta_cbor, self.hashing);
             self.writer.write_all(&frame_bytes)?;
@@ -681,6 +705,7 @@ impl StreamingEncoder<std::io::Cursor<Vec<u8>>> {
         self.completed_objects.clear();
         self.pending_preceder = false;
         self.preceder_payloads.clear();
+        self.footer_extra.clear();
         self.bytes_written = 0;
         // Snapshot fields that cannot be borrowed while self.writer is mutably
         // borrowed by write_preamble_and_header.
@@ -698,6 +723,58 @@ impl StreamingEncoder<std::io::Cursor<Vec<u8>>> {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Build the CBOR payload of the `FooterMetadata` frame.
+///
+/// Shared by the sync [`StreamingEncoder`] and the async
+/// [`crate::streaming_async::AsyncStreamingEncoder`] so the footer-frame
+/// merge rules have one implementation:
+///
+/// - per-object payload entries are populated from the completed objects;
+/// - `_reserved_` provenance is stamped;
+/// - preceder payloads override `base[i]` keys (preceder wins);
+/// - `footer_extra` overrides `_extra_` keys from the constructor metadata.
+///
+/// The footer frame supersedes the header metadata frame on decode, so the
+/// last of these rules is what lets a producer finalise a provisional
+/// header annotation (`plans/WIRE_FORMAT.md` §6.1).
+pub(crate) fn build_footer_metadata_cbor(
+    global_meta: &GlobalMetadata,
+    completed_objects: &[EncodedObject],
+    preceder_payloads: &[Option<BTreeMap<String, ciborium::Value>>],
+    footer_extra: &BTreeMap<String, ciborium::Value>,
+) -> Result<Vec<u8>> {
+    let mut enriched_meta = global_meta.clone();
+    populate_base_entries(&mut enriched_meta.base, completed_objects);
+    populate_reserved_provenance(&mut enriched_meta.reserved);
+
+    // preceder_payloads is aligned 1:1 with completed_objects by the
+    // write_preceder/write_object bookkeeping, so the lengths must match.
+    if preceder_payloads.len() != completed_objects.len() {
+        return Err(TensogramError::Framing(format!(
+            "internal: preceder_payloads ({}) out of sync with completed_objects ({})",
+            preceder_payloads.len(),
+            completed_objects.len()
+        )));
+    }
+    for (i, prec) in preceder_payloads.iter().enumerate() {
+        if let Some(prec_map) = prec
+            && i < enriched_meta.base.len()
+        {
+            for (k, v) in prec_map {
+                enriched_meta.base[i].insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    // Message-level annotations learnt during encoding win over the
+    // constructor's `_extra_` on key conflict.
+    for (k, v) in footer_extra {
+        enriched_meta.extra.insert(k.clone(), v.clone());
+    }
+
+    metadata::global_metadata_to_cbor(&enriched_meta)
+}
 
 /// Write the streaming-mode preamble (`total_length = 0`) and the
 /// `HeaderMetadata` frame to `writer`, updating `bytes_written` accordingly.
@@ -2004,6 +2081,180 @@ mod tests {
             objs.len(),
             0,
             "empty message after finish_and_reset must decode to 0 objects"
+        );
+    }
+
+    // ── Footer metadata supplied at finish time ──────────────────────────
+
+    fn text(s: &str) -> ciborium::Value {
+        ciborium::Value::Text(s.to_string())
+    }
+
+    fn extra_map(pairs: &[(&str, &str)]) -> BTreeMap<String, ciborium::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), text(v)))
+            .collect()
+    }
+
+    #[test]
+    fn footer_metadata_reaches_the_decoded_extra_map() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+
+        let mut enc = StreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).unwrap();
+        enc.write_object(&desc, &[0u8; 16]).unwrap();
+        enc.set_footer_metadata(extra_map(&[("written_params", "2t,10u")]));
+        let msg = enc.finish().unwrap();
+
+        let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(
+            decoded_meta.extra.get("written_params"),
+            Some(&text("2t,10u")),
+            "annotations set before finish must appear in the decoded `_extra_`"
+        );
+    }
+
+    #[test]
+    fn footer_metadata_overrides_the_header_value_on_conflict() {
+        // The header carries a provisional value; the footer carries the
+        // final one.  A decoder that reads the footer frame sees the final
+        // value because the footer supersedes the header.
+        let meta = GlobalMetadata {
+            extra: extra_map(&[("status", "provisional"), ("centre", "ecmwf")]),
+            ..Default::default()
+        };
+        let desc = make_descriptor(vec![4]);
+
+        let mut enc = StreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).unwrap();
+        enc.write_object(&desc, &[1u8; 16]).unwrap();
+        enc.set_footer_metadata(extra_map(&[("status", "complete")]));
+        let msg = enc.finish().unwrap();
+
+        let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(
+            decoded_meta.extra.get("status"),
+            Some(&text("complete")),
+            "footer `_extra_` keys win over header keys of the same name"
+        );
+        assert_eq!(
+            decoded_meta.extra.get("centre"),
+            Some(&text("ecmwf")),
+            "header-only keys survive into the footer frame"
+        );
+
+        // A forward-scanning reader that stops at the header metadata frame
+        // still sees the provisional value — that is the documented
+        // contract, not a decoder bug.
+        let header_meta = crate::framing::decode_metadata_only(&msg).unwrap();
+        assert_eq!(header_meta.extra.get("status"), Some(&text("provisional")));
+    }
+
+    #[test]
+    fn footer_metadata_accumulates_over_repeated_calls() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+
+        let mut enc = StreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).unwrap();
+        enc.set_footer_metadata(extra_map(&[("first", "a"), ("shared", "old")]));
+        enc.write_object(&desc, &[2u8; 16]).unwrap();
+        enc.set_footer_metadata(extra_map(&[("second", "b"), ("shared", "new")]));
+        let msg = enc.finish().unwrap();
+
+        let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(decoded_meta.extra.get("first"), Some(&text("a")));
+        assert_eq!(decoded_meta.extra.get("second"), Some(&text("b")));
+        assert_eq!(
+            decoded_meta.extra.get("shared"),
+            Some(&text("new")),
+            "a repeated key takes the value from the later call"
+        );
+    }
+
+    #[test]
+    fn empty_footer_metadata_leaves_the_message_unchanged() {
+        // Setting no annotations must produce the same message as never
+        // setting any: same length, same metadata (provenance aside, which
+        // carries a fresh uuid and timestamp per message).
+        let meta = GlobalMetadata {
+            extra: extra_map(&[("centre", "ecmwf")]),
+            ..Default::default()
+        };
+        let desc = make_descriptor(vec![4]);
+
+        let mut plain =
+            StreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).unwrap();
+        plain.write_object(&desc, &[3u8; 16]).unwrap();
+        let plain_msg = plain.finish().unwrap();
+
+        let mut annotated =
+            StreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).unwrap();
+        annotated.write_object(&desc, &[3u8; 16]).unwrap();
+        annotated.set_footer_metadata(BTreeMap::new());
+        let annotated_msg = annotated.finish().unwrap();
+
+        assert_eq!(plain_msg.len(), annotated_msg.len());
+        let (plain_meta, _) = decode(&plain_msg, &DecodeOptions::default()).unwrap();
+        let (annotated_meta, _) = decode(&annotated_msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(plain_meta.extra, annotated_meta.extra);
+        assert_eq!(plain_meta.base, annotated_meta.base);
+    }
+
+    #[test]
+    fn footer_metadata_is_per_message_across_resets() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+
+        enc.write_object(&desc, &[4u8; 16]).unwrap();
+        enc.set_footer_metadata(extra_map(&[("coverage", "first")]));
+        let first = enc.finish_and_reset().unwrap();
+
+        enc.write_object(&desc, &[5u8; 16]).unwrap();
+        let second = enc.finish_and_reset_with_backfill().unwrap();
+
+        enc.write_object(&desc, &[6u8; 16]).unwrap();
+        enc.set_footer_metadata(extra_map(&[("coverage", "third")]));
+        let third = enc.finish_and_reset().unwrap();
+
+        let (first_meta, _) = decode(&first, &DecodeOptions::default()).unwrap();
+        let (second_meta, _) = decode(&second, &DecodeOptions::default()).unwrap();
+        let (third_meta, _) = decode(&third, &DecodeOptions::default()).unwrap();
+
+        assert_eq!(first_meta.extra.get("coverage"), Some(&text("first")));
+        assert_eq!(
+            second_meta.extra.get("coverage"),
+            None,
+            "a reset clears the pending annotations"
+        );
+        assert_eq!(third_meta.extra.get("coverage"), Some(&text("third")));
+    }
+
+    #[test]
+    fn footer_metadata_coexists_with_preceder_entries() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+
+        let mut enc = StreamingEncoder::new(Vec::new(), &meta, &EncodeOptions::default()).unwrap();
+        let mut prec = BTreeMap::new();
+        prec.insert("units".to_string(), text("K"));
+        enc.write_preceder(prec).unwrap();
+        enc.write_object(&desc, &[7u8; 16]).unwrap();
+        enc.set_footer_metadata(extra_map(&[("value_range", "250:300")]));
+        let msg = enc.finish().unwrap();
+
+        let (decoded_meta, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(decoded_meta.base[0].get("units"), Some(&text("K")));
+        assert_eq!(
+            decoded_meta.extra.get("value_range"),
+            Some(&text("250:300"))
         );
     }
 }

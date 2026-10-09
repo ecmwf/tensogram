@@ -73,6 +73,13 @@ impl Inner {
         }
     }
 
+    fn set_footer_metadata(&mut self, map: BTreeMap<String, ciborium::Value>) {
+        match self {
+            Inner::Buffered(e) => e.set_footer_metadata(map),
+            Inner::Streaming(e) => e.set_footer_metadata(map),
+        }
+    }
+
     fn write_object(
         &mut self,
         desc: &core::DataObjectDescriptor,
@@ -246,6 +253,22 @@ impl StreamingEncoder {
         let map: BTreeMap<String, ciborium::Value> =
             serde_wasm_bindgen::from_value(metadata_js).map_err(js_err_display)?;
         inner.write_preceder(map).map_err(js_err)
+    }
+
+    /// Add message-level annotations to the footer metadata frame.
+    ///
+    /// The keys land in the footer frame's `_extra_` map and override
+    /// same-named keys from the constructor metadata, so a producer can
+    /// publish a provisional value in the header and the final one in the
+    /// footer.  Repeated calls accumulate.
+    ///
+    /// @param extra_js - Plain JS object of annotations.
+    pub fn set_footer_metadata(&mut self, extra_js: JsValue) -> Result<(), JsValue> {
+        let inner = self.inner.as_mut().ok_or_else(already_finished)?;
+        let map: BTreeMap<String, ciborium::Value> =
+            serde_wasm_bindgen::from_value(extra_js).map_err(js_err_display)?;
+        inner.set_footer_metadata(map);
+        Ok(())
     }
 
     /// Encode and write a single data object.

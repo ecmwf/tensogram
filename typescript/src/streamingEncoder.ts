@@ -54,6 +54,7 @@ interface WbgStreamingEncoder {
   write_object(descriptor_js: unknown, data: unknown): void;
   write_object_pre_encoded(descriptor_js: unknown, data: unknown): void;
   write_preceder(metadata_js: unknown): void;
+  set_footer_metadata(extra_js: unknown): void;
   object_count(): number;
   bytes_written(): number;
   finish(): Uint8Array;
@@ -143,6 +144,36 @@ export class StreamingEncoder {
       );
     }
     rethrowTyped(() => this.#handle.write_preceder(entry));
+  }
+
+  /**
+   * Add message-level annotations to the footer metadata frame.
+   *
+   * Call this at any point before {@link finish} for facts only known
+   * once the objects are written — which requested parameters actually
+   * had data, value ranges, counts.  The keys land in the footer
+   * metadata frame's `_extra_` map and override same-named keys from the
+   * constructor metadata, so the header can carry a provisional value
+   * and the footer the final one.
+   *
+   * Repeated calls accumulate; a repeated key takes the value from the
+   * later call.
+   *
+   * ```ts
+   * const enc = new StreamingEncoder({ _extra_: { status: 'partial' } });
+   * enc.writeObject(descriptor, values);
+   * enc.setFooterMetadata({ status: 'complete', written: 1 });
+   * const bytes = enc.finish();
+   * ```
+   */
+  setFooterMetadata(extra: BaseEntry): void {
+    this.#assertOpen();
+    if (extra === null || typeof extra !== 'object' || Array.isArray(extra)) {
+      throw new InvalidArgumentError(
+        'setFooterMetadata: extra must be a plain object of message-level metadata',
+      );
+    }
+    rethrowTyped(() => this.#handle.set_footer_metadata(extra));
   }
 
   /**

@@ -74,6 +74,13 @@ Notes and edge cases:
   encoding pipeline. Use `write_preceder(...)` to emit a metadata
   preceder frame ahead of an object so a streaming consumer can decode
   it before the payload arrives.
+- **Message metadata known at the end.** `set_footer_metadata(json)`
+  merges message-level annotations into the footer metadata frame,
+  which supersedes the header frame on decode — the place for facts
+  the producer only learns once the fields are written (what actually
+  had data, an observed range, a final status). Keys override
+  same-named keys from the metadata passed to `create`; repeated calls
+  accumulate. Call it any time before `finish`.
 - **Backend.** In v1 the streaming **encoder** writes to a **local
   file** only. The shared filesystem (Lustre, GPFS, WekaFS, BeeGFS) is
   the supported producer sink. Object-store *write* is out of scope;

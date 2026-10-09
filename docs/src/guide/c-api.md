@@ -214,6 +214,36 @@ int main(void) {
 }
 ```
 
+## Streaming encoder
+
+`tgm_streaming_encoder_create` writes a message to a file
+progressively: preamble and header metadata on create, one data-object
+frame per `tgm_streaming_encoder_write`, footer frames and postamble on
+`tgm_streaming_encoder_finish`.
+
+Facts known only once the objects are written — which requested
+parameters actually had data, an observed range, a final status — go
+into the footer metadata frame, which supersedes the header frame on
+decode:
+
+```c
+tgm_streaming_encoder_t *enc = NULL;
+tgm_streaming_encoder_create(path, "{\"_extra_\":{\"status\":\"provisional\"}}",
+                             "xxh3", 0, &enc);
+tgm_streaming_encoder_write(enc, descriptor_json, data, len);
+tgm_streaming_encoder_set_footer_metadata(enc, "{\"status\":\"complete\"}");
+tgm_streaming_encoder_finish(enc);
+tgm_streaming_encoder_free(enc);
+```
+
+Keys override same-named keys from the metadata passed to
+`_create`, so the header can carry a provisional value and the footer
+the final one.  Repeated calls accumulate.  The async encoder has the
+same entry point as a task:
+`tgm_async_streaming_encoder_set_footer_metadata`.  Full rules in
+[`plans/WIRE_FORMAT.md`](https://github.com/ecmwf/tensogram/blob/main/plans/WIRE_FORMAT.md)
+§6.1.
+
 ## Memory ownership
 
 - Handles returned by `tgm_*` constructors (e.g. `tgm_decode` returns

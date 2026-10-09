@@ -79,6 +79,10 @@ name = "18_remote_scan_trace"
 path = "src/bin/18_remote_scan_trace.rs"
 required-features = ["remote"]
 
+[[bin]]
+name = "19_footer_metadata"
+path = "src/bin/19_footer_metadata.rs"
+
 [features]
 default = []
 netcdf = ["dep:tensogram-netcdf"]
