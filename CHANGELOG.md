@@ -5,6 +5,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — message metadata supplied at finish time
+
+A streaming producer can now put message-level facts it only learns while
+encoding into the message's own metadata, instead of a separate trailer
+message.
+
+- **`set_footer_metadata(extra)`** on the streaming encoder in every binding
+  the repository maintains: Rust `StreamingEncoder` and
+  `AsyncStreamingEncoder`, Python, TypeScript (`setFooterMetadata`), C
+  (`tgm_streaming_encoder_set_footer_metadata` and
+  `tgm_async_streaming_encoder_set_footer_metadata`), C++ (sync wrapper plus
+  the callback / coroutine / `std::future` async wrappers), and Fortran.
+  Callable at any point before any finish method; repeated calls accumulate,
+  with a repeated key taking the value from the later call; the pending map is
+  per-message, so a reset clears it.
+- The keys are merged into the **footer metadata frame's `_extra_` map**, which
+  supersedes the header frame on decode. A producer can therefore publish a
+  provisional value in the header (a requested-parameter list,
+  `status: "provisional"`) and the final one in the footer (what was actually
+  written, `status: "complete"`). Readers that parse only the header frame —
+  `decode_metadata`, or a forward scan that never reaches the footer — keep
+  seeing the header values.
+- **Wire format**: `plans/WIRE_FORMAT.md` §6.1 now specifies header/footer
+  divergence (footer supersedes header; footer `_extra_` keys override
+  same-named header keys, mirroring the preceder-over-footer rule for
+  `base[i]`) instead of declaring any divergence an error, which the decoder
+  never enforced.
+- Guides: *Encoding Data*, *Python API*, *TypeScript API*, *C API*, *C++ API*,
+  *Fortran API*, *Message Layout*, and *Edge Cases*; runnable examples
+  `examples/{rust/src/bin,python,typescript}/19_footer_metadata.*`.
+
 ## [0.24.0] - 2026-07-23
 
 ### Added — symmetric metadata access across every binding

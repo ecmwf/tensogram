@@ -89,6 +89,33 @@ The returned JSON contains `issues`, `object_count`, and `hash_verified` for sin
 
 An invalid level string or a missing file throws `tensogram::invalid_arg_error` or `tensogram::io_error` respectively. Validation issues (corrupted data, hash mismatches) are reported in the JSON — they do not throw.
 
+## Streaming encoder
+
+`streaming_encoder` writes a message to a file progressively: preamble
+and header metadata on construction, one data-object frame per
+`write_object`, footer frames and postamble on `finish()`.
+
+Facts known only once the objects are written — which requested
+parameters actually had data, an observed range, a final status — go
+into the footer metadata frame via `set_footer_metadata`, which
+supersedes the header frame on decode:
+
+```cpp
+tensogram::streaming_encoder enc(path, R"({"_extra_":{"status":"provisional"}})");
+enc.write_object(descriptor_json, data, len);
+enc.set_footer_metadata(R"({"status":"complete","written":1})");
+enc.finish();
+```
+
+Keys override same-named keys from the constructor's `metadata_json`,
+so the header can carry a provisional value and the footer the final
+one.  Repeated calls accumulate.  The async wrappers expose the same
+operation as `set_footer_metadata(json, cb)` (callback), an awaitable
+(coroutine), and a `std::future<void>` — see [C++ Async
+API](cpp-async.md).  Full rules in
+[wire-format.md](../format/wire-format.md) → *Header and Footer
+Metadata Frames*.
+
 ## Iterators
 
 See [Iterators](iterators.md#c-api) for buffer, file, and object iterator usage.

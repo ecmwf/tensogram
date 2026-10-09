@@ -238,6 +238,7 @@ empty string).
 | `tensogram_metadata_get_int(meta, key, default)` / `_get_float(meta, key, default)` | Look up an int / float by key (`default` returned if absent) |
 | `tensogram_streaming_encoder_create(path, enc, err [, metadata_json, hash])` | Open a streaming encoder (writes a message progressively to a file) |
 | `tensogram_streaming_encoder_write(enc, a, err [, encoding, filter, compression])` | Append one object to the stream — **generic** over dtype and rank |
+| `tensogram_streaming_encoder_set_footer_metadata(enc, metadata_json, err)` | Merge message-level annotations into the footer metadata frame |
 | `tensogram_streaming_encoder_count(enc)` / `_finish(enc, err)` / `enc%free()` | Objects written so far / finalise (footer + close) / release |
 | `buf%as_array(out)` / `buf%size()` / `buf%free()` | Buffer access and release |
 | `file%close()` | Close a file handle (also automatic at scope exit) |
@@ -350,6 +351,21 @@ The result is one message with `nobj` objects; reopen it with
 `tensogram_file_open` + `tensogram_file_decode_message` and pull each
 object out with `tensogram_to_array`. See
 [`examples/fortran/streaming.f90`](https://github.com/ecmwf/tensogram/blob/main/examples/fortran/streaming.f90).
+
+Facts known only once the objects are written — how many fields had
+data, an observed range, a final status — go into the footer metadata
+frame, which supersedes the header frame on decode:
+
+```fortran
+call tensogram_streaming_encoder_set_footer_metadata(enc, '{"status":"complete"}', err)
+call tensogram_streaming_encoder_finish(enc, err)
+```
+
+Keys override same-named keys from the `metadata_json` passed to
+`_create`, so the header can carry a provisional value and the footer
+the final one. Repeated calls accumulate. See
+[wire-format.md](../format/wire-format.md) → *Header and Footer
+Metadata Frames*.
 
 Planned next: the async surface (deferred).
 

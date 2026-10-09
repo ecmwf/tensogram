@@ -371,10 +371,32 @@ preamble** (see §3); it is never duplicated in CBOR.
   annotations.  Every unrecognised top-level CBOR key is routed
   here on decode, so round-trips preserve unknown input.
 
-Exactly one of `HeaderMetadata` / `FooterMetadata` **must** be
-present.  If both are present, the decoder prefers the header frame
-(the most common case); any divergence between the two is a
-`MetadataError`.
+At least one of `HeaderMetadata` / `FooterMetadata` **must** be
+present.
+
+**Header / footer divergence.**  A message may carry both frames, and
+they may differ — that is how a streaming producer describes a message
+it cannot fully describe up front.  The streaming encoder writes the
+header frame before any object exists and the footer frame at finish
+time, by then enriched with per-object `base[i]` entries, the
+`_reserved_` provenance, and any message-level annotations supplied
+while encoding.  Reconciliation rules:
+
+- The footer frame **supersedes** the header frame.  A decoder that
+  parses both adopts the footer frame's `GlobalMetadata`.
+- Within `_extra_`, footer keys therefore override same-named header
+  keys, mirroring the preceder-over-footer rule for `base[i]` in §6.4.
+  A producer can publish a provisional value in the header (e.g.
+  `status: "provisional"`, a requested-parameter list) and the final
+  one in the footer (`status: "complete"`, what was actually written).
+- An encoder that emits a footer frame must therefore carry forward the
+  header frame's keys it still means: the footer frame is the complete
+  message metadata, not a delta.
+- A reader that parses only the header frame — a forward scan with no
+  postamble, or a cheap "metadata only" read that stops at the first
+  metadata frame — keeps seeing the header values.  That is a valid
+  reading of the message, so provisional header values must be
+  meaningful on their own, never misleading.
 
 ### 6.2 `HeaderIndex` / `FooterIndex` (types 2, 6)
 

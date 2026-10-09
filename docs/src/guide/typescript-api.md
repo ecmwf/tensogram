@@ -601,6 +601,34 @@ Semantics:
 - `enc.streaming` (getter) reports whether an `onBytes` sink was
   supplied — useful for code that needs to branch on mode.
 
+### Metadata known only at the end
+
+`setFooterMetadata(extra)` records message-level facts the producer
+only learns while encoding — which requested parameters actually had
+data, an observed value range, a final status.  The keys are merged
+into the footer metadata frame's `_extra_` map, which supersedes the
+header frame on decode, so the header can carry a provisional value
+and the footer the final one:
+
+```ts
+const enc = new StreamingEncoder({
+  _extra_: { requestedParams: ['2t', '10u', 'tp'], status: 'provisional' },
+});
+enc.writeObject(descriptor, new Float32Array([1, 2, 3]));   // 'tp' had no data
+enc.setFooterMetadata({ status: 'complete', writtenParams: ['2t', '10u'] });
+const bytes = enc.finish();
+
+decode(bytes).metadata._extra_?.status;    // 'complete'
+```
+
+Call it at any point before `finish()`; repeated calls accumulate,
+with a repeated key taking the value from the later call.  In
+streaming mode the annotations travel in the footer frame that flows
+through `onBytes` at `finish()`.  A reader that parses only the header
+frame keeps seeing the provisional value — see
+[wire-format.md](../format/wire-format.md) → *Header and Footer
+Metadata Frames*.
+
 Parity note: the Rust core `StreamingEncoder<W: Write>` has always
 supported arbitrary sinks; the WASM/TS surface now exposes this
 capability to JS code.  Python / FFI / C++ bindings remain

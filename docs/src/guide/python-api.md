@@ -318,6 +318,37 @@ enc.write_object(desc, payload)
 msg = enc.finish_backfilled()  # mirrored total_length in both slots
 ```
 
+#### Metadata known only at the end
+
+`set_footer_metadata(extra)` records message-level facts the producer
+only learns while encoding — which requested parameters actually had
+data, an observed value range, a final status.  The keys are merged
+into the footer metadata frame's `_extra_` map, which supersedes the
+header frame on decode, so the header can carry a provisional value
+and the footer the final one:
+
+```python
+enc = tensogram.StreamingEncoder(
+    {"_extra_": {"requested_params": ["2t", "10u", "tp"], "status": "provisional"}}
+)
+enc.write_object(desc, payload)                 # "tp" had no data
+enc.set_footer_metadata({"status": "complete", "written_params": ["2t", "10u"]})
+msg = enc.finish()
+
+tensogram.decode(msg).metadata.extra["status"]  # "complete"
+```
+
+Call it at any point before a finish method.  Repeated calls
+accumulate, with a repeated key taking the value from the later call.
+The pending map is per-message, so `finish_and_reset()` clears it and
+each message in a sequence carries only its own annotations.  A reader
+that parses only the header frame (`tensogram.decode_metadata`) still
+sees the provisional value — see
+[wire-format.md](../format/wire-format.md) → *Header and Footer
+Metadata Frames*.
+
+See `examples/python/19_footer_metadata.py` for a runnable producer.
+
 ## Async API
 
 `AsyncTensogramFile` provides the same operations as `TensogramFile` but as

@@ -222,6 +222,28 @@ On the encoder side:
 - `StreamingEncoder::finish()` errors if a preceder was written without a following `write_object()`.
 - `encode()` (buffered mode) errors if `emit_preceders: true` — use `StreamingEncoder::write_preceder()` instead.
 
+## Footer Metadata Supplied at Finish Time
+
+`set_footer_metadata` merges message-level annotations into the footer
+metadata frame, where they override same-named keys from the
+constructor metadata's `_extra_`. Three consequences are worth
+knowing:
+
+- **A header-only read sees the header value.** `decode_metadata()` /
+  `tensogram.decode_metadata` stop at the first metadata frame, which
+  in a streaming message is the header. A provisional header value
+  must therefore stand on its own; a full `decode()` (and every
+  footer-indexed remote read) reports the final value.
+- **The footer frame is complete, not a delta.** The encoder copies
+  the constructor's `_extra_` into the footer frame and applies the
+  annotations on top, so header-only keys survive. A hand-written
+  encoder that emits a footer frame carrying only the late keys would
+  drop the header's keys for any decoder that prefers the footer.
+- **The pending map is per-message.** `finish_and_reset()` clears it,
+  so annotations never leak into the next message of a sequence. With
+  no annotations at all the message is unchanged, byte for byte, from
+  one produced by a caller that never calls the method.
+
 ## File Concatenation
 
 Tensogram is a message format, not a file format. Multiple `.tgm` files can be concatenated:
