@@ -48,9 +48,7 @@ def test_annotations_reach_the_decoded_extra_map() -> None:
 
 
 def test_footer_value_overrides_header_value() -> None:
-    enc = tensogram.StreamingEncoder(
-        {"_extra_": {"status": "provisional", "centre": "ecmwf"}}
-    )
+    enc = tensogram.StreamingEncoder({"_extra_": {"status": "provisional", "centre": "ecmwf"}})
     enc.write_object(_DESCRIPTOR, _PAYLOAD)
     enc.set_footer_metadata({"status": "complete"})
     msg = enc.finish()
