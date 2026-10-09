@@ -331,7 +331,7 @@ pub extern "C" fn tgm_async_streaming_encoder_write_preceder(
             return TgmError::Metadata;
         }
     };
-    let map = match preceder_json_to_cbor_map(value) {
+    let map = match json_object_to_cbor_map(value, "preceder metadata") {
         Ok(m) => m,
         Err(e) => {
             set_last_error(&e);
@@ -350,6 +350,68 @@ pub extern "C" fn tgm_async_streaming_encoder_write_preceder(
             tensogram::TensogramError::Framing("encoder already finished".to_string())
         })?;
         enc.write_preceder(map).await?;
+        Ok(TaskResult::Void)
+    };
+    spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
+}
+
+/// Add message-level annotations to the footer metadata frame.
+///
+/// `metadata_json` is a JSON object whose keys are merged into the
+/// footer metadata frame's `_extra_` map.  Keys override same-named keys
+/// from the metadata passed to `tgm_async_streaming_encoder_create`, so a
+/// producer can publish a provisional value in the header and the final
+/// one in the footer.  Repeated calls accumulate.
+///
+/// Resolves to `void` (joinable via [`tgm_async_task_join_void`]).
+/// Serialised against `write_*` via the same internal mutex, so it is
+/// safe to call while other operations are in flight.
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_async_streaming_encoder_set_footer_metadata(
+    enc: *mut TgmAsyncStreamingEncoder,
+    metadata_json: *const c_char,
+    cancel: *mut TgmCancellationToken,
+    timeout_ms: u64,
+    out_task: *mut *mut TgmAsyncTask,
+) -> TgmError {
+    if enc.is_null() || metadata_json.is_null() || out_task.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let inner = unsafe { (*enc).inner.clone() };
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s.to_string(),
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_last_error(&format!("invalid metadata JSON: {e}"));
+            return TgmError::Metadata;
+        }
+    };
+    let map = match json_object_to_cbor_map(value, "footer metadata") {
+        Ok(m) => m,
+        Err(e) => {
+            set_last_error(&e);
+            return TgmError::Metadata;
+        }
+    };
+    let cancel_ref = if cancel.is_null() {
+        None
+    } else {
+        Some(unsafe { &*cancel })
+    };
+
+    let fut = async move {
+        let mut guard = inner.lock().await;
+        let enc = guard.as_mut().ok_or_else(|| {
+            tensogram::TensogramError::Framing("encoder already finished".to_string())
+        })?;
+        enc.set_footer_metadata(map);
         Ok(TaskResult::Void)
     };
     spawn_or_set_error(fut, cancel_ref, timeout_ms, out_task)
@@ -498,15 +560,16 @@ pub extern "C" fn tgm_async_task_join_async_streaming_encoder(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a JSON object (one level deep is sufficient for preceder
-/// payloads in v1) into a CBOR map.  Nested arrays/objects are
-/// preserved.
-fn preceder_json_to_cbor_map(
+/// Convert a JSON object into a CBOR map.  Nested arrays/objects are
+/// preserved.  `what` names the payload in the error message so callers
+/// can tell a bad preceder from bad footer metadata.
+fn json_object_to_cbor_map(
     v: serde_json::Value,
+    what: &str,
 ) -> Result<BTreeMap<String, ciborium::Value>, String> {
     let obj = match v {
         serde_json::Value::Object(m) => m,
-        _ => return Err("preceder metadata must be a JSON object".to_string()),
+        _ => return Err(format!("{what} must be a JSON object")),
     };
     let mut out = BTreeMap::new();
     for (k, val) in obj {

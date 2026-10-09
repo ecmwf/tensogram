@@ -1449,6 +1449,24 @@ public:
             handle_.get(), metadata_json.c_str()));
     }
 
+    /// Add message-level annotations to the footer metadata frame.
+    ///
+    /// @p metadata_json is a JSON object whose keys are merged into the
+    /// footer metadata frame's `_extra_` map (e.g.
+    /// `{"status":"complete","written_params":["2t"]}`).  Use it for facts
+    /// only known once the objects are written.
+    ///
+    /// Keys override same-named keys from the constructor's
+    /// @p metadata_json, so the header frame can carry a provisional value
+    /// and the footer the final one.  Repeated calls accumulate; a
+    /// repeated key takes the value from the later call.
+    ///
+    /// Callable at any point before finish().
+    void set_footer_metadata(const std::string& metadata_json) {
+        detail::check(tgm_streaming_encoder_set_footer_metadata(
+            handle_.get(), metadata_json.c_str()));
+    }
+
     /// Write a single data object.
     void write_object(const std::string& descriptor_json,
                       const std::uint8_t* data, std::size_t len) {

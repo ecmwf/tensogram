@@ -1170,6 +1170,24 @@ tgm_error tgm_streaming_encoder_write_preceder(tgm_streaming_encoder_t *enc,
                                                const char *metadata_json);
 
 /**
+ * Add message-level annotations to the footer metadata frame.
+ *
+ * `metadata_json` is a JSON object whose keys are merged into the
+ * footer metadata frame's `_extra_` map (e.g.
+ * `{"status":"complete","written_params":["2t"]}`).  Use it for facts
+ * the producer only learns once the objects are written.
+ *
+ * Keys override same-named keys from the metadata passed to
+ * `tgm_streaming_encoder_create`, so the header frame can carry a
+ * provisional value and the footer the final one.  Repeated calls
+ * accumulate; a repeated key takes the value from the later call.
+ *
+ * Callable at any point before `tgm_streaming_encoder_finish`.
+ */
+tgm_error tgm_streaming_encoder_set_footer_metadata(tgm_streaming_encoder_t *enc,
+                                                    const char *metadata_json);
+
+/**
  * Write a single data object to the streaming encoder.
  *
  * `descriptor_json` is a JSON object with the descriptor fields
@@ -1691,6 +1709,25 @@ tgm_error tgm_async_streaming_encoder_write_preceder(tgm_async_streaming_encoder
                                                      tgm_cancellation_token_t *cancel,
                                                      uint64_t timeout_ms,
                                                      tgm_async_task_t **out_task);
+
+/**
+ * Add message-level annotations to the footer metadata frame.
+ *
+ * `metadata_json` is a JSON object whose keys are merged into the
+ * footer metadata frame's `_extra_` map.  Keys override same-named keys
+ * from the metadata passed to `tgm_async_streaming_encoder_create`, so a
+ * producer can publish a provisional value in the header and the final
+ * one in the footer.  Repeated calls accumulate.
+ *
+ * Resolves to `void` (joinable via [`tgm_async_task_join_void`]).
+ * Serialised against `write_*` via the same internal mutex, so it is
+ * safe to call while other operations are in flight.
+ */
+tgm_error tgm_async_streaming_encoder_set_footer_metadata(tgm_async_streaming_encoder_t *enc,
+                                                          const char *metadata_json,
+                                                          tgm_cancellation_token_t *cancel,
+                                                          uint64_t timeout_ms,
+                                                          tgm_async_task_t **out_task);
 
 /**
  * Finalise the stream: flush pending frames, write the footer,

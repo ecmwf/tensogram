@@ -519,6 +519,17 @@ public:
             });
     }
 
+    [[nodiscard]] awaiter<void> set_footer_metadata(
+        const std::string& metadata_json,
+        tac::cancellation_token* token = nullptr,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds::zero()) {
+        auto inner = inner_;
+        return detail::launch_void_awaiter(
+            [inner, metadata_json, token, timeout](auto cb) {
+                inner->set_footer_metadata(metadata_json, std::move(cb), token, timeout);
+            });
+    }
+
     [[nodiscard]] awaiter<void> finish(
         bool backfill = true,
         tac::cancellation_token* token = nullptr,

@@ -60,3 +60,4 @@ npx tsx 01_encode_decode.ts
 | [`16_remote_batch.ts`](16_remote_batch.ts) | `prefetchLayouts` + `messageObjectBatch` with bounded concurrency; the mock server records peak in-flight to demonstrate the per-host cap |
 | [`17_remote_s3_signed_fetch.ts`](17_remote_s3_signed_fetch.ts) | `createAwsSigV4Fetch` against a mock S3 that enforces `Authorization: AWS4-HMAC-SHA256 …` |
 | [`18_remote_scan_trace.ts`](18_remote_scan_trace.ts) | Intercept `console.debug` to capture `tensogram:scan:*` events from forward-only and bidirectional walkers |
+| [`19_footer_metadata.ts`](19_footer_metadata.ts) | `setFooterMetadata` — message-level facts learnt while streaming, merged into the footer metadata frame |

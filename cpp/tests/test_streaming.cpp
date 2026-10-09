@@ -329,3 +329,76 @@ TEST(StreamingTest, PrecederNonObjectJsonThrows) {
 
     EXPECT_THROW(enc.write_preceder(R"([1,2,3])"), tensogram::metadata_error);
 }
+
+// ---------------------------------------------------------------------------
+// Footer metadata: set_footer_metadata overrides the header value
+// ---------------------------------------------------------------------------
+
+TEST(StreamingTest, FooterMetadataOverridesHeaderValue) {
+    TempFile tmp;
+
+    std::string meta_json = R"({"_extra_":{"status":"provisional","centre":"ecmwf"}})";
+    {
+        tensogram::streaming_encoder enc(tmp.path, meta_json);
+
+        std::vector<float> values = {1.0f, 2.0f};
+        enc.write_object(
+            f32_descriptor(values.size()),
+            reinterpret_cast<const std::uint8_t*>(values.data()),
+            values.size() * sizeof(float));
+
+        enc.set_footer_metadata(R"({"status":"complete","written":2})");
+        enc.finish();
+    }
+
+    auto f = tensogram::file::open(tmp.path);
+    auto msg = f.decode_message(0);
+    auto meta = msg.get_metadata();
+
+    EXPECT_EQ(meta.get_string("status"), "complete");
+    EXPECT_EQ(meta.get_string("centre"), "ecmwf");
+    EXPECT_EQ(meta.get_int("written", 0), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Footer metadata: repeated calls accumulate, later keys winning
+// ---------------------------------------------------------------------------
+
+TEST(StreamingTest, FooterMetadataAccumulatesOverCalls) {
+    TempFile tmp;
+
+    std::string meta_json = R"({"version":3})";
+    {
+        tensogram::streaming_encoder enc(tmp.path, meta_json);
+
+        enc.set_footer_metadata(R"({"first":"a","shared":"old"})");
+        std::vector<float> values = {1.0f};
+        enc.write_object(
+            f32_descriptor(values.size()),
+            reinterpret_cast<const std::uint8_t*>(values.data()),
+            values.size() * sizeof(float));
+        enc.set_footer_metadata(R"({"second":"b","shared":"new"})");
+        enc.finish();
+    }
+
+    auto f = tensogram::file::open(tmp.path);
+    auto msg = f.decode_message(0);
+    auto meta = msg.get_metadata();
+
+    EXPECT_EQ(meta.get_string("first"), "a");
+    EXPECT_EQ(meta.get_string("second"), "b");
+    EXPECT_EQ(meta.get_string("shared"), "new");
+}
+
+// ---------------------------------------------------------------------------
+// Footer metadata: non-object JSON throws
+// ---------------------------------------------------------------------------
+
+TEST(StreamingTest, FooterMetadataNonObjectJsonThrows) {
+    TempFile tmp;
+
+    std::string meta_json = R"({"version":3})";
+    tensogram::streaming_encoder enc(tmp.path, meta_json);
+
+    EXPECT_THROW(enc.set_footer_metadata(R"([1,2,3])"), tensogram::metadata_error);
+}

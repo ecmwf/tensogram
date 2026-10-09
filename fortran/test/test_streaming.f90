@@ -19,6 +19,7 @@ program test_streaming
    type(tensogram_streaming_encoder) :: enc
    type(tensogram_file)              :: f
    type(tensogram_message)           :: msg
+   type(tensogram_metadata)          :: meta
    integer(c_int) :: err
    integer :: i, j, k, n, ios
 
@@ -41,6 +42,9 @@ program test_streaming
    call tensogram_streaming_encoder_write(enc, a2, err); call assert(err == TGM_ERROR_OK, 'write obj2')
    call tensogram_streaming_encoder_write(enc, a3, err); call assert(err == TGM_ERROR_OK, 'write obj3')
    call assert(tensogram_streaming_encoder_count(enc) == 3, 'count == 3')
+   ! Message-level facts known only now go into the footer metadata frame.
+   call tensogram_streaming_encoder_set_footer_metadata(enc, '{"status":"complete"}', err)
+   call assert(err == TGM_ERROR_OK, 'set_footer_metadata')
    call tensogram_streaming_encoder_finish(enc, err);    call assert(err == TGM_ERROR_OK, 'finish')
    call enc%free()
 
@@ -62,6 +66,10 @@ program test_streaming
    call tensogram_to_array(msg, 3, o3, err); call assert(err == TGM_ERROR_OK, 'to_array 3')
    call assert(all(shape(o3) == [2, 2, 2]), 'obj3 shape')
    call assert(all(o3 == a3), 'obj3 values')
+
+   ! The footer annotation is readable from the decoded metadata.
+   call tensogram_message_metadata(msg, meta, err); call assert(err == TGM_ERROR_OK, 'message_metadata')
+   call assert(tensogram_metadata_get_string(meta, 'status') == 'complete', 'footer status')
 
    call f%close()
    open(newunit=ios, file=path, status='old', iostat=err)
