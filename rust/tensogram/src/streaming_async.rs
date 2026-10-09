@@ -37,14 +37,15 @@ use std::collections::BTreeMap;
 use tokio::io::{AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::encode::{
-    EncodeOptions, MaskMethod, build_pipeline_config, populate_base_entries,
-    populate_reserved_provenance, validate_no_szip_offsets_for_non_szip, validate_object,
-    validate_szip_block_offsets,
+    EncodeOptions, MaskMethod, build_pipeline_config, validate_no_szip_offsets_for_non_szip,
+    validate_object, validate_szip_block_offsets,
 };
 use crate::error::{Result, TensogramError};
 use crate::framing::{EncodedObject, encode_data_object_frame};
 use crate::metadata::{self, RESERVED_KEY};
-use crate::streaming::{build_frame, build_preamble_and_header_bytes, padding_for};
+use crate::streaming::{
+    build_footer_metadata_cbor, build_frame, build_preamble_and_header_bytes, padding_for,
+};
 use crate::substitute_and_mask;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 use crate::wire::{FrameType, POSTAMBLE_SIZE, Postamble};
@@ -90,6 +91,7 @@ pub struct AsyncStreamingEncoder<W: AsyncWrite + Unpin> {
     pos_inf_mask_method: MaskMethod,
     neg_inf_mask_method: MaskMethod,
     small_mask_threshold_bytes: usize,
+    footer_extra: BTreeMap<String, ciborium::Value>,
 }
 
 impl<W: AsyncWrite + Unpin> AsyncStreamingEncoder<W> {
@@ -139,6 +141,7 @@ impl<W: AsyncWrite + Unpin> AsyncStreamingEncoder<W> {
             pos_inf_mask_method: options.pos_inf_mask_method.clone(),
             neg_inf_mask_method: options.neg_inf_mask_method.clone(),
             small_mask_threshold_bytes: options.small_mask_threshold_bytes,
+            footer_extra: BTreeMap::new(),
         })
     }
 
@@ -175,6 +178,19 @@ impl<W: AsyncWrite + Unpin> AsyncStreamingEncoder<W> {
         self.pending_preceder = true;
         self.preceder_payloads.push(Some(metadata));
         Ok(())
+    }
+
+    /// Add message-level annotations to the footer metadata frame.
+    ///
+    /// Mirror of
+    /// [`crate::streaming::StreamingEncoder::set_footer_metadata`]: keys
+    /// land in the footer frame's `_extra_` map and override same-named
+    /// keys from the constructor metadata.  Repeated calls accumulate.
+    ///
+    /// Not `async` — it only records the keys; they reach the sink when the
+    /// footer frame is written at finish time.
+    pub fn set_footer_metadata(&mut self, extra: BTreeMap<String, ciborium::Value>) {
+        self.footer_extra.extend(extra);
     }
 
     /// Encode and write a single data object frame.
@@ -350,28 +366,15 @@ impl<W: AsyncWrite + Unpin> AsyncStreamingEncoder<W> {
 
         let footer_start = self.bytes_written;
 
-        // Footer metadata frame (preceder payloads merged in).
+        // Footer metadata frame (preceder payloads and late message-level
+        // annotations merged in).
         {
-            let mut enriched_meta = self.global_meta.clone();
-            populate_base_entries(&mut enriched_meta.base, &self.completed_objects);
-            populate_reserved_provenance(&mut enriched_meta.reserved);
-            if self.preceder_payloads.len() != self.completed_objects.len() {
-                return Err(TensogramError::Framing(format!(
-                    "internal: preceder_payloads ({}) out of sync with completed_objects ({})",
-                    self.preceder_payloads.len(),
-                    self.completed_objects.len()
-                )));
-            }
-            for (i, prec) in self.preceder_payloads.iter().enumerate() {
-                if let Some(prec_map) = prec
-                    && i < enriched_meta.base.len()
-                {
-                    for (k, v) in prec_map {
-                        enriched_meta.base[i].insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            let meta_cbor = metadata::global_metadata_to_cbor(&enriched_meta)?;
+            let meta_cbor = build_footer_metadata_cbor(
+                &self.global_meta,
+                &self.completed_objects,
+                &self.preceder_payloads,
+                &self.footer_extra,
+            )?;
             let frame_bytes =
                 build_frame(FrameType::FooterMetadata, 1, 0, &meta_cbor, self.hashing);
             self.writer.write_all(&frame_bytes).await?;

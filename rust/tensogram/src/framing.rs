@@ -2513,6 +2513,72 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_footer_extra_wins_over_header_extra() {
+        // Message-level annotations: the header frame carries a provisional
+        // `_extra_` value and the footer frame the final one.  The footer
+        // frame is parsed last and supersedes the header, so the decoded
+        // `_extra_` holds the footer value while header-only keys survive
+        // from the footer frame's own copy of them.
+        let header_meta = GlobalMetadata {
+            extra: BTreeMap::from([
+                (
+                    "status".to_string(),
+                    ciborium::Value::Text("provisional".to_string()),
+                ),
+                (
+                    "centre".to_string(),
+                    ciborium::Value::Text("ecmwf".to_string()),
+                ),
+            ]),
+            ..Default::default()
+        };
+        // The streaming encoder builds the footer frame from the header
+        // metadata plus the late annotations, so the footer carries both
+        // keys with `status` replaced.
+        let footer_meta = GlobalMetadata {
+            extra: BTreeMap::from([
+                (
+                    "status".to_string(),
+                    ciborium::Value::Text("complete".to_string()),
+                ),
+                (
+                    "centre".to_string(),
+                    ciborium::Value::Text("ecmwf".to_string()),
+                ),
+            ]),
+            ..Default::default()
+        };
+        let header_cbor = crate::metadata::global_metadata_to_cbor(&header_meta).unwrap();
+        let footer_cbor = crate::metadata::global_metadata_to_cbor(&footer_meta).unwrap();
+
+        let msg = build_raw_message(&[
+            (&header_cbor, FrameType::HeaderMetadata),
+            (&[], FrameType::NTensorFrame),
+            (&footer_cbor, FrameType::FooterMetadata),
+        ]);
+
+        let decoded = decode_message(&msg).unwrap();
+        assert_eq!(
+            decoded.global_metadata.extra.get("status"),
+            Some(&ciborium::Value::Text("complete".to_string())),
+            "footer `_extra_` must override the header value"
+        );
+        assert_eq!(
+            decoded.global_metadata.extra.get("centre"),
+            Some(&ciborium::Value::Text("ecmwf".to_string()))
+        );
+
+        // `decode_metadata_only` stops at the first metadata frame, so a
+        // forward-scanning reader keeps seeing the provisional value.
+        let header_only = decode_metadata_only(&msg).unwrap();
+        assert_eq!(
+            header_only.extra.get("status"),
+            Some(&ciborium::Value::Text("provisional".to_string())),
+            "a header-only read is documented to see the provisional value"
+        );
+    }
+
+    #[test]
     fn test_decode_rejects_base_count_exceeding_objects() {
         // Footer metadata with 3 base entries but only 1 data object
         // should be rejected (base.len > obj_count).
