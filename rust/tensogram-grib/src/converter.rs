@@ -7,11 +7,11 @@
 // does it submit to any jurisdiction.
 
 use std::collections::BTreeMap;
-use std::fmt::Debug;
+use std::io::Cursor;
 use std::path::Path;
 
 use ciborium::Value as CborValue;
-use eccodes::{CodesFile, FallibleIterator, KeyRead, ProductKind};
+use eccodes::{GribFile, GribMessage};
 
 use tensogram::pipeline::apply_pipeline;
 use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
@@ -91,8 +91,8 @@ pub(crate) struct GribExtracted {
 /// (`ls`, `geography`, `time`, `vertical`, `parameter`, `statistics`)
 /// are also stored under `base[i]["grib"]` for each data object.
 pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Vec<u8>>, GribError> {
-    let mut handle = CodesFile::new_from_file(path, ProductKind::GRIB)?;
-    let grib_messages = extract_messages(&mut handle, options.preserve_all_keys)?;
+    let file = GribFile::open(path)?;
+    let grib_messages = extract_messages(file.messages()?, options.preserve_all_keys)?;
     finish_conversion(grib_messages, options)
 }
 
@@ -103,13 +103,13 @@ pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Ve
 /// staging pipelines, and Python bindings where callers already hold the
 /// GRIB bytes (e.g. from `requests.get(...).content` or a `BytesIO` buffer).
 ///
-/// The `buffer` is consumed — ecCodes opens a `FILE*` over it via
-/// `fmemopen(3)` and holds the allocation for the lifetime of the handle.
+/// The `buffer` is consumed — messages are decoded one at a time as the
+/// reader yields them.
 ///
 /// # Errors
 ///
-/// - [`GribError::CodesError`] — `fmemopen` failed, the buffer is not
-///   parseable GRIB, or an ecCodes call failed during message iteration.
+/// - [`GribError::EcCodes`] — the buffer is not parseable GRIB, or an
+///   ecCodes call failed during message iteration.
 /// - [`GribError::NoMessages`] — the buffer contained zero valid GRIB
 ///   messages (empty buffer, junk, or unrelated format).
 /// - [`GribError::InvalidData`] — a GRIB grid dimension overflowed `u64`
@@ -120,28 +120,27 @@ pub fn convert_grib_buffer(
     buffer: Vec<u8>,
     options: &ConvertOptions,
 ) -> Result<Vec<Vec<u8>>, GribError> {
-    let mut handle = CodesFile::new_from_memory(buffer, ProductKind::GRIB)?;
-    let grib_messages = extract_messages(&mut handle, options.preserve_all_keys)?;
+    let messages = GribFile::messages_from(Cursor::new(buffer));
+    let grib_messages = extract_messages(messages, options.preserve_all_keys)?;
     finish_conversion(grib_messages, options)
 }
 
-/// Extract every GRIB message from `handle` into our intermediate
-/// [`GribExtracted`] form. Generic over the underlying storage type `D`
-/// so we can share this loop between the file-path and in-memory entry
-/// points (`CodesFile<File>` vs `CodesFile<Vec<u8>>`).
-fn extract_messages<D: Debug>(
-    handle: &mut CodesFile<D>,
+/// Extract every GRIB message from the stream into our intermediate
+/// [`GribExtracted`] form. Generic over the message source so the
+/// file-path and in-memory entry points share this loop.
+fn extract_messages(
+    messages: impl Iterator<Item = eccodes::Result<GribMessage>>,
     preserve_all_keys: bool,
 ) -> Result<Vec<GribExtracted>, GribError> {
     let mut grib_messages = Vec::new();
-    let mut iter = handle.ref_message_iter();
-    while let Some(mut msg) = iter.next()? {
-        let mut keys = extract_mars_keys(&mut msg)?;
-        let values: Vec<f64> = msg.read_key("values")?;
+    for msg in messages {
+        let msg = msg?;
+        let mut keys = extract_mars_keys(&msg)?;
+        let values: Vec<f64> = msg.get("values")?;
 
         // gridType is outside the MARS namespace — read it separately
         // and store as "grid" within the mars key set.
-        let grid_type: Option<String> = KeyRead::<String>::read_key(&msg, "gridType").ok();
+        let grid_type: Option<String> = msg.get("gridType").ok();
         if let Some(gt) = &grid_type {
             keys.keys
                 .insert("grid".to_string(), CborValue::Text(gt.clone()));
@@ -157,23 +156,21 @@ fn extract_messages<D: Debug>(
         if grid_type.as_deref() == Some("regular_ll") {
             let geo = RegularLlGeometry {
                 lat_first: msg
-                    .read_key("latitudeOfFirstGridPointInDegrees")
+                    .get("latitudeOfFirstGridPointInDegrees")
                     .unwrap_or(f64::NAN),
                 lon_first: msg
-                    .read_key("longitudeOfFirstGridPointInDegrees")
+                    .get("longitudeOfFirstGridPointInDegrees")
                     .unwrap_or(f64::NAN),
                 lat_last: msg
-                    .read_key("latitudeOfLastGridPointInDegrees")
+                    .get("latitudeOfLastGridPointInDegrees")
                     .unwrap_or(f64::NAN),
                 lon_last: msg
-                    .read_key("longitudeOfLastGridPointInDegrees")
+                    .get("longitudeOfLastGridPointInDegrees")
                     .unwrap_or(f64::NAN),
-                i_scans_negatively: msg.read_key("iScansNegatively").unwrap_or(-1),
-                j_scans_positively: msg.read_key("jScansPositively").unwrap_or(-1),
-                ni: msg.read_key("Ni").unwrap_or(0),
-                i_direction_increment: msg
-                    .read_key("iDirectionIncrementInDegrees")
-                    .unwrap_or(f64::NAN),
+                i_scans_negatively: msg.get("iScansNegatively").unwrap_or(-1),
+                j_scans_positively: msg.get("jScansPositively").unwrap_or(-1),
+                ni: msg.get("Ni").unwrap_or(0),
+                i_direction_increment: msg.get("iDirectionIncrementInDegrees").unwrap_or(f64::NAN),
             };
             if let Some(area) = compute_regular_ll_area(geo) {
                 keys.keys.insert(
@@ -185,16 +182,16 @@ fn extract_messages<D: Debug>(
 
         // Optionally extract all non-mars namespace keys.
         let grib_keys = if preserve_all_keys {
-            Some(extract_all_namespace_keys(&mut msg)?)
+            Some(extract_all_namespace_keys(&msg)?)
         } else {
             None
         };
 
         // Always capture the key-set needed to rebuild the message on export.
-        let reconstruct_keys = extract_reconstruct_keys(&mut msg)?;
+        let reconstruct_keys = extract_reconstruct_keys(&msg)?;
 
-        let ni: i64 = msg.read_key("Ni").unwrap_or(0);
-        let nj: i64 = msg.read_key("Nj").unwrap_or(0);
+        let ni: i64 = msg.get("Ni").unwrap_or(0);
+        let nj: i64 = msg.get("Nj").unwrap_or(0);
         let shape =
             if ni > 0 && nj > 0 {
                 let nj = u64::try_from(nj)
@@ -406,8 +403,8 @@ mod tests {
     //! [`convert_grib_file`].
     //!
     //! The two entry points share `extract_messages` + `finish_conversion`
-    //! internally and diverge only at the `CodesFile` constructor
-    //! (`new_from_file` vs `new_from_memory`).  `buffer_matches_file`
+    //! internally and diverge only at the message source
+    //! (`GribFile::open` vs `GribFile::messages_from`).  `buffer_matches_file`
     //! locks in decoded-payload equality; the remaining tests exercise
     //! the buffer path in isolation across grouping modes, flags, and
     //! error cases.
@@ -427,8 +424,8 @@ mod tests {
     fn buffer_matches_file() {
         // Feed the same GRIB to both entry points and compare the
         // produced Tensogram bytes. `extract_messages` is generic over
-        // `D: Debug`, so any divergence between the two code paths
-        // would surface here.
+        // the message source, so any divergence between the two code
+        // paths would surface here.
         let path = testdata("2t.grib2");
         let bytes = std::fs::read(&path).expect("read 2t.grib2");
 
@@ -512,11 +509,8 @@ mod tests {
     fn buffer_empty_returns_error() {
         // An empty buffer must surface *some* error — not a panic and
         // not a silent success.  We intentionally do NOT assert on the
-        // exact variant here: ecCodes' `fmemopen(3)` path on a zero-
-        // length buffer raises `CodesError::LibcNonZero` on some
-        // platforms before we ever get to the message iterator, so
-        // `GribError::NoMessages` is not guaranteed.  What matters is
-        // that the caller gets a clean `Result::Err`.
+        // exact variant here — what matters is that the caller gets a
+        // clean `Result::Err` (`GribError::NoMessages` today).
         let result = convert_grib_buffer(Vec::new(), &ConvertOptions::default());
         assert!(result.is_err(), "empty buffer must produce an error");
     }

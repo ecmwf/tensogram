@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use ciborium::Value as CborValue;
-use eccodes::{DynamicKeyType, FallibleIterator, KeysIteratorFlags, RefMessage};
+use eccodes::{GribMessage, KeyType};
 
 /// Non-mars GRIB namespaces to iterate when `preserve_all_keys` is enabled.
 const GRIB_NAMESPACES: &[&str] = &[
@@ -27,38 +27,69 @@ pub(crate) struct GribKeySet {
     pub(crate) keys: BTreeMap<String, CborValue>,
 }
 
+// ── Dynamic key reads ────────────────────────────────────────────────────────
+
+/// A dynamically-typed ecCodes key value.
+///
+/// The official `eccodes` crate reads keys typed; this enum carries the
+/// result of asking a key what it is (`value_type()` + `len()`) and reading
+/// it accordingly — see [`read_key_value`].
+#[derive(Debug, Clone, PartialEq)]
+enum KeyValue {
+    Str(String),
+    Int(i64),
+    Float(f64),
+    IntArray(Vec<i64>),
+    FloatArray(Vec<f64>),
+    Bytes(Vec<u8>),
+}
+
+/// Read one key dynamically: dispatch on the key's native type and length.
+///
+/// Returns `None` for missing keys and for keys that fail to read under
+/// every applicable type (mirroring the lenient reads this module always
+/// did — a key that cannot be read is skipped, not an error).
+fn read_key_value(msg: &GribMessage, name: &str) -> Option<KeyValue> {
+    let key = msg.key(name);
+    let key_type = key.value_type().ok()?;
+    let len = key.len().ok()?;
+
+    let read = match key_type {
+        KeyType::I64 if len == 1 => msg.get(name).map(KeyValue::Int),
+        KeyType::I64 => msg.get(name).map(KeyValue::IntArray),
+        KeyType::F64 if len == 1 => msg.get(name).map(KeyValue::Float),
+        KeyType::F64 => msg.get(name).map(KeyValue::FloatArray),
+        KeyType::Bytes => msg.get(name).map(KeyValue::Bytes),
+        KeyType::Missing => return None,
+        _ => msg.get(name).map(KeyValue::Str),
+    };
+    // Some keys misreport their native type; raw octets always read.
+    read.or_else(|_| msg.get(name).map(KeyValue::Bytes)).ok()
+}
+
 // ── Namespace extraction ─────────────────────────────────────────────────────
 
 /// Read all keys from a single ecCodes namespace.
 ///
-/// Uses `new_keys_iterator(namespace)` to discover key names at runtime.
-/// The iterator is collected into a `Vec<String>` and dropped (releasing
-/// the mutable borrow on `msg`) before reading values.
+/// Key names are discovered at runtime via the message's keys iterator and
+/// collected before any value is read, so the C iterator never interleaves
+/// with key reads on the same handle.
 fn read_namespace_keys(
-    msg: &mut RefMessage,
+    msg: &GribMessage,
     namespace: &str,
-) -> Result<BTreeMap<String, CborValue>, eccodes::errors::CodesError> {
+) -> Result<BTreeMap<String, CborValue>, eccodes::Error> {
     // Phase 1: collect key names.
-    let key_names: Vec<String> = {
-        let mut iter = msg.new_keys_iterator(
-            &[
-                KeysIteratorFlags::AllKeys,
-                KeysIteratorFlags::SkipDuplicates,
-            ],
-            namespace,
-        )?;
-        let mut names = Vec::new();
-        while let Some(name) = iter.next()? {
-            names.push(name);
-        }
-        names
-        // `iter` dropped here, releasing `&mut msg`.
-    };
+    let key_names: Vec<String> = msg
+        .keys()
+        .namespace(namespace)
+        .skip_duplicates()
+        .into_iter()
+        .collect::<Result<_, _>>()?;
 
     // Phase 2: read each key's value dynamically.
     let mut keys = BTreeMap::new();
     for key_name in &key_names {
-        if let Ok(val) = msg.read_key_dynamic(key_name)
+        if let Some(val) = read_key_value(msg, key_name)
             && let Some(cbor) = dynamic_to_cbor(val)
         {
             keys.insert(key_name.clone(), cbor);
@@ -76,39 +107,35 @@ fn read_namespace_keys(
 /// against any pathological namespace key.
 const MAX_ARRAY_LEN: usize = 8192;
 
-/// Convert an ecCodes `DynamicKeyType` to a CBOR value, filtering out
+/// Convert a dynamically-read [`KeyValue`] to a CBOR value, filtering out
 /// missing/sentinel values and oversized arrays. Returns `None` to skip.
 ///
 /// Small arrays and byte strings (local-section blobs) ARE kept — they are
 /// required for lossless round-trip reconstruction (`plans/GRIB_NETCDF_ROUNDTRIP.md`).
-fn dynamic_to_cbor(val: DynamicKeyType) -> Option<CborValue> {
+fn dynamic_to_cbor(val: KeyValue) -> Option<CborValue> {
     match val {
-        DynamicKeyType::Str(s) if s != "MISSING" && s != "not_found" => Some(CborValue::Text(s)),
-        DynamicKeyType::Int(i) if i != 2147483647 && i != -2147483647 => {
+        KeyValue::Str(s) if s != "MISSING" && s != "not_found" => Some(CborValue::Text(s)),
+        KeyValue::Int(i) if i != 2147483647 && i != -2147483647 => {
             Some(CborValue::Integer(i.into()))
         }
-        DynamicKeyType::Float(f) if f.is_finite() => Some(CborValue::Float(f)),
-        DynamicKeyType::IntArray(a) if a.len() <= MAX_ARRAY_LEN => Some(CborValue::Array(
+        KeyValue::Float(f) if f.is_finite() => Some(CborValue::Float(f)),
+        KeyValue::IntArray(a) if a.len() <= MAX_ARRAY_LEN => Some(CborValue::Array(
             a.into_iter()
                 .map(|i| CborValue::Integer(i.into()))
                 .collect(),
         )),
-        DynamicKeyType::FloatArray(a)
-            if a.len() <= MAX_ARRAY_LEN && a.iter().all(|f| f.is_finite()) =>
-        {
+        KeyValue::FloatArray(a) if a.len() <= MAX_ARRAY_LEN && a.iter().all(|f| f.is_finite()) => {
             Some(CborValue::Array(
                 a.into_iter().map(CborValue::Float).collect(),
             ))
         }
-        DynamicKeyType::Bytes(b) => Some(CborValue::Bytes(b)),
+        KeyValue::Bytes(b) => Some(CborValue::Bytes(b)),
         _ => None, // missing, sentinel, or oversized/non-finite array
     }
 }
 
 /// Dynamically read all MARS namespace keys from a single ecCodes message.
-pub(crate) fn extract_mars_keys(
-    msg: &mut RefMessage,
-) -> Result<GribKeySet, eccodes::errors::CodesError> {
+pub(crate) fn extract_mars_keys(msg: &GribMessage) -> Result<GribKeySet, eccodes::Error> {
     let keys = read_namespace_keys(msg, "mars")?;
     Ok(GribKeySet { keys })
 }
@@ -119,8 +146,8 @@ pub(crate) fn extract_mars_keys(
 /// standard GRIB namespaces (ls, geography, time, vertical, parameter,
 /// statistics).  Empty namespaces are omitted.
 pub(crate) fn extract_all_namespace_keys(
-    msg: &mut RefMessage,
-) -> Result<BTreeMap<String, BTreeMap<String, CborValue>>, eccodes::errors::CodesError> {
+    msg: &GribMessage,
+) -> Result<BTreeMap<String, BTreeMap<String, CborValue>>, eccodes::Error> {
     let mut result = BTreeMap::new();
     for &ns in GRIB_NAMESPACES {
         let keys = read_namespace_keys(msg, ns)?;
@@ -172,8 +199,8 @@ const RECONSTRUCT_SCALAR_KEYS: &[&str] = &[
 /// Stored flat under `base[i]["grib_repro"]`; consumed by the `to-grib`
 /// exporter. See `plans/GRIB_NETCDF_ROUNDTRIP.md`.
 pub(crate) fn extract_reconstruct_keys(
-    msg: &mut RefMessage,
-) -> Result<BTreeMap<String, CborValue>, eccodes::errors::CodesError> {
+    msg: &GribMessage,
+) -> Result<BTreeMap<String, CborValue>, eccodes::Error> {
     let mut keys = BTreeMap::new();
     for &ns in RECONSTRUCT_NAMESPACES {
         for (k, v) in read_namespace_keys(msg, ns)? {
@@ -181,7 +208,7 @@ pub(crate) fn extract_reconstruct_keys(
         }
     }
     for &k in RECONSTRUCT_SCALAR_KEYS {
-        if let Ok(val) = msg.read_key_dynamic(k)
+        if let Some(val) = read_key_value(msg, k)
             && let Some(cbor) = dynamic_to_cbor(val)
         {
             keys.insert(k.to_string(), cbor);
@@ -210,30 +237,27 @@ mod tests {
     //! integration tests *cannot* reach are the skip branches — sentinel
     //! strings, sentinel integers, NaN floats, and the array variants —
     //! because none of our fixtures contain such keys.  This module pokes
-    //! those branches directly with synthesised `DynamicKeyType` values.
+    //! those branches directly with synthesised [`KeyValue`]s.
 
     use super::*;
 
     #[test]
     fn str_non_sentinel_becomes_text() {
         assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::Str("2t".to_string())),
+            dynamic_to_cbor(KeyValue::Str("2t".to_string())),
             Some(CborValue::Text("2t".to_string())),
         );
     }
 
     #[test]
     fn str_missing_sentinel_returns_none() {
-        assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::Str("MISSING".to_string())),
-            None,
-        );
+        assert_eq!(dynamic_to_cbor(KeyValue::Str("MISSING".to_string())), None);
     }
 
     #[test]
     fn str_not_found_sentinel_returns_none() {
         assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::Str("not_found".to_string())),
+            dynamic_to_cbor(KeyValue::Str("not_found".to_string())),
             None,
         );
     }
@@ -241,7 +265,7 @@ mod tests {
     #[test]
     fn int_non_sentinel_becomes_integer() {
         assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::Int(42)),
+            dynamic_to_cbor(KeyValue::Int(42)),
             Some(CborValue::Integer(42_i64.into())),
         );
     }
@@ -249,38 +273,35 @@ mod tests {
     #[test]
     fn int_positive_sentinel_returns_none() {
         // ecCodes' i32::MAX sentinel for "missing" integer keys.
-        assert_eq!(dynamic_to_cbor(DynamicKeyType::Int(2147483647)), None);
+        assert_eq!(dynamic_to_cbor(KeyValue::Int(2147483647)), None);
     }
 
     #[test]
     fn int_negative_sentinel_returns_none() {
-        assert_eq!(dynamic_to_cbor(DynamicKeyType::Int(-2147483647)), None);
+        assert_eq!(dynamic_to_cbor(KeyValue::Int(-2147483647)), None);
     }
 
     #[test]
     fn float_finite_becomes_float() {
         assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::Float(1.5)),
+            dynamic_to_cbor(KeyValue::Float(1.5)),
             Some(CborValue::Float(1.5)),
         );
     }
 
     #[test]
     fn float_nan_returns_none() {
-        assert_eq!(dynamic_to_cbor(DynamicKeyType::Float(f64::NAN)), None);
+        assert_eq!(dynamic_to_cbor(KeyValue::Float(f64::NAN)), None);
     }
 
     #[test]
     fn float_positive_infinity_returns_none() {
-        assert_eq!(dynamic_to_cbor(DynamicKeyType::Float(f64::INFINITY)), None);
+        assert_eq!(dynamic_to_cbor(KeyValue::Float(f64::INFINITY)), None);
     }
 
     #[test]
     fn float_negative_infinity_returns_none() {
-        assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::Float(f64::NEG_INFINITY)),
-            None,
-        );
+        assert_eq!(dynamic_to_cbor(KeyValue::Float(f64::NEG_INFINITY)), None);
     }
 
     #[test]
@@ -288,7 +309,7 @@ mod tests {
         // Small definition arrays (e.g. `pv`, `scaledValues`) are needed for
         // lossless round-trip reconstruction, so they are preserved.
         assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::FloatArray(vec![1.0, 2.0, 3.0])),
+            dynamic_to_cbor(KeyValue::FloatArray(vec![1.0, 2.0, 3.0])),
             Some(CborValue::Array(vec![
                 CborValue::Float(1.0),
                 CborValue::Float(2.0),
@@ -301,7 +322,7 @@ mod tests {
     fn small_int_array_is_kept() {
         // Small definition arrays (e.g. `pl` for reduced grids) are preserved.
         assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::IntArray(vec![1, 2, 3])),
+            dynamic_to_cbor(KeyValue::IntArray(vec![1, 2, 3])),
             Some(CborValue::Array(vec![
                 CborValue::Integer(1_i64.into()),
                 CborValue::Integer(2_i64.into()),
@@ -315,13 +336,13 @@ mod tests {
         // The data payload never routes through here, but a pathological
         // oversized namespace key is dropped to keep the CBOR bounded.
         let big = vec![0_i64; MAX_ARRAY_LEN + 1];
-        assert_eq!(dynamic_to_cbor(DynamicKeyType::IntArray(big)), None);
+        assert_eq!(dynamic_to_cbor(KeyValue::IntArray(big)), None);
     }
 
     #[test]
     fn non_finite_float_array_returns_none() {
         assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::FloatArray(vec![1.0, f64::NAN])),
+            dynamic_to_cbor(KeyValue::FloatArray(vec![1.0, f64::NAN])),
             None,
         );
     }
@@ -331,7 +352,7 @@ mod tests {
         // Bytes is the "binary section" variant (local-section blobs) — kept
         // verbatim as a CBOR byte string for reconstruction.
         assert_eq!(
-            dynamic_to_cbor(DynamicKeyType::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+            dynamic_to_cbor(KeyValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
             Some(CborValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
         );
     }

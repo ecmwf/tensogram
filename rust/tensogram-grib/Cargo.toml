@@ -2,7 +2,7 @@
 name = "tensogram-grib"
 version = "0.24.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.90"
 license = "Apache-2.0"
 description = "GRIB to Tensogram format importer using ecCodes"
 repository = "https://github.com/ecmwf/tensogram"
@@ -16,9 +16,18 @@ authors = ["ECMWF <software@ecmwf.int>"]
 [dependencies]
 tensogram = { path = "../tensogram", version = "=0.24.0" }
 tensogram-encodings = { path = "../tensogram-encodings", version = "=0.24.0" }
-eccodes = { version = "0.14", default-features = false }
+# Official ECMWF bindings; git until the crates are published on crates.io.
+eccodes = { git = "https://github.com/ecmwf/eccodes.git", branch = "develop", default-features = false, features = ["vendored"] }
 thiserror = "2"
 ciborium = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+# Feature-unification hack until the official crates grow an `aec`
+# pass-through: the CCSDS fixtures need it.
+eccodes-sys = { git = "https://github.com/ecmwf/eccodes.git", branch = "develop", default-features = false, features = ["aec"] }
+
+# eccodes-sys depends on eckit-sys 2.3, not yet on crates.io.
+[patch.crates-io]
+eckit-sys = { git = "https://github.com/ecmwf/eckit.git", branch = "develop" }
