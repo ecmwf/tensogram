@@ -23,7 +23,3 @@ ciborium = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
-
-# eccodes-sys depends on eckit-sys 2.3, not yet on crates.io.
-[patch.crates-io]
-eckit-sys = { git = "https://github.com/ecmwf/eckit.git", branch = "develop" }
