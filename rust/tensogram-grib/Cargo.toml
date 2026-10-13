@@ -17,7 +17,7 @@ authors = ["ECMWF <software@ecmwf.int>"]
 tensogram = { path = "../tensogram", version = "=0.24.0" }
 tensogram-encodings = { path = "../tensogram-encodings", version = "=0.24.0" }
 # Official ECMWF bindings; git until the crates are published on crates.io.
-eccodes = { git = "https://github.com/ecmwf/eccodes.git", branch = "eccodes-compat", default-features = false, features = ["vendored", "aec"] }
+eccodes = { git = "https://github.com/ecmwf/eccodes.git", branch = "pre-publish", default-features = false, features = ["vendored", "aec"] }
 thiserror = "2"
 ciborium = "0.2"
 
