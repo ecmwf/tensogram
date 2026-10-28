@@ -17,8 +17,8 @@ import earthkit.data as ekd
 # Local file, remote URL, in-memory bytes, or byte stream
 data = ekd.from_source("tensogram", "file.tgm")
 
-ds = data.to_xarray()              # xarray.Dataset (always)
-fl = data.to_fieldlist()           # FieldList — only when MARS keys are present
+ds = data.to_xarray()  # xarray.Dataset (always)
+fl = data.to_fieldlist()  # FieldList — only when MARS keys are present
 ```
 
 `.to_fieldlist()` raises `NotImplementedError` when the tensogram file has no
@@ -30,10 +30,10 @@ component:
 
 ```python
 field = fl[0]
-field.get("labels.mars")                      # the full MARS dict, as stored
-field.get("parameter.variable")               # "2t"
-field.get("time.step")                        # datetime.timedelta
-fl.sel(**{"parameter.variable": "2t"})        # component-key selection
+field.get("labels.mars")  # the full MARS dict, as stored
+field.get("parameter.variable")  # "2t"
+field.get("time.step")  # datetime.timedelta
+fl.sel(**{"parameter.variable": "2t"})  # component-key selection
 fl.order_by("time.step")
 ```
 
