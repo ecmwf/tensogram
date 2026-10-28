@@ -53,6 +53,10 @@ fn read_key_value(msg: &GribMessage, name: &str) -> Option<KeyValue> {
     let key = msg.key(name);
     let key_type = key.value_type().ok()?;
     let len = key.len().ok()?;
+    // A key reporting zero elements is skipped, not read as an empty array.
+    if len == 0 {
+        return None;
+    }
 
     let read = match key_type {
         KeyType::I64 if len == 1 => msg.get(name).map(KeyValue::Int),
