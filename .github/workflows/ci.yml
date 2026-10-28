@@ -251,14 +251,16 @@ jobs:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
 
-      # The CI image does not carry libeccodes / libnetcdf — installing
-      # them here keeps the image lean (they are only needed for this
-      # one job + the Jupyter notebooks on a user's machine).
-      - name: Install libeccodes + libnetcdf + libhdf5
+      # The CI image does not carry libnetcdf — installing it here keeps the
+      # image lean (it is only needed for this one job + the Jupyter
+      # notebooks on a user's machine). libeccodes is built from source by
+      # the eccodes crate; patchelf lets maturin set the extension module's
+      # rpath to it.
+      - name: Install libnetcdf + libhdf5 + patchelf
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            libeccodes-dev libnetcdf-dev libhdf5-dev
+            libnetcdf-dev libhdf5-dev patchelf
           apt-get clean && rm -rf /var/lib/apt/lists/*
 
       - name: Build bindings (with grib + netcdf features) and install notebook deps
