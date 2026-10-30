@@ -2,7 +2,7 @@
 name = "tensogram-grib"
 version = "0.24.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.90"
 license = "Apache-2.0"
 description = "GRIB to Tensogram format importer using ecCodes"
 repository = "https://github.com/ecmwf/tensogram"
@@ -16,7 +16,7 @@ authors = ["ECMWF <software@ecmwf.int>"]
 [dependencies]
 tensogram = { path = "../tensogram", version = "=0.24.0" }
 tensogram-encodings = { path = "../tensogram-encodings", version = "=0.24.0" }
-eccodes = { version = "0.14", default-features = false }
+eccodes = { version = "2.50", default-features = false, features = ["vendored", "aec"] }
 thiserror = "2"
 ciborium = "0.2"
 

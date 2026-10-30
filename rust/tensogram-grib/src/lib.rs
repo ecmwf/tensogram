@@ -12,9 +12,10 @@
 //! messages and convert them to Tensogram wire format ([`convert_grib_file`])
 //! and to reconstruct GRIB from a Tensogram message ([`to_grib`]).
 //!
-//! # System requirement
+//! # The ecCodes C library
 //!
-//! The ecCodes C library must be installed:
+//! The default `vendored` feature builds libeccodes from source (CMake
+//! required). With `system` instead, a preinstalled library is linked:
 //! ```bash
 //! brew install eccodes       # macOS
 //! apt install libeccodes-dev # Debian/Ubuntu

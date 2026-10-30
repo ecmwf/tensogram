@@ -11,7 +11,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum GribError {
     #[error("ecCodes error: {0}")]
-    EcCodes(#[from] eccodes::errors::CodesError),
+    EcCodes(#[from] eccodes::Error),
 
     #[error("no GRIB messages found in input")]
     NoMessages,

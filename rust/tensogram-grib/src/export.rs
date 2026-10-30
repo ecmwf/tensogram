@@ -9,8 +9,8 @@
 //! GRIB export: reconstruct GRIB messages from a Tensogram message.
 //!
 //! Reads each object's `base[i]["grib_repro"]` reconstruct key-set and its
-//! decoded `f64` values, clones an ecCodes sample, sets the captured keys +
-//! values, and re-emits GRIB.  This is the reverse of
+//! decoded `f64` values, builds a message from an ecCodes sample, sets the
+//! captured keys + values, and re-emits GRIB.  This is the reverse of
 //! [`crate::convert_grib_file`].  See `plans/GRIB_NETCDF_ROUNDTRIP.md`.
 //!
 //! Scope: `regular_ll` geometry with `grid_simple` / `grid_ieee` / `grid_ccsds`
@@ -20,10 +20,9 @@
 //! `2t.grib2`.  Other geometries and exotic templates remain follow-ups.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use ciborium::Value as CborValue;
-use eccodes::{BufMessage, CodesFile, FallibleIterator, KeyWrite, ProductKind};
+use eccodes::GribMessage;
 
 use tensogram::types::{ByteOrder, GlobalMetadata};
 use tensogram::{DecodeOptions, Dtype, decode};
@@ -32,51 +31,9 @@ use crate::error::GribError;
 
 /// ecCodes sample used as the reconstruction template for `regular_ll` surface
 /// fields.  (Only `regular_ll` for now; other geometries select other samples
-/// in a follow-up.)
-const SAMPLE_NAME: &str = "regular_ll_sfc_grib2.tmpl";
-
-/// Locate the ecCodes samples directory portably.
-///
-/// The eccodes crate can only open a sample by *path*, and that path is
-/// install-specific (`/usr/share/eccodes/samples` on Debian, but
-/// `$(brew --prefix eccodes)/share/eccodes/samples` on macOS, etc.).  Resolve it
-/// the way ecCodes itself does — honouring `ECCODES_SAMPLES_PATH` and
-/// `ECCODES_DIR` — then fall back to the well-known install locations, returning
-/// the first that actually contains [`SAMPLE_NAME`].
-fn sample_path() -> Result<PathBuf, GribError> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    // ecCodes' own override (may be colon-separated, like a search path).
-    if let Ok(paths) = std::env::var("ECCODES_SAMPLES_PATH") {
-        candidates.extend(paths.split(':').map(PathBuf::from));
-    }
-    // An eccodes install prefix (set by e.g. the Homebrew CI).
-    if let Ok(dir) = std::env::var("ECCODES_DIR") {
-        let base = PathBuf::from(dir);
-        candidates.push(base.join("share/eccodes/samples"));
-        candidates.push(base.join("samples"));
-    }
-    // Well-known system locations.
-    for dir in [
-        "/usr/share/eccodes/samples",
-        "/usr/local/share/eccodes/samples",
-        "/opt/homebrew/share/eccodes/samples",
-        "/opt/homebrew/opt/eccodes/share/eccodes/samples",
-    ] {
-        candidates.push(PathBuf::from(dir));
-    }
-
-    candidates
-        .into_iter()
-        .map(|dir| dir.join(SAMPLE_NAME))
-        .find(|p| p.exists())
-        .ok_or_else(|| {
-            GribError::InvalidData(format!(
-                "could not locate ecCodes sample '{SAMPLE_NAME}'; \
-                 set ECCODES_SAMPLES_PATH or ECCODES_DIR"
-            ))
-        })
-}
+/// in a follow-up.)  Resolved by the C library itself — `ECCODES_SAMPLES_PATH`
+/// overrides the compiled-in location, as everywhere else in ecCodes.
+const SAMPLE_NAME: &str = "regular_ll_sfc_grib2";
 
 /// Keys set *first*, in this order, because they select templates / sizing /
 /// sections.  ecCodes is order-sensitive: the identification and grid template
@@ -104,7 +61,6 @@ const PRIORITY_KEYS: &[&str] = &[
 ///   not `float64`, or an object lacks the `grib_repro` key-set (i.e. was not
 ///   produced by `convert-grib`).
 /// - [`GribError::EcCodes`] — ecCodes rejected a key or failed to encode.
-/// - [`GribError::Io`] — the temporary encode file could not be written/read.
 pub fn to_grib(message: &[u8]) -> Result<Vec<u8>, GribError> {
     let (meta, objects) = decode(message, &DecodeOptions::default())
         .map_err(|e| GribError::InvalidData(format!("decode tensogram message: {e}")))?;
@@ -157,18 +113,13 @@ fn payload_to_f64(dtype: Dtype, order: ByteOrder, bytes: &[u8]) -> Result<Vec<f6
     Ok(out)
 }
 
-/// Clone the sample, set the captured keys + values, and return the encoded
-/// GRIB message bytes.
+/// Build a message from the sample, set the captured keys + values, and
+/// return the encoded GRIB message bytes.
 fn reconstruct_message(
     repro: &BTreeMap<String, CborValue>,
     values: &[f64],
 ) -> Result<Vec<u8>, GribError> {
-    let sample_path = sample_path()?;
-    let mut handle = CodesFile::new_from_file(&sample_path, ProductKind::GRIB)?;
-    let sample = handle.ref_message_iter().next()?.ok_or_else(|| {
-        GribError::InvalidData(format!("sample {} has no message", sample_path.display()))
-    })?;
-    let mut msg = sample.try_clone()?;
+    let mut msg = GribMessage::from_sample(SAMPLE_NAME)?;
 
     // `setLocalDefinition` is a write-only *trigger*: it always reads back `0`,
     // so the captured value cannot recreate the section.  When the source
@@ -198,51 +149,33 @@ fn reconstruct_message(
         let _ = set_key(&mut msg, k, v);
     }
     // Values last — this sizes the data section (`numberOfValues`).
-    msg.write_key_unchecked("values", values)?;
+    msg.set("values", values)?;
 
-    // The eccodes crate can only emit to a file path; use a unique temp file.
-    let tmp = temp_path();
-    msg.write_to_file(&tmp, false)?;
-    let bytes = std::fs::read(&tmp)?;
-    let _ = std::fs::remove_file(&tmp);
-    Ok(bytes)
+    Ok(msg.to_vec()?)
 }
 
 /// Set one CBOR-typed key on the message, mapping to the ecCodes setter.
-fn set_key(msg: &mut BufMessage, key: &str, value: &CborValue) -> Result<(), GribError> {
+fn set_key(msg: &mut GribMessage, key: &str, value: &CborValue) -> Result<(), GribError> {
     match value {
         CborValue::Integer(i) => {
             let v = i64::try_from(*i).map_err(|_| {
                 GribError::InvalidData(format!("key {key}: integer out of i64 range"))
             })?;
-            msg.write_key_unchecked(key, v)?;
+            msg.set(key, v)?;
         }
         CborValue::Float(f) => {
-            msg.write_key_unchecked(key, *f)?;
+            msg.set(key, *f)?;
         }
         CborValue::Text(s) => {
-            msg.write_key_unchecked(key, s.as_str())?;
+            msg.set(key, s.as_str())?;
         }
         CborValue::Bytes(b) => {
-            msg.write_key_unchecked(key, b.as_slice())?;
+            msg.set(key, b.as_slice())?;
         }
         // Array-valued keys (e.g. `pv`, `pl`) are captured but not yet replayed.
         _ => {}
     }
     Ok(())
-}
-
-/// A unique temporary file path for the ecCodes encode step.
-fn temp_path() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static CTR: AtomicU64 = AtomicU64::new(0);
-    let n = CTR.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!("tensogram_to_grib_{pid}_{nanos}_{n}.grib2"))
 }
 
 #[cfg(test)]
