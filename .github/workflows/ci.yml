@@ -360,6 +360,7 @@ jobs:
           done
           echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix eccodes)/lib/pkgconfig:$(brew --prefix netcdf)/lib/pkgconfig:$(brew --prefix hdf5)/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "ECCODES_DIR=$(brew --prefix eccodes)" >> "$GITHUB_ENV"
+          echo "HDF5_DIR=$(brew --prefix hdf5)" >> "$GITHUB_ENV"
 
       - name: Format check
         run: make rust-fmt
